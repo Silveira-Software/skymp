@@ -23,6 +23,8 @@ import { UpdateAppearanceMessage } from "../messages/updateAppearanceMessage";
 import { RemoteServer } from "./remoteServer";
 import { DeathService } from "./deathService";
 import { logTrace } from "../../logging";
+import { ConnectionMessage } from "../events/connectionMessage";
+import { CustomPacketMessage } from "../messages/customPacketMessage";
 
 const playerFormId = 0x14;
 
@@ -34,6 +36,27 @@ export class SendInputsService extends ClientListener {
         this.controller.on("equip", (e) => this.onEquip(e));
         this.controller.on("unequip", (e) => this.onUnequip(e));
         this.controller.on("loadGame", () => this.onLoadGame());
+        this.controller.emitter.on("customPacketMessage", (e) => this.onCustomPacketMessage(e));
+    }
+
+    // SRP experimental: the server says it understands OnEquipWithOpId.
+    // Accepts {customPacketType: "srpCaps", onEquipOpId: true} and the SRP bridge
+    // form {srpBridge: 1, type: "srp:caps", data: {onEquipOpId: true}}.
+    private onCustomPacketMessage(event: ConnectionMessage<CustomPacketMessage>) {
+        let content: Record<string, any>;
+        try {
+            content = JSON.parse(event.message.contentJsonDump);
+        } catch (e) {
+            return;
+        }
+        if (!content || typeof content !== "object") {
+            return;
+        }
+        const caps = content["customPacketType"] === "srpCaps" ? content
+            : (content["srpBridge"] === 1 && content["type"] === "srp:caps" ? content["data"] : null);
+        if (caps && typeof caps === "object") {
+            this.onEquipOpIdSupported = caps["onEquipOpId"] === true;
+        }
     }
 
     private onUpdate() {
@@ -68,6 +91,15 @@ export class SendInputsService extends ClientListener {
 
         // Send OnEquip for any equips including spell tomes, potions, ingredients
         // Otherwise, the server won't trigger spell learn, potion drink, ingredient eat and Papyrus scripts
+        if (this.onEquipOpIdSupported && (type === FormType.Potion || type === FormType.Ingredient)) {
+            // One opId per equip event. A resend of this same message must reuse it.
+            const opId = `${this.equipOpSession}:${++this.equipOpSeq}`;
+            this.controller.emitter.emit("sendMessage", {
+                message: { t: MsgType.OnEquipWithOpId, baseId: event.baseObj.getFormID(), opId },
+                reliability: "reliable"
+            });
+            return;
+        }
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.OnEquip, baseId: event.baseObj.getFormID() },
             reliability: "unreliable"
@@ -332,6 +364,9 @@ export class SendInputsService extends ClientListener {
     private actorValuesNeedUpdate = false;
     private isRaceSexMenuShown = false;
     private equipmentChanged = false;
+    private onEquipOpIdSupported = false;
+    private equipOpSession = `${Date.now().toString(36)}${Math.floor(Math.random() * 0x7fffffff).toString(36)}`;
+    private equipOpSeq = 0;
     private numEquipmentChanges = 0;
     private prevValues: ActorValues = { health: 0, stamina: 0, magicka: 0 };
     private prevActorValuesUpdateTime = 0;

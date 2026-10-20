@@ -17,6 +17,7 @@ import { HostMessage } from "./hostMessage";
 import { HostStartMessage } from "./hostStartMessage";
 import { HostStopMessage } from "./hostStopMessage";
 import { OnEquipMessage } from "./onEquipMessage";
+import { OnEquipWithOpIdMessage } from "./onEquipWithOpIdMessage";
 import { OpenContainerMessage } from "./openContainerMessage";
 import { PlayerBowShotMessage } from "./playerBowShotMessage";
 import { PutItemMessage } from "./putItemMessage";
@@ -43,6 +44,7 @@ export type AnyMessage = ActivateMessage
     | SpellCastMessage
     | UpdateAnimVariablesMessage
     | OnEquipMessage
+    | OnEquipWithOpIdMessage
     | UpdateMovementMessage
     | UpdateAnimationMessage
     | UpdateEquipmentMessage
