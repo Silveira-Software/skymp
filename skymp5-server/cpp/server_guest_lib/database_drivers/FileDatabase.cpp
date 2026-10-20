@@ -4,19 +4,51 @@
 #include <save_storages/AsyncSaveStorage.h>
 #include <unordered_set>
 
+#ifndef WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+namespace {
+// Flushes a file or a directory to the disk. Throws on failure so the batch
+// is reported as failed instead of saved.
+void FsyncPath(const std::filesystem::path& path, bool isDirectory)
+{
+#ifndef WIN32
+  int fd = ::open(path.c_str(), isDirectory ? (O_RDONLY | O_DIRECTORY)
+                                            : O_RDONLY);
+  if (fd < 0) {
+    throw std::runtime_error(
+      fmt::format("Unable to open {} for fsync", path.string()));
+  }
+  int res = ::fsync(fd);
+  ::close(fd);
+  if (res != 0) {
+    throw std::runtime_error(fmt::format("fsync failed for {}", path.string()));
+  }
+#else
+  (void)path;
+  (void)isDirectory;
+  throw std::runtime_error("databaseFsync is not supported on Windows");
+#endif
+}
+}
+
 struct FileDatabase::Impl
 {
   const std::filesystem::path changeFormsDirectory;
   const std::shared_ptr<spdlog::logger> logger;
+  const bool fsync = false;
 };
 
 FileDatabase::FileDatabase(std::string directory_,
-                           std::shared_ptr<spdlog::logger> logger_)
+                           std::shared_ptr<spdlog::logger> logger_,
+                           bool fsync_)
 {
   std::filesystem::path p = directory_;
   p /= "changeForms";
 
-  pImpl.reset(new Impl{ p, logger_ });
+  pImpl.reset(new Impl{ p, logger_, fsync_ });
   std::filesystem::create_directories(p);
 }
 
@@ -46,6 +78,10 @@ std::vector<std::optional<MpChangeForm>>&& FileDatabase::UpsertImpl(
       if (!f.fail()) {
         f.close();
 
+        if (pImpl->fsync && !f.fail()) {
+          FsyncPath(tempFilePath, false);
+        }
+
         std::error_code errorCode;
         std::filesystem::rename(tempFilePath, filePath, errorCode);
         if (errorCode) {
@@ -64,6 +100,11 @@ std::vector<std::optional<MpChangeForm>>&& FileDatabase::UpsertImpl(
       } else {
         ++nUpserted;
       }
+    }
+
+    if (pImpl->fsync && nUpserted > 0) {
+      // makes the renames themselves durable
+      FsyncPath(p, true);
     }
 
     outNumUpserted = nUpserted;

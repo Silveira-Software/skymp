@@ -84,6 +84,11 @@ public:
                      std::chrono::system_clock::duration time);
 
   void RequestSave(MpObjectReference& ref);
+
+  // SRP experimental: generation of the last RequestSave of this form (0 if
+  // none) and whether the database driver already stored that copy.
+  uint64_t GetChangeFormGeneration(uint32_t formId) const;
+  bool IsChangeFormSaved(uint32_t formId, uint64_t generation) const;
   bool HasEspmFile(std::string_view filename) const noexcept;
 
   template <typename T>

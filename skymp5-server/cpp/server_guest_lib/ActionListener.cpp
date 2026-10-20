@@ -629,6 +629,26 @@ void ActionListener::OnEquip(const RawMessageData& rawMsgData,
   std::ignore = actor->OnEquip(msg.baseId);
 }
 
+void ActionListener::OnEquipWithOpId(const RawMessageData& rawMsgData,
+                                     const OnEquipWithOpIdMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    throw std::runtime_error(
+      "Unable to finish OnEquipWithOpId: No Actor found for user " +
+      std::to_string(rawMsgData.userId));
+  }
+
+  // An empty or oversized id would make every resend look new; treat it as
+  // a plain OnEquip instead of trusting it
+  if (msg.opId.empty() || msg.opId.size() > 128) {
+    std::ignore = actor->OnEquip(msg.baseId);
+    return;
+  }
+
+  std::ignore = actor->OnEquip(msg.baseId, msg.opId);
+}
+
 void ActionListener::OnConsoleCommand(const RawMessageData& rawMsgData,
                                       const ConsoleCommandMessage& msg)
 {

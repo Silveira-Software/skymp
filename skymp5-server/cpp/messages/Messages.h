@@ -15,6 +15,7 @@
 #include "HostStartMessage.h"
 #include "HostStopMessage.h"
 #include "OnEquipMessage.h"
+#include "OnEquipWithOpIdMessage.h"
 #include "OpenContainerMessage.h"
 #include "PlayerBowShotMessage.h"
 #include "PutItemMessage.h"
@@ -55,6 +56,7 @@
   REGISTER_MESSAGE(HostStartMessage)                                          \
   REGISTER_MESSAGE(HostStopMessage)                                           \
   REGISTER_MESSAGE(OnEquipMessage)                                            \
+  REGISTER_MESSAGE(OnEquipWithOpIdMessage)                                    \
   REGISTER_MESSAGE(PlayerBowShotMessage)                                      \
   REGISTER_MESSAGE(PutItemMessage)                                            \
   REGISTER_MESSAGE(SetInventoryMessage)                                       \

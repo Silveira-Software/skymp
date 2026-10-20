@@ -40,5 +40,8 @@ enum class MsgType : uint8_t
   UpdateGamemodeData = 32,
   CreateActor = 33,
 
+  // SRP experimental: OnEquip with an operation id for idempotent consumption
+  OnEquipWithOpId = 34,
+
   Max
 };

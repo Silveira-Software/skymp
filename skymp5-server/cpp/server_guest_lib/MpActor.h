@@ -92,6 +92,11 @@ public:
 
   [[nodiscard]] bool OnEquip(uint32_t baseId);
 
+  // SRP experimental: opId is passed to onEatItem. If the gamemode blocks the
+  // event for a consumable with an opId (already applied), the item is not
+  // removed and no effect is applied.
+  [[nodiscard]] bool OnEquip(uint32_t baseId, const std::string& opId);
+
   // TODO: consider removing the entire DestroyEventSink feature because it's
   // only used in unit tests
   class DestroyEventSink
@@ -207,7 +212,7 @@ private:
                                               bool isDead,
                                               bool shouldTeleport);
 
-  void EatItem(uint32_t baseId, espm::Type t);
+  bool EatItem(uint32_t baseId, espm::Type t, const std::string& opId = {});
 
   bool ReadBook(uint32_t baseId);
 

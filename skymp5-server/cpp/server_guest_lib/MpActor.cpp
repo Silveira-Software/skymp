@@ -473,6 +473,11 @@ MpActor& MpActor::GetActorToSendTo()
 
 bool MpActor::OnEquip(uint32_t baseId)
 {
+  return OnEquip(baseId, std::string());
+}
+
+bool MpActor::OnEquip(uint32_t baseId, const std::string& opId)
+{
   const auto& espm = GetParent()->GetEspm();
   auto lookupRes = espm.GetBrowser().LookupById(baseId);
 
@@ -515,7 +520,12 @@ bool MpActor::OnEquip(uint32_t baseId)
 
   bool spellLearned = false;
   if (isIngredient || isPotion) {
-    EatItem(baseId, recordType);
+    const bool applied = EatItem(baseId, recordType, opId);
+    if (!applied && !opId.empty()) {
+      // The gamemode already has a receipt for this opId: a resend of an
+      // intent that was consumed before. Keep the item and skip the effect.
+      return false;
+    }
 
     std::vector<std::optional<
       std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
@@ -1058,13 +1068,13 @@ DeathStateContainerMessage MpActor::GetDeathStateMsg(
   return res;
 }
 
-void MpActor::EatItem(uint32_t baseId, espm::Type t)
+bool MpActor::EatItem(uint32_t baseId, espm::Type t, const std::string& opId)
 {
   bool isIngredient = t == "INGR";
   bool isAlchemyItem = t == "ALCH";
 
-  EatItemEvent eatItemEvent(this, baseId, isIngredient, isAlchemyItem);
-  eatItemEvent.Fire(GetParent());
+  EatItemEvent eatItemEvent(this, baseId, isIngredient, isAlchemyItem, opId);
+  return eatItemEvent.Fire(GetParent());
 }
 
 bool MpActor::ReadBook(const uint32_t baseId)

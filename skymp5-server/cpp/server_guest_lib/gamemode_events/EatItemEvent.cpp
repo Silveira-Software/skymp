@@ -2,13 +2,16 @@
 
 #include "MpActor.h"
 #include "WorldState.h"
+#include <nlohmann/json.hpp>
 #include <unordered_set>
 #include <vector>
 
 EatItemEvent::EatItemEvent(MpActor* actor_, uint32_t baseId_,
-                           bool isIngredient_, bool isAlchemyItem_)
+                           bool isIngredient_, bool isAlchemyItem_,
+                           std::string opId_)
   : actor(actor_)
   , baseId(baseId_)
+  , opId(std::move(opId_))
   , isIngredient(isIngredient_)
   , isAlchemyItem(isAlchemyItem_)
 {
@@ -26,6 +29,11 @@ std::string EatItemEvent::GetArgumentsJsonArray() const
   result += std::to_string(actor->GetFormId());
   result += ",";
   result += std::to_string(baseId);
+  if (!opId.empty()) {
+    // opId is limited to 128 chars by ActionListener; JSON-escape it anyway
+    result += ",";
+    result += nlohmann::json(opId).dump();
+  }
   result += "]";
   return result;
 }

@@ -58,6 +58,9 @@ public:
   virtual void OnEquip(const RawMessageData& rawMsgData,
                        const OnEquipMessage& msg);
 
+  virtual void OnEquipWithOpId(const RawMessageData& rawMsgData,
+                               const OnEquipWithOpIdMessage& msg);
+
   virtual void OnConsoleCommand(const RawMessageData& rawMsgData,
                                 const ConsoleCommandMessage& msg);
 
