@@ -50,6 +50,7 @@ export class SendInputsService extends ClientListener {
         this.controller.on("loadGame", () => this.onLoadGame());
         this.controller.emitter.on("customPacketMessage", (e) => this.onCustomPacketMessage(e));
         this.controller.emitter.on("connectionDisconnect", () => this.srpCaps.reset());
+        this.controller.emitter.on("connectionFailed", () => this.srpCaps.reset());
     }
 
     // SRP experimental: srp:caps handshake (see srpCapsNegotiation.ts). Until the server confirms
