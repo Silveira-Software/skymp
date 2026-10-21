@@ -532,9 +532,9 @@ bool MpActor::OnEquipImpl(uint32_t baseId, const std::string& opId)
   bool spellLearned = false;
   if (isIngredient || isPotion) {
     const bool applied = EatItem(baseId, recordType, opId);
-    if (!applied && !opId.empty()) {
-      // The gamemode already has a receipt for this opId: a resend of an
-      // intent that was consumed before. Keep the item and skip the effect.
+    if (!applied) {
+      // Honor every gamemode veto, including legacy packets received before
+      // the per-character transactional marker is installed.
       return false;
     }
 

@@ -447,7 +447,7 @@ TEST_CASE("MpActor::OnEquip with opId: a resend keeps the item and skips the eff
           w.recorder->events.end());
 }
 
-TEST_CASE("MpActor::OnEquip without opId keeps upstream behavior", "[srp]")
+TEST_CASE("MpActor::OnEquip without opId preserves allowed consumption and honors veto", "[srp]")
 {
   auto dir = FreshDir("onequip-plain");
   World w(dir);
@@ -458,10 +458,10 @@ TEST_CASE("MpActor::OnEquip without opId keeps upstream behavior", "[srp]")
                     "onEatItem[" + std::to_string(kActorId) + "," + std::to_string(kBread) + "]") !=
           w.recorder->events.end());
 
-  // upstream: a blocked onEatItem without opId still removes the item
+  // A gamemode veto must not debit even before the SRP marker exists.
   w.recorder->blockPlainEat = true;
-  REQUIRE(w.Actor().OnEquip(kBread));
-  REQUIRE(w.Actor().GetInventory().GetItemCount(kBread) == 0);
+  REQUIRE_FALSE(w.Actor().OnEquip(kBread));
+  REQUIRE(w.Actor().GetInventory().GetItemCount(kBread) == 1);
 }
 
 TEST_CASE("OnEquip opId and removal reach the disk in the same generation", "[srp]")
@@ -498,4 +498,21 @@ TEST_CASE("Consumption transaction: veto/exception cannot save a partial ChangeF
   REQUIRE(disk.has_value());
   REQUIRE(BreadIn(*disk) == 2);
   REQUIRE(MarkerIn(*disk) == "committed");
+}
+
+TEST_CASE("Legacy equip veto before character marker preserves durable inventory", "[srp][transaction]")
+{
+  auto dir = FreshDir("pre-marker-veto");
+  World w(dir, true);
+  w.SetBread(3, "untouched");
+  auto generation = w.ws.GetChangeFormGeneration(kActorId);
+  REQUIRE(w.TickUntilSaved(generation));
+  w.recorder->blockPlainEat = true;
+  REQUIRE_FALSE(w.Actor().OnEquip(kBread));
+  REQUIRE(w.Actor().GetInventory().GetItemCount(kBread) == 3);
+  REQUIRE(w.ws.GetChangeFormGeneration(kActorId) == generation);
+  auto disk = ReadActorFile(dir);
+  REQUIRE(disk.has_value());
+  REQUIRE(BreadIn(*disk) == 3);
+  REQUIRE(MarkerIn(*disk) == "untouched");
 }
