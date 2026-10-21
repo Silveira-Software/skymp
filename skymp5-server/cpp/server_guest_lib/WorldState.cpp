@@ -1,4 +1,6 @@
 #include "WorldState.h"
+#include "SaveGenerationTracker.h"
+#include "gamemode_events/ChangeFormsSavedEvent.h"
 #include "EvaluateTemplate.h"
 #include "FormCallbacks.h"
 #include "LeveledListUtils.h"
@@ -46,6 +48,8 @@ struct WorldState::Impl
     saveStorage;
   std::shared_ptr<IScriptStorage> scriptStorage;
   bool saveStorageBusy = false;
+  SaveGenerationTracker saveGenerations;
+  std::vector<uint64_t> savedBatchesToNotify;
   std::shared_ptr<VirtualMachine> vm;
   uint32_t nextId = 0xff000000;
   std::shared_ptr<IPapyrusCompatibilityPolicy> policy;
@@ -305,6 +309,28 @@ void WorldState::RequestSave(MpObjectReference& ref)
 
   pImpl->changesByIdx[idx] = ref.GetChangeForm();
   pImpl->changesByIdxEmpty = false;
+  pImpl->saveGenerations.OnRequestSave(idx);
+}
+
+uint64_t WorldState::GetChangeFormGeneration(uint32_t formId) const
+{
+  auto it = forms.find(formId);
+  if (it == forms.end() || !it->second) {
+    return 0;
+  }
+  auto refr = it->second->AsObjectReference();
+  return refr ? pImpl->saveGenerations.GetRequested(refr->GetIdx()) : 0;
+}
+
+bool WorldState::IsChangeFormSaved(uint32_t formId, uint64_t generation) const
+{
+  auto it = forms.find(formId);
+  if (it == forms.end() || !it->second) {
+    return false;
+  }
+  auto refr = it->second->AsObjectReference();
+  return refr &&
+    pImpl->saveGenerations.IsSaved(refr->GetIdx(), generation);
 }
 
 const std::shared_ptr<MpForm>& WorldState::LookupFormById(
@@ -716,6 +742,7 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
     // No SetTimer here because timers may also break in theory. we faced such
     // problems earlier
     pImpl->saveStorageBusy = false;
+    pImpl->saveGenerations.OnBatchFailed();
 
     auto& forms = e.GetAffectedForms();
     size_t numRequested = 0;
@@ -753,6 +780,18 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
       "TickSaveStorage - received std::exception {}, can't request re-save",
       e.what());
     pImpl->saveStorageBusy = false;
+    pImpl->saveGenerations.OnBatchFailed();
+  }
+
+  // Upsert callbacks only ran inside saveStorage->Tick(); fire the gamemode
+  // event here, outside of the storage's callback loop
+  if (!pImpl->savedBatchesToNotify.empty()) {
+    auto batches = std::move(pImpl->savedBatchesToNotify);
+    pImpl->savedBatchesToNotify.clear();
+    for (auto batchId : batches) {
+      ChangeFormsSavedEvent event(batchId);
+      event.Fire(this);
+    }
   }
 
   if (pImpl->saveStorageBusy) {
@@ -769,12 +808,26 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
 
   auto previousSize = pImpl->changesByIdx.size();
 
+  std::vector<uint32_t> batchIdxs;
+  for (size_t i = 0; i < pImpl->changesByIdx.size(); ++i) {
+    if (pImpl->changesByIdx[i] != std::nullopt) {
+      batchIdxs.push_back(static_cast<uint32_t>(i));
+    }
+  }
+  auto batchId = pImpl->saveGenerations.BeginBatch(batchIdxs);
+
   try {
     pImpl->saveStorage->Upsert(std::move(pImpl->changesByIdx),
-                               [pImpl_] { pImpl_->saveStorageBusy = false; });
+                               [pImpl_, batchId] {
+                                 pImpl_->saveStorageBusy = false;
+                                 pImpl_->saveGenerations.OnBatchSaved(batchId);
+                                 pImpl_->savedBatchesToNotify.push_back(
+                                   batchId);
+                               });
     pImpl->changesByIdxEmpty = true;
   } catch (std::exception& e) {
     pImpl->saveStorageBusy = false;
+    pImpl->saveGenerations.OnBatchFailed();
     spdlog::error("TickSaveStorage - Upsert failed with {}", e.what());
   }
 

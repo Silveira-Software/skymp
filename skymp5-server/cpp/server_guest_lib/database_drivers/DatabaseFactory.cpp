@@ -22,8 +22,14 @@ DatabaseFactory::Create(nlohmann::json settings,
       ? settings["databaseName"].get<std::string>()
       : std::string("world");
 
-    logger->info("Using file with name '" + databaseName + "'");
-    return std::make_shared<FileDatabase>(databaseName, logger);
+    // SRP experimental, default false (same behavior as upstream)
+    bool fsync = settings.count("databaseFsync")
+      ? settings["databaseFsync"].get<bool>()
+      : false;
+
+    logger->info("Using file with name '" + databaseName + "'" +
+                 (fsync ? " (fsync on)" : ""));
+    return std::make_shared<FileDatabase>(databaseName, logger, fsync);
   }
 
   if (databaseDriver == "mongodb") {

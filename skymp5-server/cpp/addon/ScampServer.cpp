@@ -119,6 +119,9 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("getAllForms", &ScampServer::GetAllForms),
       InstanceMethod("getDescFromId", &ScampServer::GetDescFromId),
       InstanceMethod("getIdFromDesc", &ScampServer::GetIdFromDesc),
+      InstanceMethod("getChangeFormGeneration",
+                     &ScampServer::GetChangeFormGeneration),
+      InstanceMethod("isChangeFormSaved", &ScampServer::IsChangeFormSaved),
       InstanceMethod("callPapyrusFunction", &ScampServer::CallPapyrusFunction),
       InstanceMethod("registerPapyrusFunction",
                      &ScampServer::RegisterPapyrusFunction),
@@ -1267,6 +1270,34 @@ Napi::Value ScampServer::GetIdFromDesc(const Napi::CallbackInfo& info)
     auto espmFileNames = partOne->GetEspm().GetFileNames();
 
     return Napi::Number::New(info.Env(), formDesc.ToFormId(espmFileNames));
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), std::string(e.what()));
+  }
+}
+
+Napi::Value ScampServer::GetChangeFormGeneration(
+  const Napi::CallbackInfo& info)
+{
+  try {
+    auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+    auto gen = partOne->worldState.GetChangeFormGeneration(formId);
+    return Napi::Number::New(info.Env(), static_cast<double>(gen));
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), std::string(e.what()));
+  }
+}
+
+Napi::Value ScampServer::IsChangeFormSaved(const Napi::CallbackInfo& info)
+{
+  try {
+    auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+    auto gen = info[1].As<Napi::Number>().Int64Value();
+    if (gen <= 0) {
+      return Napi::Boolean::New(info.Env(), false);
+    }
+    return Napi::Boolean::New(
+      info.Env(),
+      partOne->worldState.IsChangeFormSaved(formId, static_cast<uint64_t>(gen)));
   } catch (std::exception& e) {
     throw Napi::Error::New(info.Env(), std::string(e.what()));
   }

@@ -155,6 +155,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnEquip(rawMsgData, *message);
         return;
       }
+      case MsgType::OnEquipWithOpId: {
+        auto message =
+          reinterpret_cast<OnEquipWithOpIdMessage*>(result->message.get());
+        actionListener.OnEquipWithOpId(rawMsgData, *message);
+        return;
+      }
       case MsgType::SpellCast: {
         auto message =
           reinterpret_cast<SpellCastMessage*>(result->message.get());
