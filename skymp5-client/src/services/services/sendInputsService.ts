@@ -25,6 +25,7 @@ import { DeathService } from "./deathService";
 import { logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { CustomPacketMessage } from "../messages/customPacketMessage";
+import { SrpCapsNegotiation } from "./srpCapsNegotiation";
 
 const playerFormId = 0x14;
 
@@ -37,25 +38,22 @@ export class SendInputsService extends ClientListener {
         this.controller.on("unequip", (e) => this.onUnequip(e));
         this.controller.on("loadGame", () => this.onLoadGame());
         this.controller.emitter.on("customPacketMessage", (e) => this.onCustomPacketMessage(e));
+        this.controller.emitter.on("connectionDisconnect", () => this.srpCaps.reset());
     }
 
-    // SRP experimental: the server says it understands OnEquipWithOpId.
-    // Accepts {customPacketType: "srpCaps", onEquipOpId: true} and the SRP bridge
-    // form {srpBridge: 1, type: "srp:caps", data: {onEquipOpId: true}}.
+    // SRP experimental: srp:caps handshake (see srpCapsNegotiation.ts). Until the server confirms
+    // "onEquipOpId", equips go out as the old OnEquip.
     private onCustomPacketMessage(event: ConnectionMessage<CustomPacketMessage>) {
-        let content: Record<string, any>;
+        let content: unknown;
         try {
             content = JSON.parse(event.message.contentJsonDump);
         } catch (e) {
             return;
         }
-        if (!content || typeof content !== "object") {
-            return;
-        }
-        const caps = content["customPacketType"] === "srpCaps" ? content
-            : (content["srpBridge"] === 1 && content["type"] === "srp:caps" ? content["data"] : null);
-        if (caps && typeof caps === "object") {
-            this.onEquipOpIdSupported = caps["onEquipOpId"] === true;
+        const reply = this.srpCaps.handle(content);
+        if (reply) {
+            const message: CustomPacketMessage = { t: MsgType.CustomPacket, contentJsonDump: JSON.stringify(reply) };
+            this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
         }
     }
 
@@ -91,7 +89,7 @@ export class SendInputsService extends ClientListener {
 
         // Send OnEquip for any equips including spell tomes, potions, ingredients
         // Otherwise, the server won't trigger spell learn, potion drink, ingredient eat and Papyrus scripts
-        if (this.onEquipOpIdSupported && (type === FormType.Potion || type === FormType.Ingredient)) {
+        if (this.srpCaps.isActive("onEquipOpId") && (type === FormType.Potion || type === FormType.Ingredient)) {
             // One opId per equip event. A resend of this same message must reuse it.
             const opId = `${this.equipOpSession}:${++this.equipOpSeq}`;
             this.controller.emitter.emit("sendMessage", {
@@ -364,7 +362,7 @@ export class SendInputsService extends ClientListener {
     private actorValuesNeedUpdate = false;
     private isRaceSexMenuShown = false;
     private equipmentChanged = false;
-    private onEquipOpIdSupported = false;
+    private srpCaps = new SrpCapsNegotiation();
     private equipOpSession = `${Date.now().toString(36)}${Math.floor(Math.random() * 0x7fffffff).toString(36)}`;
     private equipOpSeq = 0;
     private numEquipmentChanges = 0;
