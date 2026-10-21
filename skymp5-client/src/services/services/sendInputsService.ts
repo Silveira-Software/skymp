@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import { SrpConsumeQueue, PendingConsume } from "./srpConsumeQueue";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { SinglePlayerService } from "./singlePlayerService";
 import { FormModel, WorldModel } from "../../view/model";
@@ -33,6 +35,15 @@ const playerFormId = 0x14;
 export class SendInputsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
+        // An isolated/client-specific file, never a server/world file. A malformed
+        // outbox blocks setup; do not replace it with an empty queue silently.
+        const file = "./Data/Platform/Distribution/srp-consume-pending.json";
+        let initial: PendingConsume[] = [];
+        if (fs.existsSync(file)) initial = JSON.parse(fs.readFileSync(file, "utf8"));
+        this.consumeQueue = new SrpConsumeQueue(items => {
+            fs.writeFileSync(file + ".tmp", JSON.stringify(items));
+            fs.renameSync(file + ".tmp", file);
+        }, initial);
         this.controller.on("update", () => this.onUpdate());
         this.controller.on("equip", (e) => this.onEquip(e));
         this.controller.on("unequip", (e) => this.onUnequip(e));
@@ -50,6 +61,13 @@ export class SendInputsService extends ClientListener {
         } catch (e) {
             return;
         }
+        const packet = content as Record<string, any>;
+        if (packet && packet.srpBridge === 1 && packet.type === "consumption:result" && packet.data) this.consumeQueue.acknowledge(packet.data);
+        const owner = this.srpCaps.getIdentity();
+        if (packet && packet.srpBridge === 1 && packet.type === "phaseD:card" && packet.data && owner && String(packet.data.characterId) !== owner.characterId) {
+            this.srpCaps.reset();
+            this.controller.emitter.emit("sendMessage", { message: { t: MsgType.CustomPacket, contentJsonDump: JSON.stringify({srpBridge:1,type:"srp:capsRequest",data:{}}) }, reliability: "reliable" });
+        }
         const reply = this.srpCaps.handle(content);
         if (reply) {
             const message: CustomPacketMessage = { t: MsgType.CustomPacket, contentJsonDump: JSON.stringify(reply) };
@@ -58,6 +76,11 @@ export class SendInputsService extends ClientListener {
     }
 
     private onUpdate() {
+        if (this.srpCaps.isActive("onEquipOpId") && Date.now() - this.lastConsumeRetry > 5000) {
+            const owner = this.srpCaps.getIdentity();
+            if (owner) for (const item of this.consumeQueue.forOwner(owner)) this.sendConsume(item);
+            this.lastConsumeRetry = Date.now();
+        }
         if (!this.singlePlayerService.isSinglePlayer) {
             this.sendInputs();
 
@@ -91,11 +114,15 @@ export class SendInputsService extends ClientListener {
         // Otherwise, the server won't trigger spell learn, potion drink, ingredient eat and Papyrus scripts
         if (this.srpCaps.isActive("onEquipOpId") && (type === FormType.Potion || type === FormType.Ingredient)) {
             // One opId per equip event. A resend of this same message must reuse it.
-            const opId = `${this.equipOpSession}:${++this.equipOpSeq}`;
-            this.controller.emitter.emit("sendMessage", {
-                message: { t: MsgType.OnEquipWithOpId, baseId: event.baseObj.getFormID(), opId },
-                reliability: "reliable"
-            });
+            const owner = this.srpCaps.getIdentity();
+            const opId = `${owner ? owner.profileId + ":" + owner.characterId + ":" : ""}${this.equipOpSession}:${++this.equipOpSeq}`;
+            if (owner) {
+                const item = { opId, baseId: event.baseObj.getFormID(), ...owner };
+                this.consumeQueue.add(item);
+                this.sendConsume(item);
+            } else {
+                this.controller.emitter.emit("sendMessage", { message: { t: MsgType.OnEquipWithOpId, baseId: event.baseObj.getFormID(), opId }, reliability: "reliable" });
+            }
             return;
         }
         this.controller.emitter.emit("sendMessage", {
@@ -362,6 +389,11 @@ export class SendInputsService extends ClientListener {
     private actorValuesNeedUpdate = false;
     private isRaceSexMenuShown = false;
     private equipmentChanged = false;
+    private sendConsume(item: PendingConsume) {
+        this.controller.emitter.emit("sendMessage", { message: { t: MsgType.OnEquipWithOpId, baseId: item.baseId, opId: item.opId }, reliability: "reliable" });
+    }
+    private consumeQueue: SrpConsumeQueue;
+    private lastConsumeRetry = 0;
     private srpCaps = new SrpCapsNegotiation();
     private equipOpSession = `${Date.now().toString(36)}${Math.floor(Math.random() * 0x7fffffff).toString(36)}`;
     private equipOpSeq = 0;

@@ -96,6 +96,7 @@ public:
   // event for a consumable with an opId (already applied), the item is not
   // removed and no effect is applied.
   [[nodiscard]] bool OnEquip(uint32_t baseId, const std::string& opId);
+  bool OnEquipImpl(uint32_t baseId, const std::string& opId);
 
   // TODO: consider removing the entire DestroyEventSink feature because it's
   // only used in unit tests

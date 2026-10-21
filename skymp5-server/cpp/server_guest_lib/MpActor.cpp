@@ -478,6 +478,12 @@ bool MpActor::OnEquip(uint32_t baseId)
 
 bool MpActor::OnEquip(uint32_t baseId, const std::string& opId)
 {
+  if (opId.empty()) return OnEquipImpl(baseId, opId);
+  return RunChangeFormTransaction([&] { return OnEquipImpl(baseId, opId); });
+}
+
+bool MpActor::OnEquipImpl(uint32_t baseId, const std::string& opId)
+{
   const auto& espm = GetParent()->GetEspm();
   auto lookupRes = espm.GetBrowser().LookupById(baseId);
 
@@ -491,6 +497,11 @@ bool MpActor::OnEquip(uint32_t baseId, const std::string& opId)
   const bool isBook = recordType == "BOOK";
   const bool isIngredient = recordType == "INGR";
   const bool isPotion = recordType == "ALCH";
+  if ((isIngredient || isPotion) && opId.empty() &&
+      ChangeForm().dynamicFields.GetAsJson().value("srpTransactionalConsumeRequired", false)) {
+    return false; // older clients can use the SRP bag; never debit a legacy equip silently
+  }
+
 
   bool isTorch = false;
   if (espm::utils::Is<espm::LIGH>(recordType)) {

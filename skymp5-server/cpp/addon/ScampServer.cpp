@@ -119,6 +119,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("getAllForms", &ScampServer::GetAllForms),
       InstanceMethod("getDescFromId", &ScampServer::GetDescFromId),
       InstanceMethod("getIdFromDesc", &ScampServer::GetIdFromDesc),
+      InstanceMethod("runChangeFormTransaction", &ScampServer::RunChangeFormTransaction),
       InstanceMethod("getChangeFormGeneration",
                      &ScampServer::GetChangeFormGeneration),
       InstanceMethod("isChangeFormSaved", &ScampServer::IsChangeFormSaved),
@@ -1755,4 +1756,23 @@ bool ScampServer::IsGameModeInsideDeathEventHandler(
   }
 
   return true;
+}
+
+Napi::Value ScampServer::RunChangeFormTransaction(const Napi::CallbackInfo& info)
+{
+  auto env = info.Env();
+  try {
+    const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+    if (!info[1].IsFunction()) throw std::runtime_error("transaction_callback_required");
+    auto& actor = partOne->worldState.GetFormAt<MpActor>(formId);
+    const bool accepted = actor.RunChangeFormTransaction([&] {
+      auto value = info[1].As<Napi::Function>().Call({});
+      if (env.IsExceptionPending()) return false;
+      return value.IsBoolean() && value.As<Napi::Boolean>().Value();
+    });
+    return Napi::Boolean::New(env, accepted);
+  } catch (const std::exception& e) {
+    Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
 }
