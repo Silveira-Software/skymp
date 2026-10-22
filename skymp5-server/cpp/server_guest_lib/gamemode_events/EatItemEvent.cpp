@@ -51,5 +51,11 @@ void EatItemEvent::OnFireSuccess(WorldState* worldState)
   std::unordered_set<std::string> modFiles = { worldState->espmFiles.begin(),
                                                worldState->espmFiles.end() };
   bool hasSweetpie = modFiles.count("SweetPie.esp");
+  // Effect form IDs belong to the winning ALCH record's file/master table,
+  // not the server load order. Overrides may have a different owner than baseId.
+  const auto owner = worldState->GetEspm().GetBrowser().LookupById(baseId);
+  for (auto& effect : effects) {
+    effect.effectId = owner.ToGlobalId(effect.effectId);
+  }
   actor->ApplyMagicEffects(effects, hasSweetpie);
 }

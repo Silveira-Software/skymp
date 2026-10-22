@@ -15,8 +15,11 @@ export class SrpConsumeQueue {
         return this.items.filter(x => x.profileId === owner.profileId && x.characterId === owner.characterId);
     }
     acknowledge(data: Record<string, unknown>) {
-        if (data.ok !== true) return;
-        const next = this.items.filter(x => !(x.opId === data.requestId && x.baseId === data.baseId && data.removed === 1 && x.profileId === data.profileId && x.characterId === data.characterId));
-        if (next.length !== this.items.length) { this.save(next); this.items = next; }
+        const committed = data.ok === true && data.removed === 1;
+        const aborted = data.ok === false && data.terminal === true && data.removed === 0;
+        if (!committed && !aborted) return false;
+        const next = this.items.filter(x => !(x.opId === data.requestId && x.baseId === data.baseId && x.profileId === data.profileId && x.characterId === data.characterId));
+        if (next.length !== this.items.length) { this.save(next); this.items = next; return true; }
+        return false;
     }
 }

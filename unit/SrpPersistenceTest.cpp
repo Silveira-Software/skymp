@@ -442,6 +442,10 @@ TEST_CASE("MpActor::OnEquip with opId: a resend keeps the item and skips the eff
     eats += e.rfind("onEatItem[", 0) == 0;
   }
   REQUIRE(eats == 3);
+  REQUIRE(std::count(w.recorder->events.begin(), w.recorder->events.end(),
+                    "onConsumptionTransaction[" + std::to_string(kActorId) + ",\"sess-1:1\",true," + std::to_string(kBread) + "]") == 1);
+  REQUIRE(std::count(w.recorder->events.begin(), w.recorder->events.end(),
+                    "onConsumptionTransaction[" + std::to_string(kActorId) + ",\"sess-1:1\",false," + std::to_string(kBread) + "]") == 1);
   REQUIRE(std::find(w.recorder->events.begin(), w.recorder->events.end(),
                     "onEatItem[" + std::to_string(kActorId) + "," + std::to_string(kBread) + ",\"sess-1:1\"]") !=
           w.recorder->events.end());

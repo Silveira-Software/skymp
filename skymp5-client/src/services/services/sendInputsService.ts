@@ -63,7 +63,9 @@ export class SendInputsService extends ClientListener {
             return;
         }
         const packet = content as Record<string, any>;
-        if (packet && packet.srpBridge === 1 && packet.type === "consumption:result" && packet.data) this.consumeQueue.acknowledge(packet.data);
+        if (packet && packet.srpBridge === 1 && packet.type === "consumption:result" && packet.data) {
+            if (this.consumeQueue.acknowledge(packet.data)) this.consumeNotification = packet.data;
+        }
         const owner = this.srpCaps.getIdentity();
         if (packet && packet.srpBridge === 1 && packet.type === "phaseD:card" && packet.data && owner && String(packet.data.characterId) !== owner.characterId) {
             this.srpCaps.reset();
@@ -76,7 +78,16 @@ export class SendInputsService extends ClientListener {
         }
     }
 
+    private consumeNotification: Record<string, any> | null = null;
     private onUpdate() {
+        if (this.consumeNotification) {
+            const result = this.consumeNotification; this.consumeNotification = null;
+            try {
+                const id = (globalThis as any).__srpManagedForms.toClient(result.baseId);
+                const name = this.sp.Game.getFormEx(id)?.getName() || ("0x" + result.baseId.toString(16));
+                this.sp.Debug.notification(result.ok ? "Consumido: " + name + " (-1)" : "Consumo cancelado: " + name + ". Item preservado.");
+            } catch (_) {}
+        }
         if (this.srpCaps.isActive("onEquipOpId") && Date.now() - this.lastConsumeRetry > 5000) {
             const owner = this.srpCaps.getIdentity();
             if (owner) for (const item of this.consumeQueue.forOwner(owner)) this.sendConsume(item);
