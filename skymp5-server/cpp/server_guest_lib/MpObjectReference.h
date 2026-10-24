@@ -188,6 +188,8 @@ public:
   std::shared_ptr<std::chrono::time_point<std::chrono::system_clock>>
   GetNextRelootMoment() const;
 
+  bool RunChangeFormTransaction(const std::function<bool()>& action);
+
   virtual MpChangeForm GetChangeForm() const;
   virtual void ApplyChangeForm(const MpChangeForm& changeForm);
   const DynamicFields& GetDynamicFields() const;

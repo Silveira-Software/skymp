@@ -39,6 +39,7 @@ export class SrpCapsNegotiation {
 
     reset() {
         this.pendingNonce = null;
+        this.identity = null;
         this.active = new Set();
     }
 
@@ -54,6 +55,9 @@ export class SrpCapsNegotiation {
         }
         const common = SRP_CAPS_CLIENT_FEATURES.filter((f) => features.indexOf(f) !== -1);
         this.pendingNonce = nonce;
+        this.pendingVersion = Math.max(...versions);
+        this.pendingFeatures = common;
+        this.identity = typeof data["profileId"] === "string" && typeof data["characterId"] === "string" ? { profileId: data["profileId"] as string, characterId: data["characterId"] as string } : null;
         return { srpBridge: 1, type: "srp:capsAck", data: { v: Math.max(...versions), features: common, nonce } };
     }
 
@@ -63,12 +67,16 @@ export class SrpCapsNegotiation {
         }
         this.pendingNonce = null;
         const features = data["features"];
-        if (typeof data["v"] !== "number" || data["v"] < 1 || !Array.isArray(features)) {
+        if (data["v"] !== this.pendingVersion || !Array.isArray(features) || features.some(f => this.pendingFeatures.indexOf(f) === -1)) {
             return;
         }
         this.active = new Set(SRP_CAPS_CLIENT_FEATURES.filter((f) => features.indexOf(f) !== -1));
     }
 
+    getIdentity() { return this.identity; }
+    private identity: { profileId: string; characterId: string } | null = null;
+    private pendingVersion = 0;
+    private pendingFeatures: string[] = [];
     private pendingNonce: string | null = null;
     private active = new Set<string>();
 }

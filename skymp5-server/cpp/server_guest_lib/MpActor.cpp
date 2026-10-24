@@ -16,6 +16,7 @@
 #include "SpSnippetFunctionGen.h"
 #include "WorldState.h"
 #include "gamemode_events/DeathEvent.h"
+#include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/DropItemEvent.h"
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/ReadBookEvent.h"
@@ -478,6 +479,29 @@ bool MpActor::OnEquip(uint32_t baseId)
 
 bool MpActor::OnEquip(uint32_t baseId, const std::string& opId)
 {
+  if (opId.empty()) return OnEquipImpl(baseId, opId);
+  // JS projections are outside ChangeForm rollback. Notify the gamemode only
+  // after the native boundary is closed, including an exception after onEatItem.
+  auto notify = [&](bool accepted) {
+    CustomEvent event(GetFormId(), "onConsumptionTransaction",
+                      nlohmann::json::array({opId, accepted, baseId}).dump());
+    event.Fire(GetParent());
+  };
+  bool accepted = false;
+  try {
+    accepted = RunChangeFormTransaction([&] { return OnEquipImpl(baseId, opId); });
+  } catch (...) {
+    notify(false);
+    SendInventoryUpdate();
+    throw;
+  }
+  notify(accepted);
+  if (!accepted) SendInventoryUpdate();
+  return accepted;
+}
+
+bool MpActor::OnEquipImpl(uint32_t baseId, const std::string& opId)
+{
   const auto& espm = GetParent()->GetEspm();
   auto lookupRes = espm.GetBrowser().LookupById(baseId);
 
@@ -491,6 +515,11 @@ bool MpActor::OnEquip(uint32_t baseId, const std::string& opId)
   const bool isBook = recordType == "BOOK";
   const bool isIngredient = recordType == "INGR";
   const bool isPotion = recordType == "ALCH";
+  if ((isIngredient || isPotion) && opId.empty() &&
+      ChangeForm().dynamicFields.GetAsJson().value("srpTransactionalConsumeRequired", false)) {
+    return false; // older clients can use the SRP bag; never debit a legacy equip silently
+  }
+
 
   bool isTorch = false;
   if (espm::utils::Is<espm::LIGH>(recordType)) {
@@ -521,9 +550,9 @@ bool MpActor::OnEquip(uint32_t baseId, const std::string& opId)
   bool spellLearned = false;
   if (isIngredient || isPotion) {
     const bool applied = EatItem(baseId, recordType, opId);
-    if (!applied && !opId.empty()) {
-      // The gamemode already has a receipt for this opId: a resend of an
-      // intent that was consumed before. Keep the item and skip the effect.
+    if (!applied) {
+      // Honor every gamemode veto, including legacy packets received before
+      // the per-character transactional marker is installed.
       return false;
     }
 

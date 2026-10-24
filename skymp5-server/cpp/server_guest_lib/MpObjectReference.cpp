@@ -1,4 +1,6 @@
 #include "MpObjectReference.h"
+#include <unordered_set>
+static thread_local std::unordered_set<const MpObjectReference*> srpConsumptionTransactions;
 #include "ChangeFormGuard.h"
 #include "EvaluateTemplate.h"
 #include "FormCallbacks.h"
@@ -1853,6 +1855,7 @@ void MpObjectReference::InitListenersAndEmitters()
 
 void MpObjectReference::SendInventoryUpdate()
 {
+  if (srpConsumptionTransactions.count(this)) return;
   constexpr int kChannelSetInventory = 0;
   auto actor = AsActor();
   if (actor) {
@@ -2074,4 +2077,28 @@ float MpObjectReference::GetTotalItemWeight() const
   };
 
   return std::accumulate(entries.begin(), entries.end(), 0.f, calculateWeight);
+}
+
+// Consumption-only synchronous boundary. No Tick/storage dispatch occurs inside
+// this callback. Failed writes/veto restore the original ChangeForm and leave
+// the previously queued save unchanged. External side effects are not rolled back.
+bool MpObjectReference::RunChangeFormTransaction(const std::function<bool()>& action)
+{
+  if (blockSaving) throw std::runtime_error("nested_changeform_transaction");
+  const auto before = ChangeForm();
+  blockSaving = true;
+  srpConsumptionTransactions.insert(this);
+  try {
+    const bool accepted = action();
+    if (!accepted) EditChangeForm([&](MpChangeForm& cf) { cf = before; }, ChangeFormGuard::Mode::NoRequestSave);
+    blockSaving = false;
+    srpConsumptionTransactions.erase(this);
+    if (accepted) { ChangeFormGuard_::RequestSave(this); SendInventoryUpdate(); }
+    return accepted;
+  } catch (...) {
+    EditChangeForm([&](MpChangeForm& cf) { cf = before; }, ChangeFormGuard::Mode::NoRequestSave);
+    blockSaving = false;
+    srpConsumptionTransactions.erase(this);
+    throw;
+  }
 }
