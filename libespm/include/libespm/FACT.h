@@ -59,13 +59,18 @@ public:
   };
   static_assert(sizeof(CrimeGold) == 12);
 
+#pragma pack(push)
+#pragma pack()
   struct Rank
   {
     uint32_t rankId = 0;
     std::optional<uint32_t> maleTitle;
     std::optional<uint32_t> femaleTitle;
   };
+#pragma pack(pop)
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     // fullName is lstring = uint - id in String Table (4 byte length)
@@ -83,6 +88,10 @@ public:
     // vendor items skipped
     std::vector<CTDA> conditions;
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::interfactionRelations)));
+  static_assert(alignof(Data) >= alignof(decltype(Data::ranks)));
+  static_assert(alignof(Data) >= alignof(decltype(Data::conditions)));
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;
 };

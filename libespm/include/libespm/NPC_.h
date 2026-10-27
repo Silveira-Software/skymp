@@ -13,11 +13,14 @@ class NPC_ final : public RecordHeader
 public:
   static constexpr auto kType = "NPC_";
 
+#pragma pack(push)
+#pragma pack()
   struct Faction
   {
     uint32_t formId = 0;
     int8_t rank = 0;
   };
+#pragma pack(pop)
 
   enum TemplateFlags : uint16_t
   {
@@ -57,6 +60,8 @@ public:
     UseKeywords = 0x1000
   };
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     uint32_t defaultOutfitId = 0;
@@ -80,6 +85,10 @@ public:
     uint16_t templateDataFlags = 0;
     uint32_t deathItem = 0;
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::spells)));
+  static_assert(alignof(Data) >= alignof(decltype(Data::objects)));
+  static_assert(alignof(Data) >= alignof(decltype(Data::factions)));
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;
 };

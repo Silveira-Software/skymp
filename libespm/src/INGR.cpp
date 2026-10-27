@@ -1,4 +1,5 @@
 #include "libespm/INGR.h"
+#include "libespm/ReadUnaligned.h"
 #include "libespm/IterateFields.h"
 #include "libespm/RecordHeaderAccess.h"
 #include <cstring>
@@ -12,10 +13,10 @@ INGR::Data INGR::GetData(
   result.effects = Effects(this).GetData(compressedFieldsCache).effects;
   RecordHeaderAccess::IterateFields(
     this,
-    [&](const char* type, uint32_t size, const char* data) {
+    [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "DATA", 4)) {
-        result.itemData.value = *reinterpret_cast<const uint32_t*>(data);
-        result.itemData.weight = *reinterpret_cast<const float*>(data + 0x4);
+        result.itemData.value = ReadFieldScalar<uint32_t>(data, dataSize);
+        result.itemData.weight = ReadFieldScalar<float>(data, dataSize, 0x4);
       }
     },
     compressedFieldsCache);

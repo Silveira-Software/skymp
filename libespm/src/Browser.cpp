@@ -8,6 +8,7 @@
 #include "libespm/GroupDataInternal.h"
 #include "libespm/GroupUtils.h"
 #include "libespm/KYWD.h"
+#include "libespm/LCTN.h"
 #include "libespm/NAVM.h"
 #include "libespm/NavMeshKey.h"
 #include "libespm/QUST.h"
@@ -30,6 +31,7 @@ struct Browser::Impl
 
   const char* buf = nullptr;
   size_t length = 0;
+  size_t readLimit = 0;
 
   size_t pos = 0;
   uint32_t fiDataSizeOverride = 0;
@@ -44,6 +46,7 @@ struct Browser::Impl
   std::vector<const RecordHeader*> objectReferences;
   std::vector<const RecordHeader*> constructibleObjects;
   std::vector<const RecordHeader*> keywords;
+  std::vector<const RecordHeader*> locations;
   std::vector<const RecordHeader*> factions;
   std::vector<const RecordHeader*> quests;
   std::vector<const RecordHeader*> worlds;
@@ -83,6 +86,7 @@ Browser::Browser(const void* fileContent, size_t length)
 {
   pImpl->buf = static_cast<const char*>(fileContent);
   pImpl->length = length;
+  pImpl->readLimit = length;
   while (ReadAny(nullptr))
     ;
   pImpl->dummyCache.data.clear();
@@ -122,6 +126,9 @@ const std::vector<const RecordHeader*>& Browser::GetRecordsByType(
   if (!std::strcmp(type, espm::KYWD::kType)) {
     return pImpl->keywords;
   }
+  if (!std::strcmp(type, espm::LCTN::kType)) {
+    return pImpl->locations;
+  }
   if (!std::strcmp(type, espm::FACT::kType)) {
     return pImpl->factions;
   }
@@ -135,7 +142,8 @@ const std::vector<const RecordHeader*>& Browser::GetRecordsByType(
     return pImpl->cells;
   }
   throw std::runtime_error("GetRecordsByType currently supports only REFR, "
-                           "COBJ, KYWD, FACT, QUST, WRLD and CELL records");
+                           "COBJ, KYWD, LCTN, FACT, QUST, WRLD and CELL "
+                           "records");
 }
 
 const std::vector<const RecordHeader*>& Browser::GetRecordsAtPos(
@@ -184,17 +192,27 @@ const std::vector<const void*>& Browser::GetSubsEnsured(
 
 bool Browser::ReadAny(const GroupStack* parentGrStack)
 {
-  if (pImpl->pos >= pImpl->length) {
+  if (pImpl->pos == pImpl->readLimit) {
     return false;
   }
-
-  const char* pType = static_cast<const char*>(pImpl->buf + pImpl->pos);
-  pImpl->pos += 4;
-  const uint32_t* pDataSize =
-    reinterpret_cast<const uint32_t*>(pImpl->buf + pImpl->pos);
-  pImpl->pos += 4;
-
+  if (pImpl->pos > pImpl->readLimit ||
+      pImpl->readLimit > pImpl->length) {
+    throw std::runtime_error("espm::Browser: invalid read boundary");
+  }
+  const size_t start = pImpl->pos;
+  const size_t remaining = pImpl->readLimit - start;
+  if (remaining < 24) {
+    throw std::runtime_error("espm::Browser: truncated record/group header");
+  }
+  const char* pType = pImpl->buf + start;
+  uint32_t dataSize = 0;
+  std::memcpy(&dataSize, pType + 4, sizeof(dataSize));
   const bool isGrup = !std::memcmp(pType, "GRUP", 4);
+  if ((isGrup && (dataSize < 24 || dataSize > remaining)) ||
+      (!isGrup && dataSize > remaining - 24)) {
+    throw std::runtime_error("espm::Browser: record/group exceeds boundary");
+  }
+  pImpl->pos += 8;
   if (isGrup) {
     // Read group header
     const auto grHeader =
@@ -205,7 +223,9 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
     pImpl->groupDataByGroupPtr.emplace(grHeader, grData);
 
     pImpl->pos += sizeof(GroupHeader);
-    const size_t end = pImpl->pos + *pDataSize - 24;
+    const size_t end = start + dataSize;
+    const size_t parentLimit = pImpl->readLimit;
+    pImpl->readLimit = end;
 
     pImpl->grStack.push_back(grHeader);
     auto p = new GroupStack(pImpl->grStack);
@@ -217,13 +237,15 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
       }
     }
     pImpl->grStack.pop_back();
+    pImpl->readLimit = parentLimit;
   } else {
     // Read record header
     const auto recHeader =
       reinterpret_cast<const RecordHeader*>(pImpl->buf + pImpl->pos);
     pImpl->groupStackByRecordPtr.emplace(recHeader, parentGrStack);
 
-    pImpl->recById[recHeader->id] = recHeader;
+    const uint32_t recordId = recHeader->GetId();
+    pImpl->recById[recordId] = recHeader;
 
     Type t = recHeader->GetType();
     if (utils::Is<espm::REFR>(t) || utils::Is<espm::ACHR>(t)) {
@@ -248,6 +270,10 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
 
     if (utils::Is<espm::KYWD>(t)) {
       pImpl->keywords.push_back(recHeader);
+    }
+
+    if (utils::Is<espm::LCTN>(t)) {
+      pImpl->locations.push_back(recHeader);
     }
 
     if (utils::Is<espm::FACT>(t)) {
@@ -275,7 +301,7 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
       pImpl->cells.push_back(recHeader);
     }
 
-    pImpl->pos += sizeof(RecordHeader) + *pDataSize;
+    pImpl->pos += sizeof(RecordHeader) + dataSize;
   }
   return true;
 }

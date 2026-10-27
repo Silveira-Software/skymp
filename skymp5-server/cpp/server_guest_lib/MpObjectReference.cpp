@@ -32,6 +32,10 @@ static thread_local std::unordered_set<const MpObjectReference*> srpConsumptionT
 #include <TimeUtils.h>
 #include <antigo/Context.h>
 #include <antigo/ResolvedContext.h>
+#include <cstddef>
+#include <cstring>
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -152,7 +156,15 @@ private:
 namespace {
 std::pair<int16_t, int16_t> GetGridPos(const NiPoint3& pos) noexcept
 {
-  return { int16_t(pos.x / 4096), int16_t(pos.y / 4096) };
+  const auto coordinate = [](float value) -> int16_t {
+    const double grid = static_cast<double>(value) / 4096.0;
+    if (!std::isfinite(grid)) {
+      return 0;
+    }
+    // Keep the existing int16_t neighbor loops inside their increment range.
+    return static_cast<int16_t>(std::clamp(grid, -32767.0, 32765.0));
+  };
+  return { coordinate(pos.x), coordinate(pos.y) };
 }
 }
 
@@ -688,12 +700,17 @@ void MpObjectReference::ForceSubscriptionsUpdate()
   if (!worldState || IsDisabled()) {
     return;
   }
-  InitListenersAndEmitters();
-
   auto worldOrCell = GetCellOrWorld().ToFormId(worldState->espmFiles);
 
   auto& gridInfo = worldState->grids[worldOrCell];
   MoveOnGrid(*gridInfo.grid);
+
+  if (worldState->IsFormLoadingInProgress()) {
+    everSubscribedOrListened = true;
+    return;
+  }
+
+  InitListenersAndEmitters();
 
   auto& was = *this->listeners;
   auto pos = GetGridPos(GetPos());
@@ -1488,10 +1505,21 @@ void MpObjectReference::ProcessActivateNormal(
         GetWorldOrCell(loader.GetBrowser(), destinationRecord));
 
       static const auto kPi = std::acos(-1.f);
-      const auto& pos = teleport->pos;
-      const float rot[] = { teleport->rotRadians[0] / kPi * 180,
-                            teleport->rotRadians[1] / kPi * 180,
-                            teleport->rotRadians[2] / kPi * 180 };
+      // XTEL fields are packed on disk and need not be float-aligned.
+      // Copy the coordinate bytes before binding references or using ranges.
+      std::array<float, 3> pos;
+      std::array<float, 3> rotRadians;
+      const auto* teleportBytes = reinterpret_cast<const char*>(teleport);
+      std::memcpy(pos.data(),
+                  teleportBytes + offsetof(espm::REFR::DoorTeleport, pos),
+                  sizeof(pos));
+      std::memcpy(
+        rotRadians.data(),
+        teleportBytes + offsetof(espm::REFR::DoorTeleport, rotRadians),
+        sizeof(rotRadians));
+      const float rot[] = { rotRadians[0] / kPi * 180,
+                            rotRadians[1] / kPi * 180,
+                            rotRadians[2] / kPi * 180 };
 
       TeleportMessage msg;
       msg.idx = activationSource.GetIdx();
@@ -1511,7 +1539,11 @@ void MpObjectReference::ProcessActivateNormal(
     } else {
       SetOpen(!IsOpen());
     }
-  } else if (t == espm::CONT::kType && actorActivator) {
+  } else if ((t == espm::CONT::kType ||
+              (t == espm::NPC_::kType && AsActor() && AsActor()->IsDead())) &&
+             actorActivator) {
+    // Dead actors use the same authoritative inventory and occupancy checks
+    // as containers. Living actors remain outside the loot path.
     EnsureBaseContainerAdded(loader);
 
     constexpr float kOccupationReach = 512.f;
@@ -1588,7 +1620,9 @@ bool MpObjectReference::ProcessActivateSecond(
 
   auto t = base.rec->GetType();
 
-  if (t == espm::CONT::kType && actorActivator) {
+  if ((t == espm::CONT::kType || t == espm::NPC_::kType) &&
+      actorActivator) {
+    // Release a corpse's occupant even if it respawned while the menu was open.
     if (this->occupant == &activationSource) {
       SetOpen(false);
       this->occupant->RemoveEventSink(this->occupantDestroySink);
@@ -2042,8 +2076,9 @@ void MpObjectReference::BeforeDestroy()
     this->occupant->RemoveEventSink(this->occupantDestroySink);
   }
 
-  // Move far far away calling OnTriggerExit, unsubscribing, etc
-  SetPos({ -1'000'000'000, 0, 0 });
+  // Move far away calling OnTriggerExit and unsubscribing. Keep the sentinel
+  // within the int16_t grid range before GetGridPos converts coordinates.
+  SetPos({ -100'000'000, 0, 0 });
 
   MpForm::BeforeDestroy();
 

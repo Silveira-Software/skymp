@@ -85,17 +85,24 @@ public:
 
   static_assert(sizeof(EFIT) == 12);
 
+#pragma pack(push)
+#pragma pack()
   struct Effect
   {
     uint32_t effectFormId = 0;
     const EFIT* effectItem = nullptr;
   };
+#pragma pack(pop)
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     const SPITData* spellItem = nullptr;
     std::vector<Effect> effects{};
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::effects)));
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;
 };

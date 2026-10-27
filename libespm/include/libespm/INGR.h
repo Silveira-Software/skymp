@@ -17,11 +17,15 @@ public:
     float weight;
   };
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     ItemData itemData;
     std::vector<Effects::Effect> effects;
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::effects)));
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;
 };

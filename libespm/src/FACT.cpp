@@ -1,4 +1,5 @@
 #include "libespm/FACT.h"
+#include "libespm/ReadUnaligned.h"
 #include "libespm/RecordHeaderAccess.h"
 #include <cstring>
 
@@ -12,39 +13,39 @@ FACT::Data FACT::GetData(
     this,
     [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "FULL", 4)) {
-        result.fullNameTableID = *reinterpret_cast<const uint32_t*>(data);
+        result.fullNameTableID = ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "XNAM", 4)) {
         const auto relation =
-          *reinterpret_cast<const InterfactionRelation*>(data);
+          ReadFieldScalar<InterfactionRelation>(data, dataSize);
         result.interfactionRelations.push_back(relation);
       } else if (!std::memcmp(type, "DATA", 4)) {
-        result.flags = *reinterpret_cast<const Flags*>(data);
+        result.flags = ReadFieldScalar<Flags>(data, dataSize);
       } else if (!std::memcmp(type, "JAIL", 4)) {
-        result.prisonMarker = *reinterpret_cast<const uint32_t*>(data);
+        result.prisonMarker = ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "WAIT", 4)) {
-        result.followerWaitMarker = *reinterpret_cast<const uint32_t*>(data);
+        result.followerWaitMarker = ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "STOL", 4)) {
-        result.evidenceChest = *reinterpret_cast<const uint32_t*>(data);
+        result.evidenceChest = ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "PLCN", 4)) {
         result.playerBelongingsChest =
-          *reinterpret_cast<const uint32_t*>(data);
+          ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "CRGR", 4)) {
-        result.crimeGroup = *reinterpret_cast<const uint32_t*>(data);
+        result.crimeGroup = ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "JOUT", 4)) {
-        result.jailOutfit = *reinterpret_cast<const uint32_t*>(data);
+        result.jailOutfit = ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "CRVA", 4)) {
-        result.crimeGold = *reinterpret_cast<const CrimeGold*>(data);
+        result.crimeGold = ReadFieldScalar<CrimeGold>(data, dataSize);
       } else if (!std::memcmp(type, "RNAM", 4)) {
         result.ranks.push_back(espm::FACT::Rank());
-        result.ranks.back().rankId = *reinterpret_cast<const uint32_t*>(data);
+        result.ranks.back().rankId = ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "MNAM", 4)) {
         result.ranks.back().maleTitle =
-          *reinterpret_cast<const uint32_t*>(data);
+          ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "FNAM", 4)) {
         result.ranks.back().femaleTitle =
-          *reinterpret_cast<const uint32_t*>(data);
+          ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "CTDA", 4)) {
-        result.conditions.push_back(*reinterpret_cast<const CTDA*>(data));
+        result.conditions.push_back(ReadFieldScalar<CTDA>(data, dataSize));
       }
     },
     compressedFieldsCache);

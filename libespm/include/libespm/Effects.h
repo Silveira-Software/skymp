@@ -2,7 +2,6 @@
 #include <cstdint>
 #include <vector>
 
-#pragma pack(push, 1)
 
 namespace espm {
 
@@ -34,4 +33,3 @@ public:
 
 }
 
-#pragma pack(pop)

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "ReadUnaligned.h"
 
 namespace espm {
 
@@ -90,12 +91,12 @@ struct CTDA
 
   DefaultData GetDefaultData() const
   {
-    return *reinterpret_cast<const DefaultData*>(functionData);
+    return ReadUnaligned<DefaultData>(functionData);
   }
 
   EventData GetEventData() const
   {
-    return *reinterpret_cast<const EventData*>(functionData);
+    return ReadUnaligned<EventData>(functionData);
   }
 };
 static_assert(sizeof(CTDA) == 32);

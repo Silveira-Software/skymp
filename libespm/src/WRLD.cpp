@@ -1,4 +1,5 @@
 #include "libespm/WRLD.h"
+#include "libespm/ReadUnaligned.h"
 
 #include <algorithm>
 
@@ -12,44 +13,44 @@ WRLD::Data WRLD::GetData(CompressedFieldsCache& cache) const noexcept
   Data result;
   RecordHeaderAccess::IterateFields(
     this,
-    [&](const char* type, uint32_t size, const char* data) {
+    [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "FULL", 4)) {
-        result.localNameIndex = *reinterpret_cast<const lstring*>(data);
+        result.localNameIndex = ReadFieldScalar<lstring>(data, dataSize);
       } else if (!std::memcmp(type, "WCTR", 4)) {
         std::copy_n(data, std::size(result.centerCellXY), result.centerCellXY);
       } else if (!std::memcmp(type, "LTMP", 4)) {
-        result.interiorLightingId = *reinterpret_cast<const formId*>(data);
+        result.interiorLightingId = ReadFieldScalar<formId>(data, dataSize);
       } else if (!std::memcmp(type, "XEZN", 4)) {
-        result.encounterZoneId = *reinterpret_cast<const formId*>(data);
+        result.encounterZoneId = ReadFieldScalar<formId>(data, dataSize);
       } else if (!std::memcmp(type, "XLCN", 4)) {
-        result.exitLocationId = *reinterpret_cast<const formId*>(data);
+        result.exitLocationId = ReadFieldScalar<formId>(data, dataSize);
       } else if (!std::memcmp(type, "CNAM", 4)) {
-        result.climateId = *reinterpret_cast<const formId*>(data);
+        result.climateId = ReadFieldScalar<formId>(data, dataSize);
       } else if (!std::memcmp(type, "NAM2", 4)) {
-        result.waterId = *reinterpret_cast<const formId*>(data);
+        result.waterId = ReadFieldScalar<formId>(data, dataSize);
       } else if (!std::memcmp(type, "NAM3", 4)) {
-        result.waterLODTypeId = *reinterpret_cast<const formId*>(data);
+        result.waterLODTypeId = ReadFieldScalar<formId>(data, dataSize);
       } else if (!std::memcmp(type, "NAM4", 4)) {
-        result.waterLODHeight = *reinterpret_cast<const float*>(data);
+        result.waterLODHeight = ReadFieldScalar<float>(data, dataSize);
       } else if (!std::memcmp(type, "DNAM", 4)) {
         std::copy_n(data, std::size(result.LandData), result.LandData);
       } else if (!std::memcmp(type, "MODL", 4)) {
         result.cloudModelFileName = reinterpret_cast<const char*>(data);
       } else if (!std::memcmp(type, "MNAM", 4)) {
-        if (size == sizeof(WRLD::MapData::MapSize)) {
+        if (dataSize == sizeof(WRLD::MapData::MapSize)) {
           result.mapData.mapSize =
-            *reinterpret_cast<const WRLD::MapData::MapSize*>(data);
+            ReadFieldScalar<WRLD::MapData::MapSize>(data, dataSize);
         } else {
-          result.mapData = *reinterpret_cast<const WRLD::MapData*>(data);
+          result.mapData = ReadFieldScalar<WRLD::MapData>(data, dataSize);
         }
       } else if (!std::memcmp(type, "NAMA", 4)) {
-        result.distantLODMult = *reinterpret_cast<const float*>(data);
+        result.distantLODMult = ReadFieldScalar<float>(data, dataSize);
       } else if (!std::memcmp(type, "DATA", 4)) {
-        result.flags = *reinterpret_cast<const WRLD::Flags*>(data);
+        result.flags = ReadFieldScalar<WRLD::Flags>(data, dataSize);
       } else if (!std::memcmp(type, "WNAM", 4)) {
-        result.parentWorldspaceId = *reinterpret_cast<const formId*>(data);
+        result.parentWorldspaceId = ReadFieldScalar<formId>(data, dataSize);
       } else if (!std::memcmp(type, "PNAM", 4)) {
-        result.useFlags = *reinterpret_cast<const WRLD::UseParentFlags*>(data);
+        result.useFlags = ReadFieldScalar<WRLD::UseParentFlags>(data, dataSize);
       } else if (!std::memcmp(type, "ONAM", 4)) {
         std::copy_n(data, std::size(result.mapMarkerData),
                     result.mapMarkerData);
@@ -58,7 +59,7 @@ WRLD::Data WRLD::GetData(CompressedFieldsCache& cache) const noexcept
       } else if (!std::memcmp(type, "UNAM", 4)) {
         result.normalLODName = reinterpret_cast<const char*>(data);
       } else if (!std::memcmp(type, "ZNAM", 4)) {
-        result.musicId = *reinterpret_cast<const formId*>(data);
+        result.musicId = ReadFieldScalar<formId>(data, dataSize);
       } else if (!std::memcmp(type, "XWEM", 4)) {
         result.waterEnvMapName = reinterpret_cast<const char*>(data);
       }

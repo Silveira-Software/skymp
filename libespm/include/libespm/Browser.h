@@ -7,7 +7,6 @@
 #include <utility>
 #include <vector>
 
-#pragma pack(push, 1)
 
 namespace espm {
 
@@ -44,4 +43,3 @@ private:
 
 }
 
-#pragma pack(pop)

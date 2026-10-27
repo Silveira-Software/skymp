@@ -20,6 +20,8 @@ public:
 
   static_assert(sizeof(Header) == 12);
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     const Header* header = nullptr;
@@ -27,6 +29,8 @@ public:
     const char* description = "";
     std::vector<const char*> masters;
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::masters)));
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;
 };

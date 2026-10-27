@@ -2,7 +2,6 @@
 #include "Property.h"
 #include <set>
 
-#pragma pack(push, 1)
 
 namespace espm {
 struct Script
@@ -14,4 +13,3 @@ struct Script
 
 }
 
-#pragma pack(pop)

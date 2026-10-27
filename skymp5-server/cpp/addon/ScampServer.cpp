@@ -1,5 +1,6 @@
 #include "ScampServer.h"
 
+#include "AtomicActorSpawnV16.h"
 #include "Bot.h"
 #include "ConditionsEvaluator.h"
 #include "FormCallbacks.h"
@@ -111,6 +112,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("get", &ScampServer::Get),
       InstanceMethod("set", &ScampServer::Set),
       InstanceMethod("place", &ScampServer::Place),
+      InstanceMethod("placeActorAtV16", &ScampServer::PlaceActorAtV16),
       InstanceMethod("lookupEspmRecordById",
                      &ScampServer::LookupEspmRecordById),
       InstanceMethod("getEspmLoadOrder", &ScampServer::GetEspmLoadOrder),
@@ -1073,6 +1075,22 @@ Napi::Value ScampServer::Set(const Napi::CallbackInfo& info)
   }
 }
 
+Napi::Value ScampServer::PlaceActorAtV16(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto baseId = NapiHelper::ExtractUInt32(info[0], "baseId");
+    const auto world = FormDesc::FromString(
+      NapiHelper::ExtractString(info[1], "worldOrCellDesc"));
+    const auto pos = NapiHelper::ExtractNiPoint3(info[2], "position");
+    const auto rot = NapiHelper::ExtractNiPoint3(info[3], "rotation");
+    const auto id = PlaceActorAtV16Native(*partOne, baseId,
+      world.ToFormId(partOne->worldState.espmFiles), pos, rot);
+    return Napi::Number::New(info.Env(), id);
+  } catch (const std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
 Napi::Value ScampServer::Place(const Napi::CallbackInfo& info)
 {
   try {
@@ -1131,7 +1149,10 @@ Napi::Value ScampServer::LookupEspmRecordById(const Napi::CallbackInfo& info)
         lookupRes.rec,
         [&](const char* type, uint32_t size, const char* data) {
           auto uint8arr = Napi::Uint8Array::New(info.Env(), size);
-          memcpy(uint8arr.Data(), data, size);
+          // A zero-length N-API array may have a null data pointer.
+          if (size != 0) {
+            memcpy(uint8arr.Data(), data, size);
+          }
 
           auto field = Napi::Object::New(info.Env());
           field.Set("type",

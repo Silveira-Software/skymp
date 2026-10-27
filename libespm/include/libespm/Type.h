@@ -2,7 +2,6 @@
 #include <cstdint>
 #include <string>
 
-#pragma pack(push, 1)
 
 namespace espm {
 
@@ -22,4 +21,3 @@ private:
 
 }
 
-#pragma pack(pop)

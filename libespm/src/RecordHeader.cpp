@@ -1,4 +1,5 @@
 #include "libespm/RecordHeader.h"
+#include "libespm/ReadUnaligned.h"
 #include "libespm/RecordHeaderAccess.h"
 #include "libespm/ScriptData.h"
 #include "libespm/Utils.h"
@@ -49,15 +50,15 @@ void RecordHeader::GetScriptData(
     this,
     [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "VMAD", 4)) {
-        res.version = *reinterpret_cast<const uint16_t*>(data);
-        res.objFormat = *reinterpret_cast<const uint16_t*>(
-          (reinterpret_cast<const uint8_t*>(data) + 2));
-        const uint16_t scriptCount = *reinterpret_cast<const uint16_t*>(
-          (reinterpret_cast<const uint8_t*>(data) + 4));
+        res.version = ReadFieldScalar<uint16_t>(data, dataSize);
+        res.objFormat = ReadFieldScalar<uint16_t>(data, dataSize, 2);
+        const uint16_t scriptCount = ReadFieldScalar<uint16_t>(data, dataSize, 4);
 
         auto p = reinterpret_cast<const uint8_t*>(data) + 6;
         res.scripts.resize(scriptCount);
-        utils::FillScriptArray(p, res.scripts, res.objFormat);
+        utils::FillScriptArray(
+          p, res.scripts, res.objFormat,
+          reinterpret_cast<const uint8_t*>(data) + dataSize);
       }
     },
     compressedFieldsCache);
@@ -75,11 +76,15 @@ std::vector<uint32_t> RecordHeader::GetKeywordIds(
     this,
     [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "KSIZ", 4)) {
-        count = *reinterpret_cast<const uint32_t*>(data);
+        count = ReadFieldScalar<uint32_t>(data, dataSize);
       }
       if (!std::memcmp(type, "KWDA", 4)) {
+        if (count > dataSize / sizeof(uint32_t)) {
+          throw std::runtime_error("espm: truncated keyword array");
+        }
         for (uint32_t i = 0; i < count; ++i)
-          res.push_back(reinterpret_cast<const uint32_t*>(data)[i]);
+          res.push_back(ReadFieldScalar<uint32_t>(
+            data, dataSize, static_cast<size_t>(i) * sizeof(uint32_t)));
       }
     },
     compressedFieldsCache);
@@ -90,7 +95,7 @@ std::vector<uint32_t> RecordHeader::GetKeywordIds(
 uint32_t RecordHeader::GetFieldsSizeSum() const noexcept
 {
   const auto ptr = (reinterpret_cast<const int8_t*>(this)) - 4;
-  return *reinterpret_cast<const uint32_t*>(ptr);
+  return ReadUnaligned<uint32_t>(ptr);
 }
 
 }

@@ -47,6 +47,8 @@ public:
     kAvoidsRoads = 0x80000000
   };
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     uint32_t flags = 0;
@@ -61,6 +63,8 @@ public:
 
     std::set<uint32_t> spells = {};
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::spells)));
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;
 };

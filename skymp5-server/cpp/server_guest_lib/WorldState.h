@@ -78,6 +78,8 @@ public:
   void LoadChangeForm(const MpChangeForm& changeForm,
                       const FormCallbacks& callbacks);
 
+  bool IsFormLoadingInProgress() const;
+
   void Tick();
 
   void RequestReloot(MpObjectReference& ref,

@@ -1,7 +1,6 @@
 #pragma once
 #include "Script.h"
 
-#pragma pack(push, 1)
 
 namespace espm {
 
@@ -14,4 +13,3 @@ struct ScriptData
 
 }
 
-#pragma pack(pop)
