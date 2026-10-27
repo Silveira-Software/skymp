@@ -82,6 +82,19 @@ VarValue PapyrusActor::RestoreActorValue(
   return VarValue();
 }
 
+VarValue PapyrusActor::GetActorValue(VarValue self, const std::vector<VarValue>& arguments)
+{
+  if (arguments.size() != 1) throw std::runtime_error("GetActorValue requires one name");
+  auto actor = GetFormPtr<MpActor>(self);
+  if (!actor) return VarValue(0.f);
+  const auto av = ConvertToAV(static_cast<const char*>(arguments[0]));
+  if (av == espm::ActorValue::None) return VarValue(); // unsupported is not a fabricated zero
+  const auto maximum = actor->GetMaximumValues().GetValue(av);
+  const auto& values = actor->GetActorValues();
+  const float pct = av == espm::ActorValue::Health ? values.healthPercentage : av == espm::ActorValue::Magicka ? values.magickaPercentage : values.staminaPercentage;
+  return VarValue(maximum * pct);
+}
+
 VarValue PapyrusActor::SetActorValue(VarValue self,
                                      const std::vector<VarValue>& arguments)
 {
@@ -763,6 +776,7 @@ void PapyrusActor::Register(
   AddMethod(vm, "GetSitState", &PapyrusActor::GetSitState);
   AddMethod(vm, "RestoreActorValue", &PapyrusActor::RestoreActorValue);
   AddMethod(vm, "SetActorValue", &PapyrusActor::SetActorValue);
+  AddMethod(vm, "GetActorValue", &PapyrusActor::GetActorValue);
   AddMethod(vm, "DamageActorValue", &PapyrusActor::DamageActorValue);
   AddMethod(vm, "IsEquipped", &PapyrusActor::IsEquipped);
   AddMethod(vm, "GetActorValuePercentage",

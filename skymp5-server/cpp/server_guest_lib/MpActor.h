@@ -171,8 +171,9 @@ public:
   // rewritten
   void SetActorValues(const ActorValues& actorValues);
 
-  BaseActorValues GetBaseValues();
-  BaseActorValues GetMaximumValues();
+  BaseActorValues GetBaseValues() const;
+  BaseActorValues GetMaximumValues() const;
+  void ApplySrpActorStats(const nlohmann::json& input);
 
   void DropItem(const uint32_t baseId, const Inventory::Entry& entry);
   void SetIsBlockActive(bool isBlockActive);
