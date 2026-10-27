@@ -174,6 +174,8 @@ public:
   BaseActorValues GetBaseValues() const;
   BaseActorValues GetMaximumValues() const;
   void ApplySrpActorStats(const nlohmann::json& input);
+  void ReconcileSrpMaximums(const ActorValues& before);
+  friend struct SrpActorModifiers;
 
   void DropItem(const uint32_t baseId, const Inventory::Entry& entry);
   void SetIsBlockActive(bool isBlockActive);

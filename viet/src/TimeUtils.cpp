@@ -17,9 +17,11 @@ std::string TimeUtils::ToString(
 std::chrono::system_clock::time_point TimeUtils::SystemTimeFrom(
   const std::string& timestamp)
 {
-  std::tm tm;
+  std::tm tm{};
+  tm.tm_isdst = -1;
   std::istringstream ss{ timestamp };
   ss >> std::get_time(&tm, "%c");
+  if(ss.fail())throw std::runtime_error("Invalid persisted timestamp");
   return std::chrono::system_clock::from_time_t(std::mktime(&tm));
 }
 

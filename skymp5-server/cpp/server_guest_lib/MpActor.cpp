@@ -1,5 +1,6 @@
 #include "MpActor.h"
 #include "SrpActorStats.h"
+#include "SrpActorModifiers.h"
 #include "ActiveMagicEffectsMap.h"
 #include "ActorValues.h"
 #include "ChangeFormGuard.h"
@@ -195,16 +196,20 @@ void MpActor::EquipBestWeapon()
 
 void MpActor::AddSpell(const uint32_t spellId)
 {
+  const auto before=GetActorValues();
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.learnedSpells.LearnSpell(spellId);
   });
+  if(SrpActorModifiers::Managed(*this))ReconcileSrpMaximums(before);
 }
 
 void MpActor::RemoveSpell(const uint32_t spellId)
 {
+  const auto before=GetActorValues();
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.learnedSpells.ForgetSpell(spellId);
   });
+  if(SrpActorModifiers::Managed(*this))ReconcileSrpMaximums(before);
 }
 
 void MpActor::SetLastAnimEvent(
@@ -236,8 +241,10 @@ void MpActor::SetAppearance(const Appearance* newAppearance)
 
 void MpActor::SetEquipment(const Equipment& newEquipment)
 {
+  const auto before = GetActorValues();
   EditChangeForm(
     [&](MpChangeForm& changeForm) { changeForm.equipment = newEquipment; });
+  if (SrpActorModifiers::Managed(*this)) ReconcileSrpMaximums(before);
 }
 
 void MpActor::SetHealthRespawnPercentage(float percentage)
@@ -644,7 +651,18 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
       if (GetParent() && GetParent()->HasEspm()) {
         EnsureTemplateChainEvaluated(GetParent()->GetEspm(),
                                      Mode::NoRequestSave);
-        const auto persistedValues = changeForm.actorValues;
+        auto persistedValues = changeForm.actorValues;
+        if(changeForm.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty)){
+          const auto& fields=changeForm.dynamicFields.GetAsJson();
+          const auto legacy=SrpActorStats::Read(*this).ComposeMaximums(GetBaseValues());
+          persistedValues.health=legacy.health;persistedValues.magicka=legacy.magicka;persistedValues.stamina=legacy.stamina;
+          if(fields.contains("private.srpResourceMaximumsV1")){
+            const auto& snapshot=fields.at("private.srpResourceMaximumsV1");
+            if(snapshot.at("schemaVersion")!=1)throw std::runtime_error("SRP_RESOURCE_SNAPSHOT_VERSION");
+            auto read=[&](const char* key,float minimum){const float value=snapshot.at(key).get<float>();if(!std::isfinite(value)||value<minimum||value>100000)throw std::runtime_error("SRP_RESOURCE_SNAPSHOT_CORRUPT");return value;};
+            persistedValues.health=read("health",1);persistedValues.magicka=read("magicka",0);persistedValues.stamina=read("stamina",1);
+          }
+        }
         changeForm.actorValues = GetBaseActorValues(
           GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
         if (changeForm.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty)) {
@@ -652,9 +670,9 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
           changeForm.actorValues.health = maximum.health;
           changeForm.actorValues.magicka = maximum.magicka;
           changeForm.actorValues.stamina = maximum.stamina;
-          changeForm.actorValues.healthPercentage = persistedValues.healthPercentage;
-          changeForm.actorValues.magickaPercentage = persistedValues.magickaPercentage;
-          changeForm.actorValues.staminaPercentage = persistedValues.staminaPercentage;
+          changeForm.actorValues.healthPercentage = std::clamp(persistedValues.healthPercentage*persistedValues.health/std::max(maximum.health,1.f),0.f,1.f);
+          changeForm.actorValues.magickaPercentage = std::clamp(persistedValues.magickaPercentage*persistedValues.magicka/std::max(maximum.magicka,1.f),0.f,1.f);
+          changeForm.actorValues.staminaPercentage = std::clamp(persistedValues.staminaPercentage*persistedValues.stamina/std::max(maximum.stamina,1.f),0.f,1.f);
         }
       }
     },
@@ -1634,7 +1652,8 @@ BaseActorValues MpActor::GetBaseValues() const
 
 BaseActorValues MpActor::GetMaximumValues() const
 {
-  return SrpActorStats::Read(*this).ComposeMaximums(GetBaseValues());
+  const auto permanent=SrpActorStats::Read(*this).ComposeMaximums(GetBaseValues());
+  return SrpActorModifiers::Managed(*this)?SrpActorModifiers::Read(*this).Compose(permanent):permanent;
 }
 
 // Inserted into MpActor.cpp by the frozen-source patcher.
@@ -1665,7 +1684,9 @@ void MpActor::ApplySrpActorStats(const nlohmann::json& input)
     return;
   }
   const auto oldMaximums = GetMaximumValues();
-  const auto newMaximums = proposed.ComposeMaximums(GetBaseValues());
+  const auto modifiers=SrpActorModifiers::Read(*this,true);
+  if(proposed.enabled&&!modifiers.complete)throw std::runtime_error("SRP_MODIFIER_CONDITIONS_REQUIRE_REVIEW");
+  const auto newMaximums = modifiers.Compose(proposed.ComposeMaximums(GetBaseValues()));
   auto values = GetActorValues();
   const auto keepAbsolute = [](float percentage, float oldMax, float newMax) {
     return std::clamp(percentage * oldMax / std::max(newMax, 1.f), 0.f, 1.f);
@@ -1908,6 +1929,19 @@ void MpActor::SetActorValues(const ActorValues& actorValues)
     [&](MpChangeForm& changeForm) { changeForm.actorValues = actorValues; });
 }
 
+void MpActor::ReconcileSrpMaximums(const ActorValues& before)
+{
+  const auto maximum=GetMaximumValues();auto values=GetActorValues();
+  if(maximum.health==before.health&&maximum.magicka==before.magicka&&maximum.stamina==before.stamina)return;
+  auto keep=[](float pct,float oldMax,float newMax){return std::clamp(pct*oldMax/std::max(newMax,1.f),0.f,1.f);};
+  values.healthPercentage=keep(before.healthPercentage,before.health,maximum.health);
+  values.magickaPercentage=keep(before.magickaPercentage,before.magicka,maximum.magicka);
+  values.staminaPercentage=keep(before.staminaPercentage,before.stamina,maximum.stamina);
+  values.health=maximum.health;values.magicka=maximum.magicka;values.stamina=maximum.stamina;
+  EditChangeForm([&](MpChangeForm& form){form.actorValues=values;});
+  NetSendChangeValues(values,std::nullopt);
+}
+
 void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
                                bool durationOverriden)
 {
@@ -1931,6 +1965,8 @@ void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
   const espm::MGEF::EffectType type = data.effectType;
   spdlog::trace("Actor value in ApplyMagicEffect(): {}",
                 static_cast<std::underlying_type_t<espm::ActorValue>>(av));
+
+  if (SrpActorModifiers::Apply(*this,effect,durationOverriden)) return;
 
   const bool isValue = av == espm::ActorValue::Health ||
     av == espm::ActorValue::Stamina || av == espm::ActorValue::Magicka;
@@ -1964,7 +2000,7 @@ void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
     std::chrono::system_clock::time_point endTime;
     std::chrono::milliseconds duration;
     if (durationOverriden) {
-      std::optional effect = GetChangeForm().activeMagicEffects.Get(av);
+      std::optional effect = GetActiveMagicEffects().Get(av);
       if (!effect.has_value()) {
         spdlog::error(
           "MpActor with formId {:x} has no magic effect affecting "
@@ -1983,10 +2019,13 @@ void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
         Viet::TimeUtils::To<std::chrono::milliseconds>(effect.duration);
     }
     uint32_t timerId;
+    std::weak_ptr<MpForm> timerOwner=worldState->LookupFormByIdNoLoad(formId);
     worldState->SetEffectTimer(duration, &timerId)
-      .Then([formId, actorValue = av, worldState](Viet::Void) {
-        auto& actor = worldState->GetFormAt<MpActor>(formId);
-        actor.RemoveMagicEffect(actorValue);
+      .Then([formId, actorValue = av, worldState,timerOwner,endTime,effectId=effect.effectId](Viet::Void) {
+        auto actor=timerOwner.lock(),current=worldState->LookupFormByIdNoLoad(formId);
+        if(!actor||actor.get()!=current.get()||!actor->AsActor())return;
+        const auto active=actor->AsActor()->GetActiveMagicEffects().Get(actorValue);
+        if(active&&active->get().endTime==endTime&&active->get().data.effectId==effectId)actor->AsActor()->RemoveMagicEffect(actorValue);
       });
 
     ActiveMagicEffectsMap::Entry entry{ timerId, effect, endTime };
@@ -2036,6 +2075,11 @@ void MpActor::ApplyMagicEffects(std::vector<espm::Effects::Effect>& effects,
 void MpActor::RemoveMagicEffect(const espm::ActorValue actorValue)
 {
   try {
+    if(SrpActorModifiers::Managed(*this)&&SrpActorModifiers::Supported(actorValue)){
+      const auto before=GetActorValues();
+      EditChangeForm([&](MpChangeForm& form){form.activeMagicEffects.Remove(actorValue);});
+      ReconcileSrpMaximums(before);return;
+    }
     const ActorValues baseActorValues = GetBaseActorValues(
       GetParent(), GetBaseId(), GetRaceId(), ChangeForm().templateChain);
     const float baseActorValue = baseActorValues.GetValue(actorValue);
@@ -2054,15 +2098,16 @@ void MpActor::RemoveAllMagicEffects()
   try {
     ActorValues baseActorValues = GetBaseActorValues(
       GetParent(), GetBaseId(), GetRaceId(), ChangeForm().templateChain);
-    if (SrpActorStats::Read(*this).enabled) {
-      const auto maximum = GetMaximumValues();
+    if (SrpActorModifiers::Managed(*this)) {
       const auto current = GetActorValues();
+      EditChangeForm([](MpChangeForm& form){form.activeMagicEffects.Clear();});
+      const auto maximum = GetMaximumValues();
       baseActorValues.health = maximum.health;
       baseActorValues.magicka = maximum.magicka;
       baseActorValues.stamina = maximum.stamina;
-      baseActorValues.healthPercentage = current.healthPercentage;
-      baseActorValues.magickaPercentage = current.magickaPercentage;
-      baseActorValues.staminaPercentage = current.staminaPercentage;
+      baseActorValues.healthPercentage = std::clamp(current.healthPercentage*current.health/maximum.health,0.f,1.f);
+      baseActorValues.magickaPercentage = std::clamp(current.magickaPercentage*current.magicka/std::max(maximum.magicka,1.f),0.f,1.f);
+      baseActorValues.staminaPercentage = std::clamp(current.staminaPercentage*current.stamina/maximum.stamina,0.f,1.f);
     }
     SetActorValues(baseActorValues);
     EditChangeForm(

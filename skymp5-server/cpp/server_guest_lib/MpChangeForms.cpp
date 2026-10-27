@@ -42,6 +42,11 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
   res["count"] = changeForm.count;
   res["isRaceMenuOpen"] = changeForm.isRaceMenuOpen;
   res["dynamicFields"] = changeForm.dynamicFields.GetAsJson();
+  // Optional R37 metadata, in the SAME atomic world record as percentages.
+  // Old documents stay readable; they derive the old R36 permanent maximum.
+  if(res["dynamicFields"].contains("private.srpActorStatsV1")){
+    res["dynamicFields"]["private.srpResourceMaximumsV1"]={{"schemaVersion",1},{"health",changeForm.actorValues.health},{"magicka",changeForm.actorValues.magicka},{"stamina",changeForm.actorValues.stamina}};
+  }
 
   if (changeForm.appearanceDump.empty()) {
     res["appearanceDump"] = nullptr;

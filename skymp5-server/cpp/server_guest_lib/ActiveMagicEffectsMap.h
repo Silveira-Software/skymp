@@ -23,7 +23,7 @@ public:
   template <typename T>
   void Add(espm::ActorValue actorValue, T&& entry)
   {
-    auto it = effects.find(actorValue);
+    stacked.erase(actorValue);
     effects[actorValue] = std::forward<T>(entry);
   }
 
@@ -31,6 +31,10 @@ public:
 
   std::optional<std::reference_wrapper<const Entry>> Get(
     espm::ActorValue actorValue) const noexcept;
+  // R37: distinct MGEF identities coexist; recast of one identity replaces it.
+  void AddStacked(espm::ActorValue actorValue, Entry entry);
+  std::optional<std::reference_wrapper<const Entry>> Get(espm::ActorValue actorValue,uint32_t effectId) const noexcept;
+  void Remove(espm::ActorValue actorValue,uint32_t effectId) noexcept;
   void Remove(espm::ActorValue actorValue) noexcept;
   void Clear() noexcept;
   bool Has(espm::ActorValue actorValue) const noexcept;
@@ -39,4 +43,5 @@ public:
 
 private:
   std::unordered_map<espm::ActorValue, Entry> effects;
+  std::unordered_map<espm::ActorValue,std::unordered_map<uint32_t,Entry>> stacked;
 };
