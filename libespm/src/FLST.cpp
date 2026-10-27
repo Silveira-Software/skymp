@@ -1,4 +1,5 @@
 #include "libespm/FLST.h"
+#include "libespm/ReadUnaligned.h"
 #include "libespm/RecordHeaderAccess.h"
 #include <cstring>
 
@@ -12,7 +13,7 @@ FLST::Data FLST::GetData(
     this,
     [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "LNAM", 4)) {
-        const auto formId = *reinterpret_cast<const uint32_t*>(data);
+        const auto formId = ReadFieldScalar<uint32_t>(data, dataSize);
         result.formIds.push_back(formId);
       }
     },

@@ -1,4 +1,5 @@
 #include "libespm/Type.h"
+#include "libespm/ReadUnaligned.h"
 #include <cstring>
 
 namespace espm {
@@ -20,7 +21,7 @@ std::string Type::ToString() const noexcept
 
 uint32_t Type::ToUint32() const noexcept
 {
-  return *reinterpret_cast<const uint32_t*>(type);
+  return ReadUnaligned<uint32_t>(type);
 }
 
 }

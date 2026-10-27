@@ -159,6 +159,11 @@ void WorldState::Tick()
   TickTimers(now);
 }
 
+bool WorldState::IsFormLoadingInProgress() const
+{
+  return pImpl->formLoadingInProgress;
+}
+
 void WorldState::LoadChangeForm(const MpChangeForm& changeForm,
                                 const FormCallbacks& callbacks)
 {
@@ -910,8 +915,22 @@ const std::set<MpObjectReference*>& WorldState::GetNeighborsByPosition(
               espm::utils::GetMappedId(cellOrWorld, *rawMapping);
             auto records = br.GetRecordsAtPos(mappedCellOrWorld, x, y);
             for (auto rec : *records[i]) {
-              auto mappedId =
-                espm::utils::GetMappedId(rec->GetId(), *combMapping);
+              const auto originalId = rec->GetId();
+              const auto mappedId =
+                espm::utils::GetMappedId(originalId, *combMapping);
+              // 0xff in the mapping means no declared plugin owns this ID.
+              // A plugin record must never enter the runtime/dynamic namespace.
+              if (mappedId >= 0xff000000) {
+                spdlog::error(
+                  "WorldState::GetNeighborsByPosition - rejected plugin "
+                  "reference: source={} recordType={} originalId=0x{:08x} "
+                  "localPluginIndex={} mappedId=0x{:08x} "
+                  "reason=unresolved-plugin-index cellOrWorld=0x{:08x} "
+                  "chunkX={} chunkY={}",
+                  espmFiles[i], rec->GetType().ToString(), originalId,
+                  originalId >> 24, mappedId, cellOrWorld, x, y);
+                continue;
+              }
               assert(mappedId < 0xff000000);
               LoadForm(mappedId);
             }

@@ -1,4 +1,5 @@
 #include "libespm/FLOR.h"
+#include "libespm/ReadUnaligned.h"
 #include "libespm/RecordHeaderAccess.h"
 #include <cstring>
 
@@ -18,9 +19,9 @@ FLOR::Data FLOR::GetData(
       else if (!std::memcmp(type, "OBND", 4))
         result.bounds = reinterpret_cast<const ObjectBounds*>(data);
       else if (!std::memcmp(type, "PFIG", 4))
-        result.resultItem = *reinterpret_cast<const uint32_t*>(data);
+        result.resultItem = ReadFieldScalar<uint32_t>(data, dataSize);
       else if (!std::memcmp(type, "SNAM", 4))
-        result.useSound = *reinterpret_cast<const uint32_t*>(data);
+        result.useSound = ReadFieldScalar<uint32_t>(data, dataSize);
     },
     compressedFieldsCache);
   return result;

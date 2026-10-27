@@ -6,6 +6,12 @@
 #include "PartOne.h"
 #include <catch2/catch_all.hpp>
 #include <nlohmann/json.hpp>
+#include "libespm/Loader.h"
+#include <chrono>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <vector>
 
 using Catch::Matchers::ContainsSubstring;
 
@@ -158,4 +164,69 @@ TEST_CASE("HasEspmFile is working correctly", "[WorldState]")
   REQUIRE(worldState.HasEspmFile("file1"));
   REQUIRE(worldState.HasEspmFile("file2"));
   REQUIRE_FALSE(worldState.HasEspmFile("BlowSkyrimModIndustry.exe"));
+}
+
+TEST_CASE("Chunk loading rejects unresolved plugin IDs without touching runtime forms",
+          "[WorldState][MappedIdRegression]")
+{
+  auto word = [](char* p, uint32_t value) {
+    std::memcpy(p, &value, sizeof(value));
+  };
+  auto record = [&](const char* type, uint32_t id,
+                    const std::vector<char>& payload) {
+    std::vector<char> bytes(24 + payload.size(), '\0');
+    std::memcpy(bytes.data(), type, 4);
+    word(bytes.data() + 4, static_cast<uint32_t>(payload.size()));
+    word(bytes.data() + 12, id);
+    std::copy(payload.begin(), payload.end(), bytes.begin() + 24);
+    return bytes;
+  };
+  auto append = [](std::vector<char>& to, const std::vector<char>& from) {
+    to.insert(to.end(), from.begin(), from.end());
+  };
+  // One valid reference and two invalid IDs share their low 24 bits.
+  // Rejecting them must not clamp, remap or collide with a runtime object.
+  std::vector<char> payload(6 + 4 + 6 + 24, '\0');
+  std::memcpy(payload.data(), "NAME", 4);
+  uint16_t fieldSize = 4;
+  std::memcpy(payload.data() + 4, &fieldSize, 2);
+  word(payload.data() + 6, 0x2000);
+  std::memcpy(payload.data() + 10, "DATA", 4);
+  fieldSize = 24;
+  std::memcpy(payload.data() + 14, &fieldSize, 2);
+  std::vector<char> children;
+  for (uint32_t id : {0xff005ea2U, 0x01005ea2U, 0x00005ea2U})
+    append(children, record("REFR", id, payload));
+  std::vector<char> group(24, '\0');
+  std::memcpy(group.data(), "GRUP", 4);
+  word(group.data() + 4, static_cast<uint32_t>(24 + children.size()));
+  word(group.data() + 8, 0x1000);
+  word(group.data() + 12, 6); // CELL_CHILDREN
+  append(group, children);
+  auto bytes = record("TES4", 0, {});
+  append(bytes, record("ACTI", 0x2000, {}));
+  append(bytes, record("CELL", 0x1000, {}));
+  append(bytes, group);
+
+  struct TemporaryPlugin
+  {
+    std::filesystem::path path = std::filesystem::temp_directory_path() /
+      ("mapped-id-regression-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()) + ".esm");
+    ~TemporaryPlugin() { std::error_code ec; std::filesystem::remove(path, ec); }
+  } file;
+  { std::ofstream out(file.path, std::ios::binary);
+    out.write(bytes.data(), bytes.size()); REQUIRE(out.good()); }
+  espm::Loader loader(std::vector<std::filesystem::path>{file.path});
+  WorldState world;
+  world.AttachEspm(&loader, [] { return FormCallbacks::DoNothing(); });
+  auto runtime = std::make_unique<MpForm>();
+  const auto* runtimePtr = runtime.get();
+  world.AddForm(std::move(runtime), 0xff005ea2U);
+  REQUIRE_NOTHROW(world.GetNeighborsByPosition(0x1000, 0, 0));
+  REQUIRE(world.LookupFormById(0xff005ea2U).get() == runtimePtr);
+  REQUIRE_FALSE(world.LookupFormById(0x01005ea2U));
+  auto& valid = world.GetFormAt<MpObjectReference>(0x00005ea2U);
+  REQUIRE(valid.GetBaseId() == 0x2000);
+  REQUIRE(world.GetNeighborsByPosition(0x1000, 0, 0).count(&valid) == 1);
 }

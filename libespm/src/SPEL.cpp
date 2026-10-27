@@ -1,4 +1,5 @@
 #include "libespm/SPEL.h"
+#include "libespm/ReadUnaligned.h"
 #include "libespm/RecordHeaderAccess.h"
 #include <cstring>
 
@@ -15,7 +16,7 @@ SPEL::Data SPEL::GetData(
         result.spellItem = reinterpret_cast<const SPITData*>(data);
       } else if (!std::memcmp(type, "EFID", 4)) {
         result.effects.emplace_back(
-          Effect{ *reinterpret_cast<const uint32_t*>(data), nullptr });
+          Effect{ ReadFieldScalar<uint32_t>(data, dataSize), nullptr });
       } else if (!std::memcmp(type, "EFIT", 4)) {
         result.effects.back().effectItem = reinterpret_cast<const EFIT*>(data);
       }

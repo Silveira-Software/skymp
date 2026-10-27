@@ -647,3 +647,79 @@ TEST_CASE("Regress: LvlGiant mustn't have Fox race health", "[PartOne][espm]")
 
   REQUIRE(baseActorValues.health == 250.f);
 }
+
+TEST_CASE("Dead Frost Troll opens authoritative loot and prevents duplicate take",
+          "[CorpseLootRegression][PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  constexpr uint32_t trollRef = 0x1d218;
+  constexpr uint32_t trollFat = 0x3ad72;
+  constexpr uint32_t playerId = 0xff000000;
+  partOne.worldState.npcEnabled = true;
+  auto& corpse = partOne.worldState.GetFormAt<MpActor>(trollRef);
+  corpse.SetRespawnTime(600.f);
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(playerId, corpse.GetPos(), 0, 0x371de);
+  partOne.SetUserActor(0, playerId);
+  auto& player = partOne.worldState.GetFormAt<MpActor>(playerId);
+  player.RemoveAllItems();
+
+  // Living NPCs must not become loot containers.
+  partOne.Messages().clear();
+  corpse.Activate(player);
+  REQUIRE_FALSE(corpse.IsOpen());
+  for (const auto& message : partOne.Messages())
+    REQUIRE(message.j["t"] != MsgType::OpenContainer);
+  REQUIRE_THROWS_WITH(corpse.TakeItem(player, { trollFat, 1 }),
+                      ContainsSubstring("doesn't occupy ref"));
+
+  corpse.Kill(&player);
+  REQUIRE(corpse.IsDead());
+  REQUIRE(corpse.GetInventory().GetItemCount(trollFat) == 1);
+
+  partOne.Messages().clear();
+  DoMessage(partOne, 0,
+            { { "t", MsgType::Activate },
+              { "data", { { "caster", 0x14 }, { "target", trollRef },
+                           { "isSecondActivation", false } } } });
+  REQUIRE(corpse.IsOpen());
+  bool inventorySent = false, openSent = false;
+  for (const auto& message : partOne.Messages()) {
+    if (message.j["t"] == MsgType::UpdateProperty &&
+        message.j["propName"] == "inventory") {
+      inventorySent = true;
+      REQUIRE(message.j["idx"] == corpse.GetIdx());
+      const auto inventory = nlohmann::json::parse(
+        message.j["dataDump"].get<std::string>());
+      REQUIRE_FALSE(inventory["entries"].empty());
+    }
+    if (message.j["t"] == MsgType::OpenContainer) {
+      openSent = true;
+      REQUIRE(message.j["target"] == trollRef);
+    }
+  }
+  REQUIRE(inventorySent);
+  REQUIRE(openSent);
+
+  DoMessage(partOne, 0,
+            { { "t", MsgType::TakeItem }, { "baseId", trollFat },
+              { "count", 1 }, { "target", trollRef } });
+  partOne.Tick();
+  REQUIRE(player.GetInventory().GetItemCount(trollFat) == 1);
+  REQUIRE(corpse.GetInventory().GetItemCount(trollFat) == 0);
+  REQUIRE_THROWS_WITH(corpse.TakeItem(player, { trollFat, 1 }),
+                      ContainsSubstring("doesn't have enough"));
+  REQUIRE(player.GetInventory().GetItemCount(trollFat) == 1);
+
+  DoMessage(partOne, 0,
+            { { "t", MsgType::Activate },
+              { "data", { { "caster", 0x14 }, { "target", trollRef },
+                           { "isSecondActivation", true } } } });
+  REQUIRE_FALSE(corpse.IsOpen());
+  REQUIRE_THROWS_WITH(corpse.TakeItem(player, { trollFat, 1 }),
+                      ContainsSubstring("doesn't occupy ref"));
+
+  DoDisconnect(partOne, 0);
+  partOne.DestroyActor(playerId);
+}

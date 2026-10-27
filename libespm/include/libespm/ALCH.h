@@ -11,6 +11,8 @@ class ALCH final : public RecordHeader
 public:
   static constexpr auto kType = "ALCH";
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     std::vector<Effects::Effect> effects;
@@ -18,6 +20,8 @@ public:
     bool isFood = false;
     bool isPoison = false;
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::effects)));
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;
 };

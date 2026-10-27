@@ -1,4 +1,7 @@
 #include "PartOne.h"
+#include "SrpActorStats.h"
+#include "libespm/espm.h"
+#include <cmath>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -487,7 +490,16 @@ float PartOne::CalculateDamage(const MpActor& aggressor, const MpActor& target,
   if (!pImpl->damageFormula) {
     throw std::runtime_error("no damage formula");
   }
-  return pImpl->damageFormula->CalculateDamage(aggressor, target, hitData);
+  const float damage = pImpl->damageFormula->CalculateDamage(aggressor, target, hitData);
+  if (!std::isfinite(damage) || damage < 0) throw std::runtime_error("SRP_INVALID_BASE_DAMAGE");
+  bool ranged = false;
+  if (hitData.source != 0x1f4 && espm::GetRecordType(hitData.source, aggressor.GetParent()) == espm::WEAP::kType) {
+    const auto weapon = espm::GetData<espm::WEAP>(hitData.source, aggressor.GetParent());
+    ranged = weapon.weapDNAM && (weapon.weapDNAM->animType == espm::WEAP::AnimType::Bow || weapon.weapDNAM->animType == espm::WEAP::AnimType::Crossbow);
+  }
+  // Existing formula still owns equipment, block, sneak and racial unarmed damage.
+  // Its armor term includes the SRP armor contribution exactly once.
+  return damage * SrpActorStats::Read(aggressor).PhysicalDamageMultiplier(ranged);
 }
 
 float PartOne::CalculateDamage(const MpActor& aggressor, const MpActor& target,
@@ -496,8 +508,10 @@ float PartOne::CalculateDamage(const MpActor& aggressor, const MpActor& target,
   if (!pImpl->damageFormula) {
     throw std::runtime_error("no damage formula");
   }
-  return pImpl->damageFormula->CalculateDamage(aggressor, target,
-                                               spellCastData);
+  const float damage = pImpl->damageFormula->CalculateDamage(aggressor, target, spellCastData);
+  if (!std::isfinite(damage) || damage < 0) throw std::runtime_error("SRP_INVALID_BASE_DAMAGE");
+  return damage * SrpActorStats::Read(aggressor).MagicDamageMultiplier() *
+    (1.f - SrpActorStats::Read(target).MagicResistanceFraction());
 }
 
 void PartOne::NotifyGamemodeApiStateChanged(

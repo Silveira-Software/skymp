@@ -18,6 +18,7 @@
 #include "NeighborsBinding.h"
 #include "OnlinePlayersBinding.h"
 #include "PercentagesBinding.h"
+#include "SrpActorStatsBinding.h"
 #include "PosBinding.h"
 #include "ProfileIdBinding.h"
 #include "RespawnPercentagesBinding.h"
@@ -45,6 +46,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["neighbors"] = std::make_shared<NeighborsBinding>();
   result["onlinePlayers"] = std::make_shared<OnlinePlayersBinding>();
   result["percentages"] = std::make_shared<PercentagesBinding>();
+  result["srpActorStats"] = std::make_shared<SrpActorStatsBinding>();
   result["pos"] = std::make_shared<PosBinding>();
   result["profileId"] = std::make_shared<ProfileIdBinding>();
   result["spawnPoint"] = std::make_shared<SpawnPointBinding>();

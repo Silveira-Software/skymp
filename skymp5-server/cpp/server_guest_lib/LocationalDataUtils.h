@@ -7,7 +7,7 @@
 class NiPoint3;
 
 namespace LocationalDataUtils {
-const NiPoint3& GetPos(const espm::REFR::LocationalData* locationalData);
+NiPoint3 GetPos(const espm::REFR::LocationalData* locationalData);
 NiPoint3 GetRot(const espm::REFR::LocationalData* locationalData);
 uint32_t GetWorldOrCell(const espm::CombineBrowser& br,
                         const espm::LookupResult& refrLookupRes);

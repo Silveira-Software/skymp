@@ -1,4 +1,5 @@
 #include "libespm/Utils.h"
+#include "libespm/ReadUnaligned.h"
 #include "libespm/RecordHeaderAccess.h"
 #include "libespm/ZlibUtils.h"
 #include <map>
@@ -70,12 +71,12 @@ uint32_t GetMappedId(uint32_t id, const IdMapping& mapping) noexcept
 {
   const uint32_t shortId = id % 0x01000000;
   const uint8_t index = id / 0x01000000;
-  return shortId + (mapping[index] * 0x01000000);
+  return shortId + (static_cast<uint32_t>(mapping[index]) << 24);
 }
 
 std::wstring ReadWstring(const uint8_t* ptr)
 {
-  const uint16_t scriptNameSize = *reinterpret_cast<const uint16_t*>(ptr);
+  const uint16_t scriptNameSize = ReadUnaligned<uint16_t>(ptr);
   const wchar_t* scriptName = reinterpret_cast<const wchar_t*>(ptr + 2);
   return std::wstring(scriptName, scriptNameSize / 2);
 }
@@ -86,47 +87,68 @@ Property::Type GetElementType(Property::Type arrayType)
     static_cast<std::underlying_type_t<Property::Type>>(arrayType) - 10);
 }
 
+namespace {
+void RequireScriptBytes(const uint8_t* p, const uint8_t* end, size_t count)
+{
+  if (end && (p > end || count > static_cast<size_t>(end - p))) {
+    throw std::runtime_error("espm: truncated VMAD property");
+  }
+}
+}
+
 const uint8_t* ReadPropertyValue(const uint8_t* p, Property* prop,
                                  uint16_t objFormat)
+{
+  return ReadPropertyValue(p, prop, objFormat, nullptr);
+}
+
+const uint8_t* ReadPropertyValue(const uint8_t* p, Property* prop,
+                                 uint16_t objFormat, const uint8_t* end)
 {
   const auto t = prop->type;
   switch (t) {
     case Property::Type::Object:
+      RequireScriptBytes(p, end, 8);
       if (objFormat == 1)
-        prop->value.formId = *reinterpret_cast<const uint32_t*>(p);
+        prop->value.formId = ReadUnaligned<uint32_t>(p);
       else if (objFormat == 2)
-        prop->value.formId = *reinterpret_cast<const uint32_t*>(p + 4);
+        prop->value.formId = ReadUnaligned<uint32_t>(p + 4);
       else
         throw std::runtime_error("Unknown objFormat (" +
                                  std::to_string(objFormat) + ")");
       return p + 8;
     case Property::Type::Int:
-      prop->value.integer = *reinterpret_cast<const int32_t*>(p);
+      RequireScriptBytes(p, end, 4);
+      prop->value.integer = ReadUnaligned<int32_t>(p);
       return p + 4;
     case Property::Type::Float:
-      prop->value.floatingPoint = *reinterpret_cast<const float*>(p);
+      RequireScriptBytes(p, end, 4);
+      prop->value.floatingPoint = ReadUnaligned<float>(p);
       return p + 4;
     case Property::Type::Bool:
-      prop->value.boolean = *reinterpret_cast<const int8_t*>(p);
+      RequireScriptBytes(p, end, 1);
+      prop->value.boolean = ReadUnaligned<int8_t>(p);
       return p + 1;
     case Property::Type::String: {
-      uint16_t length = *reinterpret_cast<const uint16_t*>(p);
+      RequireScriptBytes(p, end, 2);
+      const auto length = ReadUnaligned<uint16_t>(p);
       p += 2;
+      RequireScriptBytes(p, end, length);
       prop->value.str = { reinterpret_cast<const char*>(p), length };
-      p += length;
-      return p;
+      return p + length;
     }
     case Property::Type::ObjectArray:
     case Property::Type::IntArray:
     case Property::Type::FloatArray:
     case Property::Type::BoolArray:
     case Property::Type::StringArray: {
-      uint32_t arrayLength = *reinterpret_cast<const uint32_t*>(p);
+      RequireScriptBytes(p, end, 4);
+      const auto arrayLength = ReadUnaligned<uint32_t>(p);
       p += 4;
       for (uint32_t i = 0; i < arrayLength; ++i) {
         Property element;
         element.type = GetElementType(t);
-        p = ReadPropertyValue(p, &element, objFormat);
+        p = ReadPropertyValue(p, &element, objFormat, end);
         prop->array.push_back(element.value);
       }
       return p;
@@ -143,27 +165,38 @@ const uint8_t* ReadPropertyValue(const uint8_t* p, Property* prop,
 void FillScriptArray(const uint8_t* p, std::vector<Script>& out,
                      uint16_t objFormat)
 {
-  for (uint16_t i = 0; i < out.size(); ++i) {
-    const uint16_t length = *reinterpret_cast<const uint16_t*>(p);
+  FillScriptArray(p, out, objFormat, nullptr);
+}
+
+void FillScriptArray(const uint8_t* p, std::vector<Script>& out,
+                     uint16_t objFormat, const uint8_t* end)
+{
+  for (size_t i = 0; i < out.size(); ++i) {
+    RequireScriptBytes(p, end, 2);
+    const auto length = ReadUnaligned<uint16_t>(p);
     p += 2;
+    RequireScriptBytes(p, end, length);
     out[i].scriptName = std::string(reinterpret_cast<const char*>(p), length);
     p += length;
+    RequireScriptBytes(p, end, 3);
     out[i].status = *p;
-    p++;
-    const uint16_t numProperties = *reinterpret_cast<const uint16_t*>(p);
+    ++p;
+    const auto numProperties = ReadUnaligned<uint16_t>(p);
     p += 2;
     for (uint16_t j = 0; j < numProperties; ++j) {
-      const uint16_t length = *reinterpret_cast<const uint16_t*>(p);
+      RequireScriptBytes(p, end, 2);
+      const auto propertyLength = ReadUnaligned<uint16_t>(p);
       p += 2;
-
+      RequireScriptBytes(p, end, propertyLength);
       Property prop;
-      prop.name = std::string(reinterpret_cast<const char*>(p), length);
-      p += length;
+      prop.name = std::string(reinterpret_cast<const char*>(p), propertyLength);
+      p += propertyLength;
+      RequireScriptBytes(p, end, 2);
       prop.type = static_cast<Property::Type>(*p);
-      p++;
+      ++p;
       prop.status = *p;
-      p++;
-      p = ReadPropertyValue(p, &prop, objFormat);
+      ++p;
+      p = ReadPropertyValue(p, &prop, objFormat, end);
       out[i].properties.insert(prop);
     }
   }
@@ -183,7 +216,7 @@ std::vector<CONT::ContainerObject> GetContainerObjects(
     [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "CNTO", 4)) {
         objects.push_back(
-          *reinterpret_cast<const CONT::ContainerObject*>(data));
+          ReadFieldScalar<CONT::ContainerObject>(data, dataSize));
       } else if (!std::memcmp(type, "COED", 4)) {
         // Not supported
       }

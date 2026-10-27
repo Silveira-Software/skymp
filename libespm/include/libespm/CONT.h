@@ -16,12 +16,16 @@ public:
     uint32_t count = 0;
   };
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     const char* editorId = "";
     const char* fullName = "";
     std::vector<ContainerObject> objects;
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::objects)));
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;
 };

@@ -60,6 +60,7 @@ public:
   Napi::Value Get(const Napi::CallbackInfo& info);
   Napi::Value Set(const Napi::CallbackInfo& info);
   Napi::Value Place(const Napi::CallbackInfo& info);
+  Napi::Value PlaceActorAtV16(const Napi::CallbackInfo& info);
   Napi::Value LookupEspmRecordById(const Napi::CallbackInfo& info);
   Napi::Value GetNeighborsByPosition(const Napi::CallbackInfo& info);
   Napi::Value GetAllForms(const Napi::CallbackInfo& info);

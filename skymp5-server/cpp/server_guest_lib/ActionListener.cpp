@@ -21,6 +21,7 @@
 #include <fmt/ranges.h>
 #include <spdlog/spdlog.h>
 #include <unordered_set>
+#include <limits>
 
 #include "CustomPacketMessage.h"
 #include "HostStartMessage.h"
@@ -41,6 +42,11 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
                                           Networking::PacketData data,
                                           size_t length, bool reliable)
 {
+  if (!partOne.serverState.IsConnected(userId) ||
+      idx > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+    spdlog::warn("SendToNeighbours - Rejected disconnected user or invalid index");
+    return nullptr;
+  }
   MpActor* myActor = partOne.serverState.ActorByUser(userId);
   // The old behavior is doing nothing in that case. This is covered by tests
   if (!myActor) {
@@ -629,23 +635,14 @@ void ActionListener::OnEquip(const RawMessageData& rawMsgData,
   std::ignore = actor->OnEquip(msg.baseId);
 }
 
+
 void ActionListener::OnEquipWithOpId(const RawMessageData& rawMsgData,
-                                     const OnEquipWithOpIdMessage& msg)
+                                    const OnEquipWithOpIdMessage& msg)
 {
   MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
-  if (!actor) {
-    throw std::runtime_error(
-      "Unable to finish OnEquipWithOpId: No Actor found for user " +
-      std::to_string(rawMsgData.userId));
-  }
-
-  // An empty or oversized id would make every resend look new; treat it as
-  // a plain OnEquip instead of trusting it
-  if (msg.opId.empty() || msg.opId.size() > 128) {
-    std::ignore = actor->OnEquip(msg.baseId);
+  if (!actor || msg.opId.empty() || msg.opId.size() > 128) {
     return;
   }
-
   std::ignore = actor->OnEquip(msg.baseId, msg.opId);
 }
 
@@ -675,22 +672,42 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
 {
   uint32_t remoteId = FormIdCasts::LongToNormal(msg.remoteId);
 
+  if (!partOne.serverState.IsConnected(rawMsgData.userId)) {
+    spdlog::warn("OnHostAttempt - Rejected disconnected user");
+    return;
+  }
   MpActor* me = partOne.serverState.ActorByUser(rawMsgData.userId);
   if (!me) {
-    throw std::runtime_error("Unable to host without actor attached");
+    spdlog::warn("OnHostAttempt - Rejected user without actor");
+    return;
   }
 
-  auto& remote = partOne.worldState.GetFormAt<MpObjectReference>(remoteId);
+  // Preserve vanilla reference loading; dynamic IDs are never loaded by this API.
+  const auto remoteForm = partOne.worldState.LookupFormById(remoteId);
+  auto* remoteRef = remoteForm ? remoteForm->AsObjectReference() : nullptr;
+  if (!remoteRef) {
+    spdlog::warn("OnHostAttempt - Rejected missing or despawned reference");
+    return;
+  }
+  auto& remote = *remoteRef;
 
   auto user = partOne.serverState.UserByActor(remote.AsActor());
   if (user != Networking::InvalidUserId) {
     return;
   }
 
+  const auto remoteIdx = remote.GetIdx();
+  if (remoteIdx > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
+      partOne.worldState.LookupFormByIdx(static_cast<int>(remoteIdx)) != &remote ||
+      me->GetIdx() > static_cast<uint32_t>(std::numeric_limits<int>::max()) ||
+      partOne.worldState.LookupFormByIdx(static_cast<int>(me->GetIdx())) != me) {
+    spdlog::warn("OnHostAttempt - Rejected stale form or invalid actor index");
+    return;
+  }
+
   auto& hoster = partOne.worldState.hosters[remoteId];
   const uint32_t prevHoster = hoster;
 
-  auto remoteIdx = remote.GetIdx();
 
   std::optional<std::chrono::system_clock::time_point> lastRemoteUpdate;
   if (partOne.worldState.lastMovUpdateByIdx.size() > remoteIdx) {
@@ -702,13 +719,19 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
   if (hoster == 0 || !lastRemoteUpdate ||
       std::chrono::system_clock::now() - *lastRemoteUpdate >
         hostResetTimeout) {
-    partOne.GetLogger().info("Hoster changed from {0:x} to {0:x}", prevHoster,
+    // A newly hosted actor may not have sent a movement packet yet.
+    if (partOne.worldState.lastMovUpdateByIdx.size() <= remoteIdx) {
+      partOne.worldState.lastMovUpdateByIdx.resize(
+        static_cast<size_t>(remoteIdx) + 1);
+    }
+
+    partOne.GetLogger().info("Hoster changed from {0:x} to {1:x}", prevHoster,
                              me->GetFormId());
     hoster = me->GetFormId();
     remote.UpdateHoster(hoster);
 
     // Prevents too fast host switch
-    partOne.worldState.lastMovUpdateByIdx[remoteIdx] =
+    partOne.worldState.lastMovUpdateByIdx.at(remoteIdx) =
       std::chrono::system_clock::now();
 
     auto remoteAsActor = remote.AsActor();
@@ -729,10 +752,15 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
     // npc
     auto formId = remote.GetFormId();
     partOne.worldState.SetTimer(std::chrono::seconds(1))
-      .Then([this, formId](Viet::Void) {
-        // Check if form is still here
-        auto& remote = partOne.worldState.GetFormAt<MpActor>(formId);
-
+      .Then([this, formId, expected = std::weak_ptr<MpForm>(remoteForm)](Viet::Void) {
+        const auto previous = expected.lock();
+        const auto current = partOne.worldState.LookupFormByIdNoLoad(formId);
+        auto* actor = current ? current->AsActor() : nullptr;
+        if (!previous || current != previous || !actor) {
+          spdlog::warn("OnHostAttempt - Rejected stale deferred NPC update");
+          return;
+        }
+        auto& remote = *actor;
         auto changeForm = remote.GetChangeForm();
 
         ChangeValuesMessage msg;
@@ -855,13 +883,7 @@ float CalculateCurrentHealthPercentage(const MpActor& actor, float damage,
                                        float healthPercentage,
                                        float* outBaseHealth)
 {
-  const uint32_t baseId = actor.GetBaseId();
-  const uint32_t raceId = actor.GetRaceId();
-  WorldState* espmProvider = actor.GetParent();
-
-  const float baseHealth =
-    GetBaseActorValues(espmProvider, baseId, raceId, actor.GetTemplateChain())
-      .health;
+  const float baseHealth = actor.GetMaximumValues().health;
 
   if (outBaseHealth) {
     *outBaseHealth = baseHealth;

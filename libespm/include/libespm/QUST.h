@@ -56,8 +56,11 @@ public:
   };
   static_assert(sizeof(QuestData) == 12);
 
+#pragma pack(push)
+#pragma pack()
   struct QuestStage
   {
+#pragma pack(push, 1)
     struct JournalIndex
     {
       enum IndexFlags : uint8_t
@@ -71,6 +74,7 @@ public:
       IndexFlags flags;
       uint8_t unknown;
     };
+#pragma pack(pop)
 
     struct QuestLogEntry
     {
@@ -91,29 +95,39 @@ public:
     const JournalIndex* journalIndex;
     std::vector<QuestLogEntry> logEntries;
   };
+#pragma pack(pop)
 
+#pragma pack(push)
+#pragma pack()
   struct QuestObjective
   {
+#pragma pack(push, 1)
     struct QuestTarget
     {
       int32_t targetAlias;
       int32_t flags;
       // skip vector<CTDA>
     };
+#pragma pack(pop)
 
     int16_t index;
     int32_t flags;
     const char* nodeName;
     std::vector<QuestTarget> questTargets;
   };
+#pragma pack(pop)
 
+#pragma pack(push)
+#pragma pack()
   struct Alias
   {
+#pragma pack(push, 1)
     struct Container
     {
       uint32_t ItemID;
       uint32_t ItemCount;
     };
+#pragma pack(pop)
     static_assert(sizeof(Container) == 8);
 
     enum AliasFlags : uint32_t
@@ -184,7 +198,10 @@ public:
     uint32_t voiceType;
     // ALED (EOF Marker) - empty - Marks the end of any given alias entry.
   };
+#pragma pack(pop)
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     const char* editorId = "";
@@ -200,6 +217,10 @@ public:
     int32_t nextAliasId = 0;
     std::vector<Alias> aliases;
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::questStages)));
+  static_assert(alignof(Data) >= alignof(decltype(Data::questObjectives)));
+  static_assert(alignof(Data) >= alignof(decltype(Data::aliases)));
 
   std::vector<Alias> GetQuestAliases(
     CompressedFieldsCache& compressedFieldsCache) const noexcept;

@@ -2,6 +2,7 @@
 
 #include "HitData.h"
 #include "MpActor.h"
+#include "SrpActorStats.h"
 #include "SpellCastData.h"
 #include "WorldState.h"
 #include "libespm/espm.h"
@@ -110,7 +111,7 @@ float TES5DamageFormulaImpl::CalcOpponentArmorRating() const
   for (auto& entry : eq.inv.entries) {
     combinedArmorRating += CalcArmorRatingComponent(entry);
   }
-  return combinedArmorRating;
+  return combinedArmorRating + SrpActorStats::Read(target).ArmorBonus();
 }
 
 float TES5DamageFormulaImpl::CalcUnarmedDamage() const

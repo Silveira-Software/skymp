@@ -1,4 +1,5 @@
 #include "libespm/BOOK.h"
+#include "libespm/ReadUnaligned.h"
 #include "libespm/RecordHeaderAccess.h"
 #include <cstring>
 
@@ -16,14 +17,14 @@ BOOK::Data BOOK::GetData(
 
   RecordHeaderAccess::IterateFields(
     this,
-    [&](const char* type, uint32_t size, const char* data) {
+    [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "DATA", 4)) {
         result.flags =
-          static_cast<Flags>(*reinterpret_cast<const uint8_t*>(data));
+          static_cast<Flags>(ReadFieldScalar<uint8_t>(data, dataSize));
 
         result.spellOrSkillFormId =
-          *reinterpret_cast<const uint32_t*>(data + 0x4);
-        result.weight = *reinterpret_cast<const float*>(data + 0xc);
+          ReadFieldScalar<uint32_t>(data, dataSize, 0x4);
+        result.weight = ReadFieldScalar<float>(data, dataSize, 0xc);
       }
     },
     compressedFieldsCache);

@@ -18,6 +18,8 @@ public:
   };
   static_assert(sizeof(InputObject) == 8);
 
+#pragma pack(push)
+#pragma pack()
   struct Data
   {
     std::vector<InputObject> inputObjects;
@@ -26,6 +28,9 @@ public:
     std::vector<CTDA> conditions;
     uint32_t outputCount = 0;
   };
+#pragma pack(pop)
+  static_assert(alignof(Data) >= alignof(decltype(Data::inputObjects)));
+  static_assert(alignof(Data) >= alignof(decltype(Data::conditions)));
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;
 };

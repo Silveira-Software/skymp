@@ -1,7 +1,6 @@
 #pragma once
 #include "RecordHeader.h"
 
-#pragma pack(push, 1)
 
 namespace espm {
 
@@ -67,4 +66,3 @@ struct Property
 
 }
 
-#pragma pack(pop)

@@ -1,4 +1,5 @@
 #include "MpActor.h"
+#include "SrpActorStats.h"
 #include "ActiveMagicEffectsMap.h"
 #include "ActorValues.h"
 #include "ChangeFormGuard.h"
@@ -363,6 +364,7 @@ void MpActor::VisitProperties(CreateActorMessage& message,
                                          ChangeForm().templateChain);
   }
 
+  baseActorValues = SrpActorStats::Read(*this).ComposeMaximums(baseActorValues);
   MpChangeForm changeForm = GetChangeForm();
 
   MpObjectReference::VisitProperties(message, mode);
@@ -642,8 +644,18 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
       if (GetParent() && GetParent()->HasEspm()) {
         EnsureTemplateChainEvaluated(GetParent()->GetEspm(),
                                      Mode::NoRequestSave);
+        const auto persistedValues = changeForm.actorValues;
         changeForm.actorValues = GetBaseActorValues(
           GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
+        if (changeForm.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty)) {
+          const auto maximum = GetMaximumValues();
+          changeForm.actorValues.health = maximum.health;
+          changeForm.actorValues.magicka = maximum.magicka;
+          changeForm.actorValues.stamina = maximum.stamina;
+          changeForm.actorValues.healthPercentage = persistedValues.healthPercentage;
+          changeForm.actorValues.magickaPercentage = persistedValues.magickaPercentage;
+          changeForm.actorValues.staminaPercentage = persistedValues.staminaPercentage;
+        }
       }
     },
     Mode::NoRequestSave);
@@ -1613,16 +1625,71 @@ void MpActor::DamageActorValue(espm::ActorValue av, float value)
     av, -std::abs(value) / GetMaximumValues().GetValue(av));
 }
 
-BaseActorValues MpActor::GetBaseValues()
+BaseActorValues MpActor::GetBaseValues() const
 {
+  if (!GetParent() || !GetParent()->HasEspm()) return {};
   return GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
                             ChangeForm().templateChain);
 }
 
-BaseActorValues MpActor::GetMaximumValues()
+BaseActorValues MpActor::GetMaximumValues() const
 {
-  return GetBaseValues();
+  return SrpActorStats::Read(*this).ComposeMaximums(GetBaseValues());
 }
+
+// Inserted into MpActor.cpp by the frozen-source patcher.
+void MpActor::ApplySrpActorStats(const nlohmann::json& input)
+{
+  const auto& fields = GetDynamicFields().GetAsJson();
+  if (!fields.contains("srpProgression")) {
+    throw std::runtime_error("SRP_STATS_CANONICAL_PROJECTION_REQUIRED");
+  }
+  auto proposed = SrpActorStats::FromProjection(input);
+  const auto canonical = SrpActorStats::FromProjection(fields.at("srpProgression"));
+  if (!proposed.SameProjection(canonical) ||
+      proposed.profileId != std::to_string(GetProfileId()) ||
+      !fields.contains("srpActiveCharacterId") ||
+      fields.at("srpActiveCharacterId") != proposed.characterId) {
+    throw std::runtime_error("SRP_STATS_OWNER_OR_CANONICAL_MISMATCH");
+  }
+  const auto before = SrpActorStats::Read(*this);
+  if (before.characterId == proposed.characterId &&
+      before.profileId == proposed.profileId) {
+    if (before.revision > proposed.revision ||
+        (before.revision == proposed.revision && !before.SameProjection(proposed))) {
+      throw std::runtime_error("SRP_STATS_REVISION_CONFLICT");
+    }
+  }
+  proposed.enabled = input.value("enabled", true);
+  if (before.enabled == proposed.enabled && before.SameProjection(proposed)) {
+    return;
+  }
+  const auto oldMaximums = GetMaximumValues();
+  const auto newMaximums = proposed.ComposeMaximums(GetBaseValues());
+  auto values = GetActorValues();
+  const auto keepAbsolute = [](float percentage, float oldMax, float newMax) {
+    return std::clamp(percentage * oldMax / std::max(newMax, 1.f), 0.f, 1.f);
+  };
+  values.healthPercentage = keepAbsolute(values.healthPercentage,
+                                        oldMaximums.health, newMaximums.health);
+  values.magickaPercentage = keepAbsolute(values.magickaPercentage,
+                                         oldMaximums.magicka, newMaximums.magicka);
+  values.staminaPercentage = keepAbsolute(values.staminaPercentage,
+                                         oldMaximums.stamina, newMaximums.stamina);
+  values.health = newMaximums.health;
+  values.magicka = newMaximums.magicka;
+  values.stamina = newMaximums.stamina;
+  // Projection + resource percentages have ONE change-form mutation. The
+  // caller must still wait for the existing durable saved-generation ACK.
+  EditChangeForm([&](MpChangeForm& form) {
+    form.dynamicFields.SetValueDump(SrpActorStats::kProperty,
+      nlohmann::json({ { "schemaVersion", 1 }, { "enabled", proposed.enabled },
+                       { "projection", proposed.ToJson() } }).dump());
+    form.actorValues = values;
+  });
+  NetSendChangeValues(values, std::nullopt);
+}
+
 
 void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 {
@@ -1985,8 +2052,18 @@ void MpActor::RemoveMagicEffect(const espm::ActorValue actorValue)
 void MpActor::RemoveAllMagicEffects()
 {
   try {
-    const ActorValues baseActorValues = GetBaseActorValues(
+    ActorValues baseActorValues = GetBaseActorValues(
       GetParent(), GetBaseId(), GetRaceId(), ChangeForm().templateChain);
+    if (SrpActorStats::Read(*this).enabled) {
+      const auto maximum = GetMaximumValues();
+      const auto current = GetActorValues();
+      baseActorValues.health = maximum.health;
+      baseActorValues.magicka = maximum.magicka;
+      baseActorValues.stamina = maximum.stamina;
+      baseActorValues.healthPercentage = current.healthPercentage;
+      baseActorValues.magickaPercentage = current.magickaPercentage;
+      baseActorValues.staminaPercentage = current.staminaPercentage;
+    }
     SetActorValues(baseActorValues);
     EditChangeForm(
       [](MpChangeForm& changeForm) { changeForm.activeMagicEffects.Clear(); });

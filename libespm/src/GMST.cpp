@@ -1,4 +1,5 @@
 #include "libespm/GMST.h"
+#include "libespm/ReadUnaligned.h"
 #include "libespm/RecordHeaderAccess.h"
 #include <cstring>
 
@@ -10,9 +11,9 @@ GMST::Data GMST::GetData(
   Data result;
   RecordHeaderAccess::IterateFields(
     this,
-    [&](const char* type, uint32_t size, const char* data) {
+    [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "DATA", 4)) {
-        result.value = *reinterpret_cast<const float*>(data);
+        result.value = ReadFieldScalar<float>(data, dataSize);
       }
     },
     compressedFieldsCache);

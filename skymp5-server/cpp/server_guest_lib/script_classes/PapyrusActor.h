@@ -17,6 +17,8 @@ public:
   VarValue RestoreActorValue(VarValue self,
                              const std::vector<VarValue>& arguments);
 
+  VarValue GetActorValue(VarValue self, const std::vector<VarValue>& arguments);
+
   VarValue SetActorValue(VarValue self,
                          const std::vector<VarValue>& arguments);
 
