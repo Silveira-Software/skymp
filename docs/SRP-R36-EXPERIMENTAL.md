@@ -27,15 +27,24 @@ use the composed maxima. Regeneration fields are preserved; effect removal
 does not erase the SRP maxima or heal a damaged actor. The companion
 gamemode implements server carry and ACK delivery after durability.
 
-Validation on this addon: 6 new C++ cases, 42 assertions; 39 selected C++
+Validation on this addon: 6 new C++ cases, 42 assertions; 68 selected C++
 regression cases including those six; 60 SIGKILL generation-ACK runs with
 zero ACK ahead of disk; 10 real-addon/real-ESM groups using two synthetic
 bots, plus four fresh-process restart/rollback/identity checks. The complete
 incremental R35 gamemode passed six additional checks using synthetic
 sessions/API responses and this exact addon. These are not human Skyrim tests.
+Nine additional combined Mongo/native allocation crash boundaries passed with
+real SIGKILL, recovery and repeated opId: one receipt, one point debit, one
+projection. No production database or world was used.
+
+The server/libespm/unit source closure was recovered from the archived build:
+529 C++/header files now match the compiled source after CRLF normalization.
+See SRP-R36-BASELINE-RECOVERY.json for the 75 recovered preexisting files.
+Seven Windows-client/client-config differences outside the Linux native build
+were left untouched; no Windows native client binary was built here.
 
 General temporary maximum/resistance composition, engine-side carry,
-the complete Mongo/native allocation crash matrix and six-attribute UI/human
+six-attribute UI/human
 acceptance remain blockers. Magic cost/movement/survival-decay formulas
 remain preview-only. Point allocation remains disabled. No claim of complete
 vanilla magic, supernatural transformations or release readiness is made.
