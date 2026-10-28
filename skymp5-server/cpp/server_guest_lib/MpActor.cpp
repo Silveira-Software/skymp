@@ -624,6 +624,15 @@ MpChangeForm MpActor::GetChangeForm() const
 {
   auto res = MpObjectReference::GetChangeForm();
   res.recType = MpChangeForm::ACHR;
+  // In-memory recovery/character handoff must carry the same resource snapshot
+  // as serialized world records. Otherwise ApplyChangeForm treats a current
+  // R37 copy as legacy R36 and rescales its percentages a second time.
+  if (res.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty)) {
+    const nlohmann::json maximums = {{"schemaVersion", 1},
+      {"health", res.actorValues.health}, {"magicka", res.actorValues.magicka},
+      {"stamina", res.actorValues.stamina}};
+    res.dynamicFields.SetValueDump("private.srpResourceMaximumsV1", maximums.dump());
+  }
   return res;
 }
 
@@ -1943,7 +1952,7 @@ void MpActor::ReconcileSrpMaximums(const ActorValues& before)
 }
 
 void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
-                               bool durationOverriden)
+                               bool durationOverriden,const nlohmann::json* provenance)
 {
   WorldState* worldState = GetParent();
   auto data = espm::GetData<espm::MGEF>(effect.effectId, worldState).data;
@@ -1966,7 +1975,7 @@ void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
   spdlog::trace("Actor value in ApplyMagicEffect(): {}",
                 static_cast<std::underlying_type_t<espm::ActorValue>>(av));
 
-  if (SrpActorModifiers::Apply(*this,effect,durationOverriden)) return;
+  if (SrpActorModifiers::Apply(*this,effect,durationOverriden,provenance)) return;
 
   const bool isValue = av == espm::ActorValue::Health ||
     av == espm::ActorValue::Stamina || av == espm::ActorValue::Magicka;
@@ -2029,6 +2038,9 @@ void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
       });
 
     ActiveMagicEffectsMap::Entry entry{ timerId, effect, endTime };
+    // Legacy rate/multiplier storage has one row per AV and must keep its
+    // original stacking semantics; provenance records that policy explicitly.
+    if(provenance)entry.provenance=*provenance;
     if (activeEffects.Has(av)) {
       const ActiveMagicEffectsMap::Entry& entry =
         activeEffects.Get(av).value().get();
@@ -2121,8 +2133,7 @@ void MpActor::RemoveAllMagicEffects()
 void MpActor::ReapplyMagicEffects()
 {
   // TODO: Implement range-based for loop for MagicEffectsMap
-  std::vector<espm::Effects::Effect> activeEffects =
-    GetChangeForm().activeMagicEffects.GetAllEffects();
+  auto activeEffects = GetChangeForm().activeMagicEffects.GetEntries();
   if (activeEffects.empty()) {
     return;
   }
@@ -2130,7 +2141,10 @@ void MpActor::ReapplyMagicEffects()
   const bool hasSweetpie = std::any_of(
     modFiles.begin(), modFiles.end(),
     [](std::string_view fileName) { return fileName == "SweetPie.esp"; });
-  ApplyMagicEffects(activeEffects, hasSweetpie, true);
+  for(auto& entry:activeEffects){
+    if(entry.provenance)entry.data.effectId=FormDesc::FromString(entry.provenance->at("mgef").get<std::string>()).ToFormId(GetParent()->espmFiles);
+    ApplyMagicEffect(entry.data,hasSweetpie,true,entry.provenance?&*entry.provenance:nullptr);
+  }
 }
 
 std::array<std::optional<Inventory::Entry>, 2> MpActor::GetEquippedWeapon()

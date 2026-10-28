@@ -2,6 +2,14 @@
 #include "SrpActorStats.h"
 #include "TestUtils.hpp"
 #include <catch2/catch_approx.hpp>
+#include "database_drivers/FileDatabase.h"
+#include "save_storages/AsyncSaveStorage.h"
+#include <filesystem>
+#include <fstream>
+#include <csignal>
+#include <sys/wait.h>
+#include <poll.h>
+#include <unistd.h>
 PartOne& GetPartOne();
 namespace {
 MpActor& Create(PartOne& w){w.CreateActor(0xff000000,{0,0,0},0,0x3c,1);auto& a=w.worldState.GetFormAt<MpActor>(0xff000000);nlohmann::json p={{"schemaVersion",2},{"rulesVersion","SRP-PROGRESSION-A1"},{"revision",1},{"level",4},{"profileId",std::to_string(a.GetProfileId())},{"characterId","r37"},{"attributes",{{"vigor",10},{"strength",10},{"dexterity",10},{"intelligence",10},{"willpower",10},{"constitution",10}}}};a.SetPropertyValueDump("srpActiveCharacterId","\"r37\"",false,false);a.SetPropertyValueDump("srpProgression",p.dump(),false,false);a.ApplySrpActorStats(p);return a;}
@@ -84,4 +92,108 @@ TEST_CASE("R37 CTDA preserves AND OR grouping and fails closed on unsupported co
  c=yes;c.operatorFlag=7<<5;REQUIRE(run({c})==R::Unknown);
  c=yes;c.comparisonValue=std::numeric_limits<float>::quiet_NaN();REQUIRE(run({c})==R::Unknown);
  c=yes;c.functionIndex=69;uint32_t invalid=0x00ffffff;memcpy(c.functionData,&invalid,4);REQUIRE(run({c})==R::Unknown);
+}
+
+namespace {
+espm::Effects::Effect SourceSpell(PartOne& w,uint32_t id,uint32_t index){const auto owner=w.worldState.GetEspm().GetBrowser().LookupById(id);const auto e=espm::GetData<espm::SPEL>(id,&w.worldState).effects.at(index);return {owner.ToGlobalId(e.effectFormId),e.effectItem->magnitude,e.effectItem->areaOfEffect,e.effectItem->duration};}
+ActiveMagicEffectsMap DecodeEffects(const nlohmann::json& value){simdjson::dom::parser p;auto d=p.parse(value.dump());auto e=d.value();return ActiveMagicEffectsMap::FromJson(e);}
+}
+TEST_CASE("R37 provenance binds actual source EFID caster target and survives durable reload", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);a.DamageActorValue(espm::ActorValue::Health,20);const auto hp=Health(a);
+ Inventory inv;inv.AddItem(0x3eaf2,2);a.SetInventory(inv);REQUIRE(a.OnEquip(0x3eaf2));
+ const auto entries=a.GetActiveMagicEffects().GetEntries();REQUIRE(entries.size()==1);REQUIRE(entries[0].provenance.has_value());const auto p=*entries[0].provenance;
+ REQUIRE(p.at("source")=="3eaf2:Skyrim.esm");REQUIRE(p.at("mgef")=="3eaf3:Skyrim.esm");REQUIRE(p.at("sourceType")=="ALCH");REQUIRE(p.at("effectIndex")==0);REQUIRE(p.at("target")==p.at("caster"));REQUIRE_FALSE(p.at("instanceId").get<std::string>().empty());REQUIRE(Health(a)==Catch::Approx(hp));
+ auto decoded=DecodeEffects(a.GetActiveMagicEffects().ToJson());REQUIRE(decoded.GetEntries().size()==1);REQUIRE(decoded.GetEntries()[0].provenance==entries[0].provenance);
+ const auto saved=a.GetChangeForm();a.ApplyChangeForm(saved);REQUIRE(Health(a)==Catch::Approx(hp));REQUIRE(a.GetActiveMagicEffects().GetEntries()[0].provenance==entries[0].provenance);
+}
+TEST_CASE("R37 two casters coexist same source and recast replaces only its own instance", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);w.CreateActor(0xff000001,{0,0,0},0,0x3c,2);auto& b=w.worldState.GetFormAt<MpActor>(0xff000001);b.SetPropertyValueDump("srpActiveCharacterId","\"caster-b\"",false,false);
+ auto e=SourceSpell(w,0xfb994,0);a.DamageActorValue(espm::ActorValue::Health,20);const auto hp=Health(a);
+ auto one=SrpActorModifiers::CreateProvenance(a,0xfb994,0,a,"cast-a");a.ApplyMagicEffect(e,false,false,&one);
+ auto two=SrpActorModifiers::CreateProvenance(a,0xfb994,0,b,"cast-b");a.ApplyMagicEffect(e,false,false,&two);
+ REQUIRE(a.GetMaximumValues().health==Catch::Approx(149));REQUIRE(a.GetActiveMagicEffects().GetEntries().size()==2);REQUIRE(Health(a)==Catch::Approx(hp));
+ auto retry=SrpActorModifiers::CreateProvenance(a,0xfb994,0,a,"cast-a");a.ApplyMagicEffect(e,false,false,&retry);REQUIRE(a.GetActiveMagicEffects().GetByStackKey(espm::ActorValue::Health,one.at("stackKey").get<std::string>())->get().provenance->at("instanceId")==one.at("instanceId"));
+ auto recast=SrpActorModifiers::CreateProvenance(a,0xfb994,0,a,"cast-a-next");a.ApplyMagicEffect(e,false,false,&recast);REQUIRE(a.GetActiveMagicEffects().GetEntries().size()==2);REQUIRE(a.GetMaximumValues().health==Catch::Approx(149));REQUIRE(Health(a)==Catch::Approx(hp));
+ auto saved=a.GetChangeForm();a.ApplyChangeForm(saved);REQUIRE(a.GetActiveMagicEffects().GetEntries().size()==2);REQUIRE(a.GetMaximumValues().health==Catch::Approx(149));
+}
+TEST_CASE("R37 source provenance rejects corrupt source index target and payload before mutation", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);auto e=SourceSpell(w,0xfb994,0);const auto valid=SrpActorModifiers::CreateProvenance(a,0xfb994,0,a,"cast");
+ const auto before=a.GetActorValues();
+ for(const auto& key:{"source","mgef","effectIndex","target","stackKey"}){auto p=valid;if(std::string(key)=="effectIndex")p[key]=uint32_t(4000);else if(std::string(key)=="target")p[key]["characterId"]="foreign";else p[key]="invalid";REQUIRE_THROWS(a.ApplyMagicEffect(e,false,false,&p));REQUIRE(a.GetActiveMagicEffects().Empty());REQUIRE(a.GetActorValues().healthPercentage==before.healthPercentage);}
+ auto bad=e;bad.magnitude+=1;REQUIRE_THROWS(a.ApplyMagicEffect(bad,false,false,&valid));REQUIRE(a.GetActiveMagicEffects().Empty());
+}
+TEST_CASE("R37 legacy rows remain unknown and corrupted or duplicate provenance never silently migrates", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);espm::Effects::Effect old{0x3eaf3,20,0,60};a.ApplyMagicEffect(old);auto legacy=a.GetActiveMagicEffects().ToJson();REQUIRE_FALSE(legacy[0].contains("srpProvenanceV1"));auto d=DecodeEffects(legacy);REQUIRE_FALSE(d.GetEntries()[0].provenance.has_value());REQUIRE_FALSE(SrpActorModifiers::Read(a).complete);
+ a.RemoveAllMagicEffects();auto e=SourceSpell(w,0xfb994,0);auto p=SrpActorModifiers::CreateProvenance(a,0xfb994,0,a,"new");a.ApplyMagicEffect(e,false,false,&p);auto json=a.GetActiveMagicEffects().ToJson();auto duplicate=json;duplicate.push_back(json[0]);REQUIRE_THROWS(DecodeEffects(duplicate));json[0]["srpProvenanceV1"]["schemaVersion"]=999;REQUIRE_THROWS(DecodeEffects(json));
+}
+TEST_CASE("R37 equipment CTDA trusts actual variants and not forged worn metadata", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);auto owner=w.worldState.GetEspm().GetBrowser().LookupById(0x3eaf3);espm::CTDA c{};c.runOnType=espm::CTDA::RunOnTypeFlags::Subject;c.functionIndex=182;c.comparisonValue=1;uint32_t id=0x12e49;memcpy(c.functionData,&id,4);using R=SrpActorModifiers::ConditionResult;
+ auto evaluate=[&](){return SrpActorModifiers::EvaluateConditions(a,owner,{c});};Inventory inv;Inventory::Entry entry(id,1);entry.name="actual";inv.entries.push_back(entry);a.SetInventory(inv);Equipment eq;entry.SetWorn(Inventory::Worn::Right);eq.inv.entries.push_back(entry);a.SetEquipment(eq);REQUIRE(evaluate()==R::Active);eq.inv.entries[0].name="forged";a.SetEquipment(eq);REQUIRE(evaluate()==R::Inactive);
+ c.functionIndex=58;REQUIRE(evaluate()==R::Unknown);c.functionIndex=74;REQUIRE(evaluate()==R::Unknown);c.functionIndex=448;REQUIRE(evaluate()==R::Unknown);
+}
+
+TEST_CASE("R37 source metadata records enchantment and rate policy without changing legacy regeneration", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);auto ench=SrpActorModifiers::CreateProvenance(a,0x49509,0,a,"enchantment-context");REQUIRE(ench.at("sourceType")=="ENCH");REQUIRE(ench.at("source")=="49509:Skyrim.esm");
+ Inventory inv;inv.AddItem(0x3eb09,1);a.SetInventory(inv);
+ // Regeneration direct legacy remains supported and never invents provenance.
+ espm::Effects::Effect regen{0x3eb06,25,0,60};a.ApplyMagicEffect(regen);REQUIRE(a.GetActorValues().healRateMult>100);REQUIRE_FALSE(a.GetActiveMagicEffects().GetEntries()[0].provenance.has_value());
+}
+TEST_CASE("R37 changeform transaction failure restores effect origin and current resources", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);a.DamageActorValue(espm::ActorValue::Health,20);const auto before=MpChangeForm::ToJson(a.GetChangeForm());
+ REQUIRE_THROWS(a.RunChangeFormTransaction([&](){SrpActorModifiers::ApplyFromSource(a,0x3eaf2,a,"failure-before-save");throw std::runtime_error("FORCED_WRITE_ABORT");return true;}));
+ REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==before);REQUIRE(a.GetActiveMagicEffects().Empty());REQUIRE(a.GetMaximumValues().health==Catch::Approx(124));
+}
+TEST_CASE("R37 origin expiry tampering and condition-context changes are rejected on reload", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);SrpActorModifiers::ApplyFromSource(a,0x3eaf2,a,"expire-test");auto json=a.GetActiveMagicEffects().ToJson();auto corrupt=json;corrupt[0]["srpProvenanceV1"]["appliedAtMs"]=0;REQUIRE_THROWS(DecodeEffects(corrupt));
+ auto saved=a.GetChangeForm();auto rows=saved.activeMagicEffects.ToJson();rows[0]["srpProvenanceV1"]["mgefConditionFingerprint"]="changed";saved.activeMagicEffects=DecodeEffects(rows);REQUIRE_THROWS(a.ApplyChangeForm(saved));
+}
+
+TEST_CASE("R37 epoch expiration remains valid independently of the legacy locale timestamp", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);SrpActorModifiers::ApplyFromSource(a,0x3eaf2,a,"epoch");auto rows=a.GetActiveMagicEffects().ToJson();rows[0]["endTime"]="legacy display from another locale";auto read=DecodeEffects(rows);REQUIRE(read.GetEntries().size()==1);REQUIRE(read.GetEntries()[0].endTime==a.GetActiveMagicEffects().GetEntries()[0].endTime);REQUIRE(read.GetEntries()[0].provenance==a.GetActiveMagicEffects().GetEntries()[0].provenance);
+}
+TEST_CASE("R37 source metadata is not applied to a replacement character on the same actor", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);SrpActorModifiers::ApplyFromSource(a,0x3eaf2,a,"owner");const auto stored=a.GetActiveMagicEffects().ToJson();a.SetPropertyValueDump("srpActiveCharacterId","\"replacement\"",false,false);auto modifiers=SrpActorModifiers::Read(a);REQUIRE_FALSE(modifiers.complete);REQUIRE(modifiers.Sum(espm::ActorValue::Health)==0);REQUIRE(a.GetActiveMagicEffects().ToJson()==stored);
+}
+
+TEST_CASE("R37 origin inventory and maxima remain one durable world record across SIGKILL", "[srp-r37][crash]"){
+ namespace fs=std::filesystem;
+ for(int stage=0;stage<3;++stage){
+  const auto path=fs::temp_directory_path()/("srp-r37-origin-crash-"+std::to_string(getpid())+"-"+std::to_string(stage));fs::create_directories(path);int signal[2];REQUIRE(pipe(signal)==0);const auto pid=fork();REQUIRE(pid>=0);
+  if(pid==0){
+   close(signal[0]);try{
+    auto& w=GetPartOne();auto& a=Create(w);
+    using Storage=Viet::AsyncSaveStorage<MpChangeForm,FormDesc,std::vector<FormDesc>>;
+    w.worldState.AttachSaveStorage(std::make_shared<Storage>(std::make_shared<FileDatabase>(path.string(),spdlog::default_logger(),true),spdlog::default_logger(),"",5));
+    Inventory inv;inv.AddItem(0x3eaf2,2);a.SetInventory(inv);a.DamageActorValue(espm::ActorValue::Health,20);
+    auto durable=[&](uint64_t generation){for(int i=0;i<12000;++i){w.Tick();if(w.worldState.IsChangeFormSaved(a.GetFormId(),generation))return;std::this_thread::sleep_for(std::chrono::milliseconds(1));}throw std::runtime_error("ORIGIN_SAVE_TIMEOUT");};
+    durable(w.worldState.GetChangeFormGeneration(a.GetFormId()));
+    if(!a.OnEquip(0x3eaf2,"crash-origin-one"))_exit(3);
+    const auto generation=w.worldState.GetChangeFormGeneration(a.GetFormId());
+    if(stage==1)w.Tick();if(stage==2)durable(generation);
+    const char ready='R';write(signal[1],&ready,1);for(;;)pause();
+   }catch(...){_exit(4);}
+  }
+  close(signal[1]);pollfd descriptor{signal[0],POLLIN,0};const auto ready=poll(&descriptor,1,15000);char phase=0;if(ready>0)read(signal[0],&phase,1);close(signal[0]);kill(pid,SIGKILL);int status=0;waitpid(pid,&status,0);REQUIRE(phase=='R');REQUIRE(WIFSIGNALED(status));REQUIRE(WTERMSIG(status)==SIGKILL);
+  std::ifstream input(path/"changeForms"/"0.json");nlohmann::json document;input>>document;uint32_t count=0;for(const auto& entry:document.at("inv").at("entries"))if(entry.at("baseId")==0x3eaf2)count=entry.at("count").get<uint32_t>();
+  REQUIRE((count==1||count==2));size_t origins=0;for(const auto& effect:document.at("effects"))if(effect.contains("srpProvenanceV1")){++origins;REQUIRE(effect.at("srpProvenanceV1").at("operationId")=="crash-origin-one");}
+  REQUIRE(origins==2-count);if(stage==0)REQUIRE(count==2);if(stage==2)REQUIRE(count==1);
+  REQUIRE(document.at("dynamicFields").contains("private.srpResourceMaximumsV1"));const auto maximum=document.at("dynamicFields").at("private.srpResourceMaximumsV1").at("health").get<float>();REQUIRE(maximum==Catch::Approx(count==1?144:124));
+ }
+}
+
+TEST_CASE("R37 expired origin after disconnect preserves absolute resources from maximums V1", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);a.DamageActorValue(espm::ActorValue::Health,20);const auto hp=Health(a);SrpActorModifiers::ApplyFromSource(a,0x3eaf2,a,"offline-expiry");auto json=MpChangeForm::ToJson(a.GetChangeForm());
+ const auto past=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()-1000;json["effects"][0]["srpProvenanceV1"]["expiresAtMs"]=past;json["effects"][0]["srpProvenanceV1"]["appliedAtMs"]=past-int64_t(json["effects"][0]["duration"].get<uint32_t>())*1000;
+ simdjson::dom::parser parser;auto parsed=parser.parse(json.dump());auto element=parsed.value();const auto decoded=MpChangeForm::JsonToChangeForm(element);a.ApplyChangeForm(decoded);REQUIRE(a.GetActiveMagicEffects().Empty());REQUIRE(a.GetMaximumValues().health==Catch::Approx(124));REQUIRE(Health(a)==Catch::Approx(hp));
+}
+
+TEST_CASE("R37 identity spell and keyword CTDA use real actor records", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);auto owner=w.worldState.GetEspm().GetBrowser().LookupById(0x3eaf3);using R=SrpActorModifiers::ConditionResult;
+ espm::CTDA c{};c.runOnType=espm::CTDA::RunOnTypeFlags::Subject;c.comparisonValue=1;
+ auto parameter=[&](uint32_t id){memcpy(c.functionData,&id,4);};auto evaluate=[&](){return SrpActorModifiers::EvaluateConditions(a,owner,{c});};
+ c.functionIndex=72;parameter(a.GetBaseId());REQUIRE(evaluate()==R::Active);parameter(0x12e49);REQUIRE(evaluate()==R::Inactive);
+ c.functionIndex=264;parameter(0x12fd0);a.RemoveSpell(0x12fd0);REQUIRE(evaluate()==R::Inactive);a.AddSpell(0x12fd0);REQUIRE(evaluate()==R::Active);a.RemoveSpell(0x12fd0);REQUIRE(evaluate()==R::Inactive);
+ const auto armor=w.worldState.GetEspm().GetBrowser().LookupById(0x12e49);const auto keywords=armor.rec->GetKeywordIds(w.worldState.GetEspmCache());REQUIRE_FALSE(keywords.empty());
+ c.functionIndex=682;parameter(armor.ToGlobalId(keywords.front()));Inventory inv;Inventory::Entry item(0x12e49,1);inv.entries.push_back(item);a.SetInventory(inv);Equipment worn;item.SetWorn(Inventory::Worn::Right);worn.inv.entries.push_back(item);a.SetEquipment(worn);REQUIRE(evaluate()==R::Active);a.SetInventory(Inventory{});REQUIRE(evaluate()==R::Inactive);
+ parameter(0x12fd0);REQUIRE(evaluate()==R::Unknown);
 }

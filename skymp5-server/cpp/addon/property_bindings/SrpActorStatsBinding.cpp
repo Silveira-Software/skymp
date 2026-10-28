@@ -25,6 +25,10 @@ Napi::Value SrpActorStatsBinding::Get(Napi::Env env, ScampServer& server,
                         { "stamina", maximum.stamina },
                         { "carryBonus", stats.CarryBonus() } };
   result["modifierContract"]="SRP-MODIFIERS-R37";result["modifierCompositionSupported"]=modifiers.complete;
+  size_t knownOrigins=0,legacyOrigins=0;
+  for(const auto& effect:actor.GetActiveMagicEffects().GetEntries())if(effect.provenance)++knownOrigins;else ++legacyOrigins;
+  result["effectProvenanceVersion"]=1;
+  result["effectOrigins"]={{"known",knownOrigins},{"legacyUnknown",legacyOrigins}};
   result["permanent"]={{"health",permanent.health},{"magicka",permanent.magicka},{"stamina",permanent.stamina},{"carryWeight",300.f+stats.CarryBonus()}};
   result["current"]={{"health",maximum.health*actor.GetActorValues().healthPercentage},{"magicka",maximum.magicka*actor.GetActorValues().magickaPercentage},{"stamina",maximum.stamina*actor.GetActorValues().staminaPercentage}};
   result["maximum"]["carryWeight"]=std::clamp(300.f+stats.CarryBonus()+modifiers.Sum(espm::ActorValue::CarryWeight),0.f,100000.f);

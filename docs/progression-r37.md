@@ -62,3 +62,40 @@ effect source provenance are still incomplete. The current durable active
 effect entry stores MGEF but not its originating SPEL/ALCH/ENCH effect index.
 Do not enable allocation or claim all spells are handled from these tests.
 The global R37 allocation flag stays OFF. No PUBLIC change was made.
+
+
+## 28 October: durable effect origin V1 (offline candidate)
+
+Later increment supersedes the origin limitation above for newly persisted ALCH
+consumption effects. `effects[].srpProvenanceV1` records canonical source/MGEF,
+winning plugin, SPEL/ALCH/ENCH type, EFID index, caster/target character identities,
+instance/operation IDs, epoch expiry and explicit recast/overlap policies. All
+source values are checked against real records. New origins are never guessed
+for legacy rows. The internal SPEL/ENCH API is validated; network spell-cast
+integration and cross-caster identity durability are still pending.
+
+Recast replaces only its own source/EFID/caster/target row. Distinct casters retain
+independently expiring rows but a shared MGEF contributes its strongest absolute
+modifier once. Legacy rates retain one row per actor value. Unsupported CTDA
+remains Unknown. Added GetIsID (72), GetEquipped (182), HasSpell (264) and
+WornHasKeyword (682); equipment checks actual positive-count inventory variants.
+Explicit reference context resolves only the matching actor/caster. No guessed
+quest stages, globals, perks, weather or server time.
+
+A real new test found in-memory ChangeForm restoration rescaling HP twice when
+no serialized maxima envelope was present. GetChangeForm now includes the same
+`srpResourceMaximumsV1` snapshot as world serialization. Its format is unchanged.
+The restore test preserves 80 HP instead of incorrectly reducing it to 68.8889.
+New effect expiry uses epoch milliseconds, independent of legacy locale text.
+
+Candidate addon SHA-256 (not installed):
+`5d473c5f1645f2d8790064efb3a2e05adbd6b4d305f30a6815ffba095e374e17`.
+R37-specific and broader native regression results live in the matching gamemode
+PR #60 evidence. Three additional SIGKILL windows cover one atomic world image
+containing inventory, origins and maxima; they do not imply a Mongo/world
+transaction. Fresh-process addon restore also preserves exact origin metadata.
+
+Rollback must keep a V1-compatible reader, receipts and current progress. An old
+reader is rejected even if origins have expired; do not discard rows to downgrade.
+`effectProvenanceVersion=1` is mandatory for the gamemode allocation capability.
+Allocation OFF, RELEASE_BLOCKED; no production replacement or Skyrim human test.

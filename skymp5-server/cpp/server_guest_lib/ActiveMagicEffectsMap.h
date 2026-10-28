@@ -14,6 +14,8 @@ public:
     uint32_t timerId = -1;
     espm::Effects::Effect data;
     std::chrono::system_clock::time_point endTime;
+    // Absent on legacy rows. Never infer an old source from a matching MGEF.
+    std::optional<nlohmann::json> provenance;
   };
 
 public:
@@ -28,6 +30,9 @@ public:
   }
 
   std::vector<espm::Effects::Effect> GetAllEffects() const noexcept;
+  std::vector<Entry> GetEntries() const;
+  static void ValidateProvenance(const nlohmann::json& value);
+  static std::string StackKey(const Entry& entry);
 
   std::optional<std::reference_wrapper<const Entry>> Get(
     espm::ActorValue actorValue) const noexcept;
@@ -35,6 +40,9 @@ public:
   void AddStacked(espm::ActorValue actorValue, Entry entry);
   std::optional<std::reference_wrapper<const Entry>> Get(espm::ActorValue actorValue,uint32_t effectId) const noexcept;
   void Remove(espm::ActorValue actorValue,uint32_t effectId) noexcept;
+  std::optional<std::reference_wrapper<const Entry>> GetByStackKey(
+    espm::ActorValue actorValue,const std::string& key) const noexcept;
+  void RemoveByStackKey(espm::ActorValue actorValue,const std::string& key) noexcept;
   void Remove(espm::ActorValue actorValue) noexcept;
   void Clear() noexcept;
   bool Has(espm::ActorValue actorValue) const noexcept;
@@ -43,5 +51,5 @@ public:
 
 private:
   std::unordered_map<espm::ActorValue, Entry> effects;
-  std::unordered_map<espm::ActorValue,std::unordered_map<uint32_t,Entry>> stacked;
+  std::unordered_map<espm::ActorValue,std::unordered_map<std::string,Entry>> stacked;
 };

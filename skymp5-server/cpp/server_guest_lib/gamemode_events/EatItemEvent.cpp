@@ -2,6 +2,7 @@
 
 #include "MpActor.h"
 #include "WorldState.h"
+#include "SrpActorModifiers.h"
 #include <nlohmann/json.hpp>
 #include <unordered_set>
 #include <vector>
@@ -40,6 +41,11 @@ std::string EatItemEvent::GetArgumentsJsonArray() const
 
 void EatItemEvent::OnFireSuccess(WorldState* worldState)
 {
+  if(isAlchemyItem&&SrpActorModifiers::Managed(*actor)){
+    const bool sweet=worldState->HasEspmFile("SweetPie.esp");
+    SrpActorModifiers::ApplyFromSource(*actor,baseId,*actor,opId,sweet);
+    return;
+  }
   std::vector<espm::Effects::Effect> effects;
   if (isAlchemyItem) {
     effects = espm::GetData<espm::ALCH>(baseId, worldState).effects;
