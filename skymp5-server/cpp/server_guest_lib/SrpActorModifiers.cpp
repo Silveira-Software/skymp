@@ -36,17 +36,85 @@ bool Peak(const espm::MGEF::DATA& data)
   return (data.effectType==espm::MGEF::EffectType::PeakValueMod||data.effectType==espm::MGEF::EffectType::ValueMod)&&data.IsFlagSet(espm::MGEF::Flags::Recover)&&
     SrpActorModifiers::Supported(data.primaryAV);
 }
-bool Conditional(const espm::RecordHeader* rec,WorldState* world)
+using Result=SrpActorModifiers::ConditionResult;
+struct ConditionList { std::vector<espm::CTDA> values; bool valid=true; };
+ConditionList Conditions(const espm::RecordHeader* rec,WorldState* world,
+                         int effectIndex=-1)
 {
-  bool found=false;
-  espm::RecordHeaderAccess::IterateFields(rec,[&](const char* type,uint32_t,const char*){if(!memcmp(type,"CTDA",4))found=true;},world->GetEspmCache());
-  return found;
+  ConditionList out; int index=-1;
+  espm::RecordHeaderAccess::IterateFields(rec,[&](const char* type,uint32_t size,const char* data){
+    if(!memcmp(type,"EFID",4))++index;
+    if(memcmp(type,"CTDA",4))return;
+    // SPEL/ENCH CTDA belongs to one EFID, not to every effect in the record.
+    if(effectIndex>=0&&index!=effectIndex){if(index<0)out.valid=false;return;}
+    if(size!=sizeof(espm::CTDA)){out.valid=false;return;}
+    espm::CTDA c{};memcpy(&c,data,sizeof(c));out.values.push_back(c);
+  },world->GetEspmCache());
+  return out;
 }
-bool ConditionalEffect(uint32_t id,WorldState* world)
+Result TestConditions(const MpActor& actor,const espm::LookupResult& owner,
+                      int effectIndex=-1)
 {
-  const auto record=world->GetEspm().GetBrowser().LookupById(id);
-  return record.rec&&Conditional(record.rec,world);
+  const auto list=Conditions(owner.rec,actor.GetParent(),effectIndex);
+  return list.valid?SrpActorModifiers::EvaluateConditions(actor,owner,list.values):Result::Unknown;
 }
+Result EffectConditions(const MpActor& actor,uint32_t id)
+{
+  const auto record=actor.GetParent()->GetEspm().GetBrowser().LookupById(id);
+  return record.rec?TestConditions(actor,record):Result::Unknown;
+}
+bool Include(Result a,Result b,bool& complete)
+{
+  if(a==Result::Unknown||b==Result::Unknown){complete=false;return false;}
+  return a==Result::Active&&b==Result::Active;
+}
+}
+SrpActorModifiers::ConditionResult SrpActorModifiers::EvaluateConditions(
+  const MpActor& actor,const espm::LookupResult& owner,
+  const std::vector<espm::CTDA>& conditions)
+{
+  if(conditions.empty())return Result::Active;
+  auto world=actor.GetParent();if(!world||!world->HasEspm()||!owner.rec)return Result::Unknown;
+  bool all=true,group=false;
+  for(size_t i=0;i<conditions.size();++i){
+    const auto& c=conditions[i];const auto flags=static_cast<uint8_t>(c.GetFlags());
+    // Only the authoritative subject is available here. Caster/target, global
+    // variables, quest aliases and swapped/packed arguments require context
+    // absent from the current durable active-effect format. Never guess.
+    if((flags&~1u)||c.runOnType!=espm::CTDA::RunOnTypeFlags::Subject||
+       c.reference!=0||!std::isfinite(c.comparisonValue))return Result::Unknown;
+    const auto args=c.GetDefaultData();float value=0;
+    if(args.secondParameter)return Result::Unknown;
+    switch(c.functionIndex){
+      case 47: case 69: {
+        const auto id=owner.ToGlobalId(args.firstParameter);
+        if(!id||!world->GetEspm().GetBrowser().LookupById(id).rec)return Result::Unknown;
+        value=c.functionIndex==47?actor.GetInventory().GetItemCount(id):actor.GetRaceId()==id;
+        break;
+      }
+      case 300: {
+        if(args.firstParameter)return Result::Unknown;
+        const auto cell=actor.GetCellOrWorld().ToFormId(world->espmFiles);
+        const auto rec=world->GetEspm().GetBrowser().LookupById(cell);
+        if(!rec.rec)return Result::Unknown;
+        value=rec.rec->GetType()==espm::CELL::kType;break;
+      }
+      default:return Result::Unknown;
+    }
+    bool pass=false;
+    switch(c.GetOperator()){
+      case espm::CTDA::Operator::EqualTo:pass=value==c.comparisonValue;break;
+      case espm::CTDA::Operator::NotEqualTo:pass=value!=c.comparisonValue;break;
+      case espm::CTDA::Operator::GreaterThen:pass=value>c.comparisonValue;break;
+      case espm::CTDA::Operator::GreaterThenOrEqualTo:pass=value>=c.comparisonValue;break;
+      case espm::CTDA::Operator::LessThen:pass=value<c.comparisonValue;break;
+      case espm::CTDA::Operator::LessThenOrEqualTo:pass=value<=c.comparisonValue;break;
+      default:return Result::Unknown;
+    }
+    group=group||pass;
+    if(!(flags&1)||i+1==conditions.size()){all=all&&group;group=false;}
+  }
+  return all?Result::Active:Result::Inactive;
 }
 SrpActorModifiers SrpActorModifiers::Read(const MpActor& actor,bool preparingProjection)
 {
@@ -63,17 +131,19 @@ SrpActorModifiers SrpActorModifiers::Read(const MpActor& actor,bool preparingPro
     if(!owner.rec||owner.rec->GetType()!=espm::SPEL::kType)continue;
     const auto record=espm::GetData<espm::SPEL>(spell,world);
     if(!record.spellItem||(record.spellItem->type!=espm::SPEL::SpellType::Ability&&record.spellItem->type!=espm::SPEL::SpellType::Disease))continue;
+    int effectIndex=-1;
     for(const auto& e:record.effects){
+      ++effectIndex;
       if(!e.effectItem)continue;
       espm::Effects::Effect effect{owner.ToGlobalId(e.effectFormId),e.effectItem->magnitude,0,0};
       const auto data=EffectData(effect.effectId,world);
-      if(Peak(data)){if(Conditional(owner.rec,world)||ConditionalEffect(effect.effectId,world)){out.complete=false;continue;}out.passive[data.primaryAV]+=Magnitude(effect,data);}
+      if(Peak(data)&&Include(TestConditions(actor,owner,effectIndex),EffectConditions(actor,effect.effectId),out.complete))out.passive[data.primaryAV]+=Magnitude(effect,data);
     }
   }
   // Live effects expire through the world timer with resource reconciliation.
   for(const auto& effect:actor.GetActiveMagicEffects().GetAllEffects()){
     const auto data=EffectData(effect.effectId,world);
-    if(Peak(data)){if(ConditionalEffect(effect.effectId,world)){out.complete=false;continue;}out.temporary[data.primaryAV]+=Magnitude(effect,data);}
+    if(Peak(data)&&Include(Result::Active,EffectConditions(actor,effect.effectId),out.complete))out.temporary[data.primaryAV]+=Magnitude(effect,data);
   }
   std::set<uint32_t> seen;uint32_t occupied=0;
   for(const auto& entry:actor.GetEquipment().inv.entries){
@@ -94,10 +164,12 @@ SrpActorModifiers SrpActorModifiers::Read(const MpActor& actor,bool preparingPro
     if(!enchantment)continue;
     const auto owner=world->GetEspm().GetBrowser().LookupById(enchantment);
     if(!owner.rec||owner.rec->GetType()!=espm::ENCH::kType){out.complete=false;continue;}
+    int effectIndex=-1;
     for(auto effect:espm::GetData<espm::ENCH>(enchantment,world).effects){
+      ++effectIndex;
       effect.effectId=owner.ToGlobalId(effect.effectId);
       const auto data=EffectData(effect.effectId,world);
-      if(Peak(data)){if(Conditional(owner.rec,world)||ConditionalEffect(effect.effectId,world)){out.complete=false;continue;}out.equipment[data.primaryAV]+=Magnitude(effect,data);}
+      if(Peak(data)&&Include(TestConditions(actor,owner,effectIndex),EffectConditions(actor,effect.effectId),out.complete))out.equipment[data.primaryAV]+=Magnitude(effect,data);
     }
   }
   return out;
@@ -119,7 +191,9 @@ bool SrpActorModifiers::Apply(MpActor& actor,espm::Effects::Effect& effect,bool 
   if(!Managed(actor))return false;
   auto world=actor.GetParent();const auto data=EffectData(effect.effectId,world);
   if(!Peak(data))return false;
-  if(ConditionalEffect(effect.effectId,world))throw std::runtime_error("SRP_MODIFIER_CONDITION_REVIEW_REQUIRED");
+  const auto condition=EffectConditions(actor,effect.effectId);
+  if(condition==Result::Unknown)throw std::runtime_error("SRP_MODIFIER_CONDITION_REVIEW_REQUIRED");
+  if(condition==Result::Inactive)return true;
   Magnitude(effect,data);
   auto end=std::chrono::system_clock::now()+std::chrono::seconds(effect.duration);
   auto prior=actor.GetActiveMagicEffects().Get(data.primaryAV,effect.effectId);

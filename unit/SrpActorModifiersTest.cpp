@@ -53,3 +53,35 @@ TEST_CASE("R37 corrupt or absent magic effect cannot mutate resources", "[srp-r3
 TEST_CASE("R37 conditional vanilla MGEF cannot be assumed active", "[srp-r37]"){
  auto& w=GetPartOne();auto& a=Create(w);const auto before=a.GetMaximumValues();espm::Effects::Effect conditional{0xf81e5,40,0,60};REQUIRE_THROWS_WITH(a.ApplyMagicEffect(conditional),"SRP_MODIFIER_CONDITION_REVIEW_REQUIRED");REQUIRE(a.GetMaximumValues().magicka==before.magicka);REQUIRE(a.GetActiveMagicEffects().Empty());
 }
+
+TEST_CASE("R37 CTDA subject comparisons use canonical inventory and race", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);
+ const auto owner=w.worldState.GetEspm().GetBrowser().LookupById(0x3eaf3);
+ using R=SrpActorModifiers::ConditionResult;
+ auto run=[&](const std::vector<espm::CTDA>& c){return SrpActorModifiers::EvaluateConditions(a,owner,c);};
+ espm::CTDA race{};race.functionIndex=69;race.runOnType=espm::CTDA::RunOnTypeFlags::Subject;race.comparisonValue=1;auto raceId=a.GetRaceId();memcpy(race.functionData,&raceId,4);
+ REQUIRE(run({})==R::Active);REQUIRE(run({race})==R::Active);
+ race.comparisonValue=0;REQUIRE(run({race})==R::Inactive);
+ espm::CTDA count{};count.functionIndex=47;count.runOnType=espm::CTDA::RunOnTypeFlags::Subject;uint32_t item=0xf;memcpy(count.functionData,&item,4);
+ Inventory inv;inv.AddItem(item,2);a.SetInventory(inv);
+ for(auto [op,value,expected]:std::vector<std::tuple<uint8_t,float,bool>>{{0,2,true},{1,2,false},{2,1,true},{3,2,true},{4,3,true},{5,2,true}}){count.operatorFlag=op<<5;count.comparisonValue=value;REQUIRE((run({count})==R::Active)==expected);}
+ count.operatorFlag=0;count.comparisonValue=2;REQUIRE(run({count})==R::Active);a.SetInventory(Inventory{});REQUIRE(run({count})==R::Inactive);
+}
+
+TEST_CASE("R37 CTDA preserves AND OR grouping and fails closed on unsupported context", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);const auto owner=w.worldState.GetEspm().GetBrowser().LookupById(0x3eaf3);using R=SrpActorModifiers::ConditionResult;
+ auto run=[&](const std::vector<espm::CTDA>& c){return SrpActorModifiers::EvaluateConditions(a,owner,c);};
+ espm::CTDA yes{};yes.functionIndex=300;yes.runOnType=espm::CTDA::RunOnTypeFlags::Subject;yes.comparisonValue=0;
+ auto no=yes;no.comparisonValue=1;auto orNo=no;orNo.operatorFlag=1;
+ REQUIRE(run({yes})==R::Active);REQUIRE(run({no})==R::Inactive);
+ REQUIRE(run({yes,no})==R::Inactive);REQUIRE(run({orNo,yes})==R::Active);
+ REQUIRE(run({orNo,yes,no})==R::Inactive);
+ for(uint8_t flag:{2,4,8,16}){auto c=yes;c.operatorFlag=flag;REQUIRE(run({c})==R::Unknown);}
+ auto c=yes;c.runOnType=espm::CTDA::RunOnTypeFlags::Target;REQUIRE(run({c})==R::Unknown);
+ c=yes;c.reference=0x14;REQUIRE(run({c})==R::Unknown);
+ c=yes;c.functionIndex=715;REQUIRE(run({c})==R::Unknown);
+ REQUIRE(run({no,c})==R::Unknown);REQUIRE(run({orNo,c})==R::Unknown);
+ c=yes;c.operatorFlag=7<<5;REQUIRE(run({c})==R::Unknown);
+ c=yes;c.comparisonValue=std::numeric_limits<float>::quiet_NaN();REQUIRE(run({c})==R::Unknown);
+ c=yes;c.functionIndex=69;uint32_t invalid=0x00ffffff;memcpy(c.functionData,&invalid,4);REQUIRE(run({c})==R::Unknown);
+}

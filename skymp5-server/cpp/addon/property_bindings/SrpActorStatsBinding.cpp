@@ -7,6 +7,10 @@ Napi::Value SrpActorStatsBinding::Get(Napi::Env env, ScampServer& server,
                                      uint32_t actorId)
 {
   auto& actor = server.GetPartOne()->worldState.GetFormAt<MpActor>(actorId);
+  // World/conditions can change without an equipment mutation. Reconcile the
+  // absolute resources before publishing the newly evaluated maximums. A save
+  // generation is produced only when those maximums actually changed.
+  if(SrpActorModifiers::Managed(actor))actor.ReconcileSrpMaximums(actor.GetActorValues());
   auto stats = SrpActorStats::Read(actor);
   auto base = actor.GetBaseValues();
   auto maximum = actor.GetMaximumValues();
