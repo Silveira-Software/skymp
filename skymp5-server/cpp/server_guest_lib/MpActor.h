@@ -174,6 +174,8 @@ public:
   BaseActorValues GetBaseValues() const;
   BaseActorValues GetMaximumValues() const;
   void ApplySrpActorStats(const nlohmann::json& input);
+  void ReconcileSrpMaximums(const ActorValues& before);
+  friend struct SrpActorModifiers;
 
   void DropItem(const uint32_t baseId, const Inventory::Entry& entry);
   void SetIsBlockActive(bool isBlockActive);
@@ -184,7 +186,8 @@ public:
   uint32_t GetBlockCount() const noexcept;
   void ApplyMagicEffect(espm::Effects::Effect& effect,
                         bool hasSweetpie = false,
-                        bool durationOverriden = false);
+                        bool durationOverriden = false,
+                        const nlohmann::json* provenance = nullptr);
   void ApplyMagicEffects(std::vector<espm::Effects::Effect>& effects,
                          bool hasSweetpie = false,
                          bool durationOverriden = false);

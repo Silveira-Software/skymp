@@ -42,6 +42,7 @@ static thread_local std::unordered_set<const MpObjectReference*> srpConsumptionT
 
 #include "OpenContainerMessage.h"
 #include "SetInventoryMessage.h"
+#include "SrpActorModifiers.h"
 #include "TeleportMessage.h"
 
 #include "script_classes/PapyrusObjectReference.h" // kOriginalNameExpression
@@ -826,19 +827,23 @@ void MpObjectReference::SetAnimationVariableBool(
 
 void MpObjectReference::SetInventory(const Inventory& inv)
 {
+  auto actor=AsActor();const auto before=actor?actor->GetActorValues():ActorValues{};
   EditChangeForm([&](MpChangeFormREFR& changeForm) {
     changeForm.baseContainerAdded = true;
     changeForm.inv = inv;
   });
+  if(actor&&SrpActorModifiers::Managed(*actor))actor->ReconcileSrpMaximums(before);
   SendInventoryUpdate();
 }
 
 void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
 {
+  auto actor=AsActor();const auto before=actor?actor->GetActorValues():ActorValues{};
   EditChangeForm([&](MpChangeFormREFR& changeForm) {
     changeForm.baseContainerAdded = true;
     changeForm.inv.AddItem(baseId, count);
   });
+  if(actor&&SrpActorModifiers::Managed(*actor))actor->ReconcileSrpMaximums(before);
   SendInventoryUpdate();
 
   if (auto worldState = GetParent(); worldState->HasEspm()) {
@@ -864,11 +869,13 @@ void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
 
 void MpObjectReference::AddItems(const std::vector<Inventory::Entry>& entries)
 {
+  auto actor=AsActor();const auto before=actor?actor->GetActorValues():ActorValues{};
   if (entries.size() > 0) {
     EditChangeForm([&](MpChangeFormREFR& changeForm) {
       changeForm.baseContainerAdded = true;
       changeForm.inv.AddItems(entries);
     });
+  if(actor&&SrpActorModifiers::Managed(*actor))actor->ReconcileSrpMaximums(before);
     SendInventoryUpdate();
   }
 
@@ -892,6 +899,7 @@ void MpObjectReference::RemoveItem(uint32_t baseId, uint32_t count,
 void MpObjectReference::RemoveItems(
   const std::vector<Inventory::Entry>& entries, MpObjectReference* target)
 {
+  auto actor=AsActor();const auto before=actor?actor->GetActorValues():ActorValues{};
   EditChangeForm([&](MpChangeFormREFR& changeForm) {
     changeForm.inv.RemoveItems(entries);
   });
@@ -899,6 +907,7 @@ void MpObjectReference::RemoveItems(
   if (target)
     target->AddItems(entries);
 
+  if(actor&&SrpActorModifiers::Managed(*actor))actor->ReconcileSrpMaximums(before);
   SendInventoryUpdate();
 
   if (GetBaseType() == "CONT") {

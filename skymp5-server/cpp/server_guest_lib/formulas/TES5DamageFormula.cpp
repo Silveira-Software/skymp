@@ -3,6 +3,7 @@
 #include "HitData.h"
 #include "MpActor.h"
 #include "SrpActorStats.h"
+#include "SrpActorModifiers.h"
 #include "SpellCastData.h"
 #include "WorldState.h"
 #include "libespm/espm.h"
@@ -92,7 +93,7 @@ float TES5DamageFormulaImpl::CalcArmorRatingComponent(
       espm::GetData<espm::ARMO>(opponentEquipmentEntry.baseId, espmProvider);
     // TODO(#458): take other components into account
     auto ac = static_cast<float>(armorData.baseRatingX100) / 100;
-    if (armorData.enchantmentFormId) {
+    if (armorData.enchantmentFormId && !SrpActorModifiers::Managed(target)) {
       // TODO(#632) refactor this effect with actor effect system
       const auto enchantmentData =
         espm::GetData<espm::ENCH>(armorData.enchantmentFormId, espmProvider);
@@ -111,7 +112,7 @@ float TES5DamageFormulaImpl::CalcOpponentArmorRating() const
   for (auto& entry : eq.inv.entries) {
     combinedArmorRating += CalcArmorRatingComponent(entry);
   }
-  return combinedArmorRating + SrpActorStats::Read(target).ArmorBonus();
+  return std::max(0.f,combinedArmorRating + SrpActorStats::Read(target).ArmorBonus()+SrpActorModifiers::Read(target).Sum(espm::ActorValue::DamageResist));
 }
 
 float TES5DamageFormulaImpl::CalcUnarmedDamage() const

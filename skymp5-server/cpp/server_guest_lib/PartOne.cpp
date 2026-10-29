@@ -1,5 +1,6 @@
 #include "PartOne.h"
 #include "SrpActorStats.h"
+#include "SrpActorModifiers.h"
 #include "libespm/espm.h"
 #include <cmath>
 #include <array>
@@ -511,7 +512,7 @@ float PartOne::CalculateDamage(const MpActor& aggressor, const MpActor& target,
   const float damage = pImpl->damageFormula->CalculateDamage(aggressor, target, spellCastData);
   if (!std::isfinite(damage) || damage < 0) throw std::runtime_error("SRP_INVALID_BASE_DAMAGE");
   return damage * SrpActorStats::Read(aggressor).MagicDamageMultiplier() *
-    (1.f - SrpActorStats::Read(target).MagicResistanceFraction());
+    (1.f - std::clamp(SrpActorStats::Read(target).MagicResistanceFraction()+SrpActorModifiers::Read(target).Sum(espm::ActorValue::MagicResist)/100.f,-1.f,.85f));
 }
 
 void PartOne::NotifyGamemodeApiStateChanged(
