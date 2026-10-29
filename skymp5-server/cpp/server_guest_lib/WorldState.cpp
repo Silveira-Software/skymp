@@ -319,8 +319,10 @@ void WorldState::RequestSave(MpObjectReference& ref)
 
 void WorldState::RetainOriginalForUnload(MpObjectReference& actor)
 {
+  const auto& fields=actor.GetDynamicFields().GetAsJson();
   if(actor.GetFormId()>=0xff000000 ||
-    !actor.GetDynamicFields().GetAsJson().contains("private.srpOriginalReferenceV1"))return;
+    (!fields.contains("private.srpOriginalReferenceV1")&&
+     !fields.contains("private.srpOriginalLifecycleV1")))return;
   const auto generation=GetChangeFormGeneration(actor.GetFormId());
   if(!generation || !IsChangeFormSaved(actor.GetFormId(),generation))
     throw std::runtime_error("SRP_ORIGINAL_UNLOAD_REQUIRES_DURABLE_STATE");

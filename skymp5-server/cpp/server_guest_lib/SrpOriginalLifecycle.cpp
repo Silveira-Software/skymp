@@ -47,7 +47,11 @@ void ValidateDeath(const nlohmann::json& state,const nlohmann::json& identity)
 
 bool SrpOriginalLifecycle::Managed(const MpActor& actor)
 {
-  return actor.GetDynamicFields().GetAsJson().contains(originKey);
+  const auto& fields=actor.GetDynamicFields().GetAsJson();
+  // Corruption must not downgrade a corpse into the unguarded legacy path.
+  // An orphan lifecycle marker still quarantines interaction and respawn;
+  // Inspect/Kill will reject the missing identity without erasing the receipt.
+  return fields.contains(originKey)||fields.contains(lifeKey);
 }
 
 nlohmann::json SrpOriginalLifecycle::Inspect(const MpActor& actor)

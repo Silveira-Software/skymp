@@ -36,6 +36,8 @@ nlohmann::json SrpOriginalReference::Adopt(MpActor& actor, const nlohmann::json&
   auto* world = actor.GetParent();
   Require(world && actor.GetFormId() < 0xff000000, "SRP_ORIGINAL_STATIC_REFERENCE_REQUIRED");
   const auto fields = actor.GetDynamicFields().GetAsJson();
+  Require(!fields.contains("private.srpOriginalLifecycleV1") || fields.contains(marker),
+    "SRP_ORIGINAL_LIFECYCLE_ORPHANED");
   Require(!actor.IsCreatedAsPlayer() && actor.GetProfileId() < 0 &&
     (!fields.contains("srpActiveCharacterId") || fields.at("srpActiveCharacterId").is_null() ||
      fields.at("srpActiveCharacterId") == ""), "SRP_ORIGINAL_PLAYER_FORBIDDEN");

@@ -1,4 +1,4 @@
-# R38.2 — original corpse quarantine and atomic race/resource writes
+# R38.2 â€” original corpse quarantine and atomic race/resource writes
 
 Offline candidate only. PUBLIC R35/R3 was not changed. Full High Fantasy,
 supernatural engine transitions and authoritative SPEL remain RELEASE_BLOCKED.
@@ -9,7 +9,11 @@ Kill materializes the existing death-item selection and records one
 The operation is `<instanceId>:death:0`, state DEAD_QUARANTINED. A repeated
 kill does not select more drops or call the legacy reward callback. This is a
 native death observation, **not** independent hit/collision or reward authority.
-Loot, XP and respawn remain disabled for adopted originals. Legacy actors
+Loot, XP and respawn remain disabled for adopted originals. An orphan death
+receipt without the identity marker also stays quarantined: inspect, kill,
+unload and fresh adoption fail closed. A contradictory alive bit cannot
+mint a replacement identity. Engine death messages can precede fsync and are
+not a durable reward ACK. Legacy actors
 without the marker retain their existing paths.
 
 Original TakeItem/PutItem/Activate and unapproved resurrection/25-second
@@ -33,18 +37,18 @@ the original workload, ten-second timeout and expectations are preserved.
 Validation on 29 October 2026:
 
 - clang-20 / CMake / Ninja, existing `srp-native-v129-openmp:20261011` toolchain.
-- 354/354 full C++ cases; repeated with previously failing seed 3286815900,
-  again 354/354. Assertions vary with randomized leveled-list selections.
-- Eight original identity/lifecycle cases; 168 regression cases are a subset.
+- 355/355 full C++ cases; repeated with previously failing seed 3286815900,
+  again 355/355. Assertions vary with randomized leveled-list selections.
+- Nine original identity/lifecycle cases; 168 regression cases are a subset.
 - 562 source/header files match the actual isolated build tree (normalized LF).
-- Actual addon + original HF ESP: five identity-recovery and seven corpse
+- Actual addon + original HF ESP: five identity-recovery and eight corpse
   recovery cases, including SIGKILL, lost ACK, unload/reload and corruption.
 - Real addon resource tests, full gamemode integration, isolated Mongo,
   allocation/outbox crash recovery and legacy readers passed in PR64 evidence.
 - Skyrim human validation and transformation/voice/impact remain NOT TESTED.
 
-Addon SHA-256: `5918c9c35cd84cc3cc4f0426ebbac5974ab9023966951e4e6c0e891f6500f067`.
-Unit SHA-256: `5fbbfc49f17007259681699de987fb8f96333e5407bf0f28f138cf7042878b2a`.
+Addon SHA-256: `cef5b2687f7461fb212dfcc3135fbf784dc35493a86e8603c849541f69b7e31d`.
+Unit SHA-256: `2d2d63c4e4e201dcc459793a921c99ce37f300b8bd439ddde8a739e65abb534e`.
 Full reports, source manifest and controlled acceptance package: gamemode
 [PR64](https://github.com/Silveira-Software/SKYRIMRP/pull/64), `docs/r38-2`.
 

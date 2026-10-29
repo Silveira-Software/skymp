@@ -83,3 +83,23 @@ TEST_CASE("R38.2 corrupt death receipt is retained and blocks further native dea
   REQUIRE(cow.GetDynamicFields().GetAsJson().at("private.srpOriginalLifecycleV1")==state);
   REQUIRE(cow.GetInventory().ToJson()==before);
 }
+TEST_CASE("R38.2 orphan corpse receipt cannot downgrade to legacy loot or resurrection", "[srp-r382]")
+{
+  auto& w=GetPartOne();auto& cow=Original(w);cow.Kill(nullptr,false);
+  auto cf=cow.GetChangeForm();auto fields=cf.dynamicFields.GetAsJson();
+  fields.erase("private.srpOriginalReferenceV1");cf.dynamicFields=DynamicFields::FromJson(fields);
+  cow.ApplyChangeForm(cf);
+  REQUIRE(SrpOriginalLifecycle::Managed(cow));
+  REQUIRE_THROWS(SrpOriginalLifecycle::Inspect(cow));
+  REQUIRE_THROWS(cow.Kill(nullptr,false));
+  REQUIRE_THROWS(w.worldState.DestroyForm<MpActor>(cowId));
+  const auto before=cow.GetInventory().ToJson();
+  cow.Respawn();cow.RespawnWithDelay();cow.SetIsDead(false);w.Tick();
+  REQUIRE(cow.IsDead());REQUIRE_FALSE(cow.IsRespawning());
+  REQUIRE(cow.GetInventory().ToJson()==before);
+  REQUIRE(cow.GetDynamicFields().GetAsJson()==fields);
+  // Even a contradictory alive bit must not mint a replacement identity.
+  cf.isDead=false;cow.ApplyChangeForm(cf);
+  REQUIRE_THROWS_WITH(SrpOriginalReference::Adopt(cow,{{"speciesId","offline-cow"},{"policyRevision","R382-observation"}}),"SRP_ORIGINAL_LIFECYCLE_ORPHANED");
+  REQUIRE(cow.GetDynamicFields().GetAsJson()==fields);
+}

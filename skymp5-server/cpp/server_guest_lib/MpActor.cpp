@@ -1410,7 +1410,10 @@ void MpActor::ModifyActorValuePercentage(espm::ActorValue av,
 
 void MpActor::BeforeDestroy()
 {
-  if(SrpOriginalLifecycle::Managed(*this))GetParent()->RetainOriginalForUnload(*this);
+  if(SrpOriginalLifecycle::Managed(*this)){
+    SrpOriginalLifecycle::Inspect(*this);
+    GetParent()->RetainOriginalForUnload(*this);
+  }
   for (auto& sink : pImpl->destroyEventSinks) {
     sink->BeforeDestroy(*this);
   }
