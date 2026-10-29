@@ -197,3 +197,77 @@ TEST_CASE("R37 identity spell and keyword CTDA use real actor records", "[srp-r3
  c.functionIndex=682;parameter(armor.ToGlobalId(keywords.front()));Inventory inv;Inventory::Entry item(0x12e49,1);inv.entries.push_back(item);a.SetInventory(inv);Equipment worn;item.SetWorn(Inventory::Worn::Right);worn.inv.entries.push_back(item);a.SetEquipment(worn);REQUIRE(evaluate()==R::Active);a.SetInventory(Inventory{});REQUIRE(evaluate()==R::Inactive);
  parameter(0x12fd0);REQUIRE(evaluate()==R::Unknown);
 }
+
+
+namespace {
+void KnownEmptyPerks(MpActor& a){a.SetPropertyValueDump("private.srpPerkAuthorityV1",nlohmann::json{{"schemaVersion",1},{"authority","SRP-PERKS-V1"},{"complete",true},{"profileId",std::to_string(a.GetProfileId())},{"characterId","r37"},{"revision",1},{"perks",nlohmann::json::array()}}.dump(),false,false);}
+void PrepareSelfSpell(MpActor& a){a.AddSpell(0x2f3b8);Equipment e;e.leftSpell=0x2f3b8;a.SetEquipment(e);KnownEmptyPerks(a);a.SetPropertyValueDump("private.srpSpellCostPolicyV1","\"RECORD_BASE_ONLY_V1\"",false,false);}
+}
+TEST_CASE("R37.2 CTDA health fraction worldspace and worn apparel use exact authoritative state", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);auto owner=w.worldState.GetEspm().GetBrowser().LookupById(0x3eaf3);using R=SrpActorModifiers::ConditionResult;espm::CTDA c{};c.runOnType=espm::CTDA::RunOnTypeFlags::Subject;
+ c.functionIndex=640;c.comparisonValue=a.GetActorValues().healthPercentage;uint32_t av=24;memcpy(c.functionData,&av,4);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Active);a.DamageActorValue(espm::ActorValue::Health,20);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Inactive);av=39;memcpy(c.functionData,&av,4);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Unknown);
+ c.functionIndex=310;c.comparisonValue=1;uint32_t id=0x3c;memcpy(c.functionData,&id,4);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Active);
+ Inventory inv;Inventory::Entry item(0x12e49,1);inv.entries.push_back(item);a.SetInventory(inv);item.SetWorn(Inventory::Worn::Right);Equipment worn;worn.inv.entries={item,item};a.SetEquipment(worn);
+ const auto armor=w.worldState.GetEspm().GetBrowser().LookupById(item.baseId);id=armor.ToGlobalId(armor.rec->GetKeywordIds(w.worldState.GetEspmCache()).front());c.functionIndex=722;memcpy(c.functionData,&id,4);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Active);c.comparisonValue=2;REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Inactive);a.SetInventory(Inventory{});c.comparisonValue=0;REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Active);
+}
+TEST_CASE("R37.2 perk authority is explicit scoped and never inferred from missing data", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);auto owner=w.worldState.GetEspm().GetBrowser().LookupById(0x3eaf3);using R=SrpActorModifiers::ConditionResult;espm::CTDA c{};c.functionIndex=448;c.runOnType=espm::CTDA::RunOnTypeFlags::Subject;c.comparisonValue=1;uint32_t perk=0x581f9;memcpy(c.functionData,&perk,4);
+ REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Unknown);KnownEmptyPerks(a);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Inactive);
+ auto ledger=a.GetDynamicFields().GetAsJson().at("private.srpPerkAuthorityV1");ledger["perks"].push_back("581f9:Skyrim.esm");a.SetPropertyValueDump("private.srpPerkAuthorityV1",ledger.dump(),false,false);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Active);
+ a.SetPropertyValueDump("srpActiveCharacterId","\"foreign\"",false,false);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Unknown);
+}
+TEST_CASE("R37.2 ENCH origins preserve independent actual equipment and removal", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);Inventory inv;Inventory::Entry body(0x12e49,1),boots(0x12e4b,1);body.enchantmentId=0x49509;boots.enchantmentId=0x49509;body.name="legitimate-a";boots.name="legitimate-b";inv.entries={body,boots};a.SetInventory(inv);const auto hp=Health(a);body.SetWorn(Inventory::Worn::Right);boots.SetWorn(Inventory::Worn::Right);Equipment eq;eq.inv.entries={body,boots};a.SetEquipment(eq);
+ REQUIRE(a.GetMaximumValues().health==Catch::Approx(164));REQUIRE(Health(a)==Catch::Approx(hp));auto metadata=a.GetDynamicFields().GetAsJson().at("private.srpEquipmentOriginsV1");REQUIRE(metadata.at("origins").size()==2);for(auto row:metadata.at("origins")){REQUIRE(row.at("state")=="ACTIVE");REQUIRE(row.at("source")=="49509:Skyrim.esm");REQUIRE(row.at("sourceType")=="ENCH");}
+ eq.inv.entries={boots};a.SetEquipment(eq);REQUIRE(a.GetMaximumValues().health==Catch::Approx(144));REQUIRE(Health(a)==Catch::Approx(hp));metadata=a.GetDynamicFields().GetAsJson().at("private.srpEquipmentOriginsV1");size_t active=0,removed=0;for(auto row:metadata.at("origins")){active+=row.at("state")=="ACTIVE";removed+=row.at("state")=="REMOVED";}REQUIRE(active==1);REQUIRE(removed==1);
+ a.SetEquipment(eq);REQUIRE(a.GetDynamicFields().GetAsJson().at("private.srpEquipmentOriginsV1")==metadata);auto saved=a.GetChangeForm();a.ApplyChangeForm(saved);REQUIRE(a.GetMaximumValues().health==Catch::Approx(144));REQUIRE(Health(a)==Catch::Approx(hp));
+}
+TEST_CASE("R37.2 self SPEL atomically restores once debits magicka and survives replay", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);PrepareSelfSpell(a);a.DamageActorValue(espm::ActorValue::Health,50);const auto hp=Health(a),mp=a.GetActorValues().magicka*a.GetActorValues().magickaPercentage;
+ const auto receipt=SrpActorModifiers::CastSelf(a,0x2f3b8,"cast-self-fast-healing-1");REQUIRE(receipt.at("source")=="2f3b8:Skyrim.esm");REQUIRE(receipt.at("cost")==73);REQUIRE(Health(a)==Catch::Approx(hp+50));REQUIRE(a.GetActorValues().magicka*a.GetActorValues().magickaPercentage==Catch::Approx(mp-73));REQUIRE(receipt.at("effects").size()==2);REQUIRE(receipt.at("effects")[0].at("state")=="INSTANT_COMPLETE");REQUIRE(receipt.at("effects")[1].at("state")=="CONDITION_FALSE");
+ const auto generation=w.worldState.GetChangeFormGeneration(a.GetFormId());REQUIRE(SrpActorModifiers::CastSelf(a,0x2f3b8,"cast-self-fast-healing-1").at("duplicate")==true);REQUIRE(w.worldState.GetChangeFormGeneration(a.GetFormId())==generation);REQUIRE(Health(a)==Catch::Approx(hp+50));
+ const auto json=MpChangeForm::ToJson(a.GetChangeForm());simdjson::dom::parser parser;auto parsed=parser.parse(json.dump());auto element=parsed.value();a.ApplyChangeForm(MpChangeForm::JsonToChangeForm(element));REQUIRE(SrpActorModifiers::CastSelf(a,0x2f3b8,"cast-self-fast-healing-1").at("duplicate")==true);REQUIRE(Health(a)==Catch::Approx(hp+50));
+}
+TEST_CASE("R37.2 SPEL rejects unknown conditions cost and source before any debit", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);a.AddSpell(0x2f3b8);Equipment eq;eq.leftSpell=0x2f3b8;a.SetEquipment(eq);const auto before=MpChangeForm::ToJson(a.GetChangeForm());
+ REQUIRE_THROWS_WITH(SrpActorModifiers::CastSelf(a,0x2f3b8,"cast-unknown-cost-1"),"SRP_SPELL_COST_AUTHORITY_UNAVAILABLE");REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==before);
+ a.SetPropertyValueDump("private.srpSpellCostPolicyV1","\"RECORD_BASE_ONLY_V1\"",false,false);const auto unknown=MpChangeForm::ToJson(a.GetChangeForm());REQUIRE_THROWS_WITH(SrpActorModifiers::CastSelf(a,0x2f3b8,"cast-unknown-perk-1"),"SRP_SPELL_CONDITIONS_UNKNOWN");REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==unknown);
+ KnownEmptyPerks(a);a.DamageActorValue(espm::ActorValue::Magicka,99);const auto depleted=MpChangeForm::ToJson(a.GetChangeForm());REQUIRE_THROWS_WITH(SrpActorModifiers::CastSelf(a,0x2f3b8,"cast-no-magicka-1"),"SRP_SPELL_INSUFFICIENT_MAGICKA");REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==depleted);
+}
+
+TEST_CASE("R37.2 self spell receipt magicka and restoration remain atomic across SIGKILL", "[srp-r37][crash]"){
+ namespace fs=std::filesystem;
+ for(int stage=0;stage<3;++stage){
+  const auto path=fs::temp_directory_path()/("srp-r372-spell-crash-"+std::to_string(getpid())+"-"+std::to_string(stage));fs::create_directories(path);int fd[2];REQUIRE(pipe(fd)==0);const auto pid=fork();REQUIRE(pid>=0);
+  if(pid==0){close(fd[0]);try{
+   auto& w=GetPartOne();auto& a=Create(w);PrepareSelfSpell(a);a.DamageActorValue(espm::ActorValue::Health,40);
+   using Storage=Viet::AsyncSaveStorage<MpChangeForm,FormDesc,std::vector<FormDesc>>;w.worldState.AttachSaveStorage(std::make_shared<Storage>(std::make_shared<FileDatabase>(path.string(),spdlog::default_logger(),true),spdlog::default_logger(),"",5));
+   auto durable=[&](uint64_t generation){for(int i=0;i<12000;++i){w.Tick();if(w.worldState.IsChangeFormSaved(a.GetFormId(),generation))return;std::this_thread::sleep_for(std::chrono::milliseconds(1));}throw std::runtime_error("SPELL_SAVE_TIMEOUT");};
+   a.SetPropertyValueDump("private.srpSpellCrashBaseline","true",false,false);durable(w.worldState.GetChangeFormGeneration(a.GetFormId()));
+   SrpActorModifiers::CastSelf(a,0x2f3b8,"cast-self-crash-test-1");const auto generation=w.worldState.GetChangeFormGeneration(a.GetFormId());if(stage==1)w.Tick();if(stage==2)durable(generation);const char ready='R';write(fd[1],&ready,1);for(;;)pause();
+  }catch(...){_exit(4);}}
+  close(fd[1]);pollfd descriptor{fd[0],POLLIN,0};const auto ready=poll(&descriptor,1,15000);char phase=0;if(ready>0)read(fd[0],&phase,1);close(fd[0]);kill(pid,SIGKILL);int status=0;waitpid(pid,&status,0);REQUIRE(phase=='R');REQUIRE(WIFSIGNALED(status));
+  std::ifstream input(path/"changeForms"/"0.json");nlohmann::json document;input>>document;const auto fields=document.at("dynamicFields");const bool committed=fields.contains("private.srpSpellReceiptsV1");const auto max=fields.at("private.srpResourceMaximumsV1");
+  const auto health=document.at("healthPercentage").get<float>()*max.at("health").get<float>(),magicka=document.at("magickaPercentage").get<float>()*max.at("magicka").get<float>();REQUIRE(health==Catch::Approx(committed?110:60));REQUIRE(magicka==Catch::Approx(committed?27:100));if(stage==0)REQUIRE_FALSE(committed);if(stage==2)REQUIRE(committed);
+  if(committed)REQUIRE(fields.at("private.srpSpellReceiptsV1").at("receipts").at("cast-self-crash-test-1").at("cost")==73);
+ }
+}
+
+TEST_CASE("R37.2 death dispels only eligible provenanced temporary effects", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);SrpActorModifiers::ApplyFromSource(a,0x3eaf2,a,"death-origin-one");REQUIRE(a.GetMaximumValues().health==Catch::Approx(144));a.SetIsDead(true);REQUIRE(a.GetActiveMagicEffects().Empty());REQUIRE(a.GetMaximumValues().health==Catch::Approx(124));REQUIRE(Health(a)==0);
+}
+TEST_CASE("R37.2 valid caster disconnection never erases another caster instance", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);w.CreateActor(0xff000001,{0,0,0},0,0x3c,2);auto& b=w.worldState.GetFormAt<MpActor>(0xff000001);auto effect=SourceSpell(w,0xfb994,0);auto own=SrpActorModifiers::CreateProvenance(a,0xfb994,0,a,"own-after-disconnect"),other=SrpActorModifiers::CreateProvenance(a,0xfb994,0,b,"other-before-disconnect");a.ApplyMagicEffect(effect,false,false,&own);a.ApplyMagicEffect(effect,false,false,&other);const auto stored=a.GetActiveMagicEffects().ToJson();w.worldState.DestroyForm<MpActor>(b.GetFormId());REQUIRE(a.GetActiveMagicEffects().ToJson()==stored);REQUIRE(a.GetMaximumValues().health==Catch::Approx(149));REQUIRE(a.GetActiveMagicEffects().GetEntries().size()==2);auto restored=a.GetChangeForm();restored.activeMagicEffects.RemoveByStackKey(espm::ActorValue::Health,other.at("stackKey").get<std::string>());a.ApplyChangeForm(restored);REQUIRE(a.GetActiveMagicEffects().GetEntries().size()==1);REQUIRE(a.GetActiveMagicEffects().GetByStackKey(espm::ActorValue::Health,own.at("stackKey").get<std::string>()).has_value());
+}
+
+TEST_CASE("R37.2 CTDA keyword faction and death states have native evidence", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);auto owner=w.worldState.GetEspm().GetBrowser().LookupById(0x3eaf3);using R=SrpActorModifiers::ConditionResult;espm::CTDA c{};c.runOnType=espm::CTDA::RunOnTypeFlags::Subject;c.comparisonValue=1;
+ const auto race=w.worldState.GetEspm().GetBrowser().LookupById(a.GetRaceId());const auto keys=race.rec->GetKeywordIds(w.worldState.GetEspmCache());REQUIRE_FALSE(keys.empty());auto id=race.ToGlobalId(keys.front());c.functionIndex=560;memcpy(c.functionData,&id,4);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Active);
+ id=0xdb1;REQUIRE(w.worldState.GetEspm().GetBrowser().LookupById(id).rec->GetType()==espm::FACT::kType);c.functionIndex=71;memcpy(c.functionData,&id,4);a.AddToFaction({FormDesc::FromFormId(id,w.worldState.espmFiles),0});REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Active);const auto membership=MpChangeForm::ToJson(a.GetChangeForm());a.AddToFaction({FormDesc::FromFormId(id,w.worldState.espmFiles),7});REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==membership);a.RemoveFromFaction(FormDesc::FromFormId(id,w.worldState.espmFiles));REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Inactive);
+ c.functionIndex=46;id=0;memcpy(c.functionData,&id,4);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Inactive);a.SetIsDead(true);REQUIRE(SrpActorModifiers::EvaluateConditions(a,owner,{c})==R::Active);
+}
+
+TEST_CASE("R37.2 aborted recast retains the original instance expiration timer", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);espm::Effects::Effect initial{0x3eaf3,20,0,1},replacement{0x3eaf3,40,0,60};a.ApplyMagicEffect(initial);const auto hp=Health(a);
+ REQUIRE_THROWS(a.RunChangeFormTransaction([&](){a.ApplyMagicEffect(replacement);throw std::runtime_error("FAIL_AFTER_RECAST");return true;}));REQUIRE(a.GetMaximumValues().health==Catch::Approx(144));std::this_thread::sleep_for(std::chrono::milliseconds(1100));w.Tick();REQUIRE(a.GetActiveMagicEffects().Empty());REQUIRE(a.GetMaximumValues().health==Catch::Approx(124));REQUIRE(Health(a)==Catch::Approx(hp));
+}

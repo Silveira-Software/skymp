@@ -4,6 +4,7 @@
 #include "libespm/CTDA.h"
 #include "libespm/LookupResult.h"
 #include <map>
+#include <vector>
 class MpActor;
 struct SrpActorModifiers
 {
@@ -11,6 +12,7 @@ struct SrpActorModifiers
   std::map<espm::ActorValue,float> equipment;
   std::map<espm::ActorValue,float> temporary;
   std::map<espm::ActorValue,float> passive;
+  std::vector<nlohmann::json> equipmentEffects;
   static bool Managed(const MpActor& actor);
   static bool Supported(espm::ActorValue av);
   enum class ConditionResult { Inactive, Active, Unknown };
@@ -22,6 +24,9 @@ struct SrpActorModifiers
     uint32_t effectIndex,MpActor& caster,const std::string& operationId);
   static void ApplyFromSource(MpActor& target,uint32_t source,MpActor& caster,
     const std::string& operationId,bool hasSweetpie=false);
+  static nlohmann::json CastSelf(MpActor& caster,uint32_t spell,const std::string& opId);
+  static nlohmann::json SpellReceipt(MpActor& actor,const std::string& opId);
+  static void ReconcileOrigins(MpActor& actor);
   static SrpActorModifiers Read(const MpActor& actor,bool preparingProjection=false);
   static bool Apply(MpActor& actor, espm::Effects::Effect& effect, bool restoring,
                     const nlohmann::json* provenance=nullptr);

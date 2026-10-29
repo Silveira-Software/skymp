@@ -1241,8 +1241,10 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
-  // TODO: apply magic effects if this is not a fireball-like spell.
-  // Previous attempt was not successful, so it was deleted.
+  // Legacy cast packets remain animation/Papyrus events. R37.2 self effects
+  // use the negotiated command -> CastSrpSpell -> CastSelf durable transaction;
+  // applying here would bypass its cost, operation receipt and storage barrier.
+  // Target/contact/projectile application still requires authoritative proof.
 }
 
 void ActionListener::OnUnknown(const RawMessageData& rawMsgData)

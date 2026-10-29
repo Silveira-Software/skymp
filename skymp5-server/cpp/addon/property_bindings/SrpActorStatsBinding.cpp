@@ -28,6 +28,9 @@ Napi::Value SrpActorStatsBinding::Get(Napi::Env env, ScampServer& server,
   size_t knownOrigins=0,legacyOrigins=0;
   for(const auto& effect:actor.GetActiveMagicEffects().GetEntries())if(effect.provenance)++knownOrigins;else ++legacyOrigins;
   result["effectProvenanceVersion"]=1;
+  result["equipmentProvenanceVersion"]=1;
+  result["spellReceiptVersion"]=1;
+  result["equipmentEffectOrigins"]=modifiers.equipmentEffects;
   result["effectOrigins"]={{"known",knownOrigins},{"legacyUnknown",legacyOrigins}};
   result["permanent"]={{"health",permanent.health},{"magicka",permanent.magicka},{"stamina",permanent.stamina},{"carryWeight",300.f+stats.CarryBonus()}};
   result["current"]={{"health",maximum.health*actor.GetActorValues().healthPercentage},{"magicka",maximum.magicka*actor.GetActorValues().magickaPercentage},{"stamina",maximum.stamina*actor.GetActorValues().staminaPercentage}};

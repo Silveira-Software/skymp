@@ -10,6 +10,7 @@
 #include <random>
 #include <sstream>
 #include <iomanip>
+#include <cctype>
 
 bool SrpActorModifiers::Managed(const MpActor& actor)
 {
@@ -149,7 +150,7 @@ SrpActorModifiers::ConditionResult SrpActorModifiers::EvaluateConditions(
     const auto args=c.GetDefaultData();float value=0;
     if(args.secondParameter)return Result::Unknown;
     switch(c.functionIndex){
-      case 47: case 69: case 72: case 182: case 264: case 682: {
+      case 47: case 69: case 72: case 182: case 264: case 560: case 682: case 722: {
         const auto id=owner.ToGlobalId(args.firstParameter);
         if(!id||!world->GetEspm().GetBrowser().LookupById(id).rec)return Result::Unknown;
         const auto parameter=world->GetEspm().GetBrowser().LookupById(id).rec;
@@ -163,17 +164,75 @@ SrpActorModifiers::ConditionResult SrpActorModifiers::EvaluateConditions(
             std::set<uint32_t> list;if(rec.rec->GetType()==espm::NPC_::kType)list=espm::GetData<espm::NPC_>(source,world).spells;else if(rec.rec->GetType()==espm::RACE::kType)list=espm::GetData<espm::RACE>(source,world).spells;
             for(auto spell:list)if(rec.ToGlobalId(spell)==id)value=1;
           }
+        }else if(c.functionIndex==560){
+          if(parameter->GetType()!=espm::KYWD::kType)return Result::Unknown;
+          for(const auto source:{subject->GetBaseId(),subject->GetRaceId()}){
+            const auto rec=world->GetEspm().GetBrowser().LookupById(source);if(!rec.rec)return Result::Unknown;
+            for(const auto key:rec.rec->GetKeywordIds(world->GetEspmCache()))if(rec.ToGlobalId(key)==id)value=1;
+          }
         }else{
           const auto keyword=world->GetEspm().GetBrowser().LookupById(id);
-          if(c.functionIndex==682&&keyword.rec->GetType()!=espm::KYWD::kType)return Result::Unknown;
+          if((c.functionIndex==682||c.functionIndex==722)&&keyword.rec->GetType()!=espm::KYWD::kType)return Result::Unknown;
+          std::set<std::string> counted;
           for(const auto& worn:subject->GetEquipment().inv.entries){
             if(worn.GetWorn()==Inventory::Worn::None)continue;
             const auto actual=std::find_if(subject->GetInventory().entries.begin(),subject->GetInventory().entries.end(),[&](auto a){auto b=worn;a.SetWorn(Inventory::Worn::None);b.SetWorn(Inventory::Worn::None);return a.count>0&&a.EqualExceptCount(b);});
             if(actual==subject->GetInventory().entries.end())continue;
             if(c.functionIndex==182){if(worn.baseId==id)value=1;continue;}
             const auto rec=world->GetEspm().GetBrowser().LookupById(worn.baseId);if(!rec.rec)return Result::Unknown;
-            for(auto key:rec.rec->GetKeywordIds(world->GetEspmCache()))if(rec.ToGlobalId(key)==id)value=1;
+            if(c.functionIndex==722){
+              if(rec.rec->GetType()!=espm::ARMO::kType)continue;
+              const auto armor=espm::GetData<espm::ARMO>(worn.baseId,world);
+              const auto slots=armor.bod2.present?armor.bod2.bodyPartFlags:armor.bodt.present?armor.bodt.bodyPartFlags:0;
+              if(!(slots&(1u|2u|4u|8u|128u|4096u)))continue;
+              Inventory identity;auto entry=worn;entry.count=1;entry.SetWorn(Inventory::Worn::None);identity.entries.push_back(entry);
+              if(!counted.insert(identity.ToJson().dump()).second)continue;
+            }
+            for(auto key:rec.rec->GetKeywordIds(world->GetEspmCache()))if(rec.ToGlobalId(key)==id){if(c.functionIndex==722)++value;else value=1;break;}
           }
+        }
+        break;
+      }
+      case 46: {
+        if(args.firstParameter)return Result::Unknown;value=subject->IsDead();break;
+      }
+      case 71: {
+        const auto id=owner.ToGlobalId(args.firstParameter);const auto rec=world->GetEspm().GetBrowser().LookupById(id);
+        if(!rec.rec||rec.rec->GetType()!=espm::FACT::kType)return Result::Unknown;
+        const auto form=subject->GetChangeForm();if(!form.factions)return Result::Unknown;
+        for(const auto& faction:*form.factions)if(faction.formDesc.ToFormId(world->espmFiles)==id&&faction.rank>=0)value=1;
+        break;
+      }
+      case 310: {
+        const auto id=owner.ToGlobalId(args.firstParameter);const auto rec=world->GetEspm().GetBrowser().LookupById(id);
+        if(!rec.rec||rec.rec->GetType()!=espm::WRLD::kType)return Result::Unknown;
+        const auto location=subject->GetCellOrWorld().ToFormId(world->espmFiles);const auto current=world->GetEspm().GetBrowser().LookupById(location);
+        if(!current.rec||current.rec->GetType()!=espm::WRLD::kType)return Result::Unknown;
+        value=id==location;break;
+      }
+      case 640: {
+        const auto& av=subject->GetActorValues();
+        switch(static_cast<espm::ActorValue>(args.firstParameter)){
+          case espm::ActorValue::Health:value=av.healthPercentage;break;
+          case espm::ActorValue::Magicka:value=av.magickaPercentage;break;
+          case espm::ActorValue::Stamina:value=av.staminaPercentage;break;
+          default:return Result::Unknown;
+        }
+        if(!std::isfinite(value)||value<0||value>1)return Result::Unknown;break;
+      }
+      case 448: {
+        const auto id=owner.ToGlobalId(args.firstParameter);const auto rec=world->GetEspm().GetBrowser().LookupById(id);
+        if(!rec.rec||rec.rec->GetType().ToString()!="PERK")return Result::Unknown;
+        const auto& fields=subject->GetDynamicFields().GetAsJson();if(!fields.contains("private.srpPerkAuthorityV1"))return Result::Unknown;
+        const auto& ledger=fields.at("private.srpPerkAuthorityV1");const auto identity=ActorIdentity(*subject);
+        if(!ledger.is_object()||ledger.value("schemaVersion",0)!=1||ledger.value("authority",std::string())!="SRP-PERKS-V1"||!ledger.value("complete",false)||ledger.value("profileId",std::string())!=identity.at("profileId").get<std::string>()||ledger.value("characterId",std::string())!=identity.at("characterId").get<std::string>()||!ledger.contains("revision")||!ledger.at("revision").is_number_unsigned()||!ledger.at("revision").get<uint64_t>()||!ledger.contains("perks")||!ledger.at("perks").is_array())return Result::Unknown;
+        std::set<std::string> seen;
+        for(const auto& perk:ledger.at("perks")){
+          if(!perk.is_string()||!seen.insert(perk.get<std::string>()).second)return Result::Unknown;
+          uint32_t perkId;try{perkId=FormDesc::FromString(perk.get<std::string>()).ToFormId(world->espmFiles);}catch(...){return Result::Unknown;}
+          const auto record=world->GetEspm().GetBrowser().LookupById(perkId);
+          if(!record.rec||record.rec->GetType().ToString()!="PERK")return Result::Unknown;
+          if(perkId==id)value=1;
         }
         break;
       }
@@ -289,11 +348,11 @@ SrpActorModifiers SrpActorModifiers::Read(const MpActor& actor,bool preparingPro
     const auto armor=espm::GetData<espm::ARMO>(entry.baseId,world);
     const uint32_t slots=armor.bod2.present?armor.bod2.bodyPartFlags:armor.bodt.present?armor.bodt.bodyPartFlags:0;
     if(!slots||(occupied&slots))continue;
-    occupied|=slots;
     // Read enchantment identity from the authoritative inventory, never the
     // client equipment payload. Worn bits differ between these two views.
     auto actual=std::find_if(actor.GetInventory().entries.begin(),actor.GetInventory().entries.end(),[&](const auto& v){auto a=v,b=entry;a.SetWorn(Inventory::Worn::None);b.SetWorn(Inventory::Worn::None);return a.count>0&&a.EqualExceptCount(b);});
-    if(actual==actor.GetInventory().entries.end())continue;
+    if(actual==actor.GetInventory().entries.end()){out.complete=false;continue;}
+    occupied|=slots;
     uint32_t enchantment=actual->enchantmentId.value_or(0);
     if(!enchantment&&armor.enchantmentFormId)enchantment=record.ToGlobalId(armor.enchantmentFormId);
     if(!enchantment)continue;
@@ -304,7 +363,14 @@ SrpActorModifiers SrpActorModifiers::Read(const MpActor& actor,bool preparingPro
       ++effectIndex;
       effect.effectId=owner.ToGlobalId(effect.effectId);
       const auto data=EffectData(effect.effectId,world);
-      if(Peak(data)&&Include(TestConditions(actor,owner,effectIndex),EffectConditions(actor,effect.effectId),out.complete))out.equipment[data.primaryAV]+=Magnitude(effect,data);
+      if(!Peak(data))continue;
+      const auto sourceCondition=TestConditions(actor,owner,effectIndex),mgefCondition=EffectConditions(actor,effect.effectId);
+      const bool active=Include(sourceCondition,mgefCondition,out.complete);
+      Inventory item;auto canonical=*actual;canonical.count=1;canonical.SetWorn(Inventory::Worn::None);item.entries.push_back(canonical);
+      const auto source=FormDesc::FromFormId(enchantment,world->espmFiles).ToString();
+      const auto key=nlohmann::json::array({ActorIdentity(actor),item.ToJson(),slots,source,effectIndex}).dump();
+      out.equipmentEffects.push_back({{"key",key},{"schemaVersion",1},{"sourceType","ENCH"},{"source",source},{"recordOwner",world->espmFiles.at(owner.fileIdx)},{"mgef",FormDesc::FromFormId(effect.effectId,world->espmFiles).ToString()},{"effectIndex",effectIndex},{"item",item.ToJson()},{"slotMask",slots},{"owner",ActorIdentity(actor)},{"magnitude",Magnitude(effect,data)},{"durationMode","WHILE_EQUIPPED"},{"state",active?"ACTIVE":sourceCondition==Result::Unknown||mgefCondition==Result::Unknown?"UNKNOWN":"INACTIVE"}});
+      if(active)out.equipment[data.primaryAV]+=Magnitude(effect,data);
     }
   }
   return out;
@@ -346,7 +412,9 @@ bool SrpActorModifiers::Apply(MpActor& actor,espm::Effects::Effect& effect,bool 
   if(!restoring&&prior&&savedOrigin&&!savedOrigin->at("operationId").get<std::string>().empty()&&prior->get().provenance&&prior->get().provenance->at("operationId")==savedOrigin->at("operationId"))return true;
   if(restoring){if(!prior)return true;end=prior->get().endTime;}
   const auto old=actor.GetActorValues();
-  if(prior)world->RemoveEffectTimer(prior->get().timerId);
+  // Keep the previous timer: a transaction can still abort and restore its
+  // row. Instance/key/expiry checks make old callbacks inert after a commit;
+  // cancelling it here would leave a restored row without its expiry callback.
   uint32_t timer;const auto id=actor.GetFormId();std::weak_ptr<MpForm> identity=world->LookupFormByIdNoLoad(id);
   const auto instance=savedOrigin?savedOrigin->at("instanceId").get<std::string>():std::string();
   world->SetEffectTimer(std::chrono::duration_cast<std::chrono::milliseconds>(end-std::chrono::system_clock::now()),&timer).Then([world,id,identity,end,key,instance,effectId=effect.effectId,av=data.primaryAV](Viet::Void){auto target=identity.lock(),current=world->LookupFormByIdNoLoad(id);if(!target||current.get()!=target.get()||!target->AsActor())return;const auto active=target->AsActor()->GetActiveMagicEffects().GetByStackKey(av,key);if(active&&active->get().endTime==end&&active->get().data.effectId==effectId&&(!active->get().provenance||active->get().provenance->at("instanceId")==instance)){auto actor=target->AsActor();const auto before=actor->GetActorValues();actor->EditChangeForm([&](MpChangeForm& form){form.activeMagicEffects.RemoveByStackKey(av,key);});actor->ReconcileSrpMaximums(before);}});
@@ -354,4 +422,113 @@ bool SrpActorModifiers::Apply(MpActor& actor,espm::Effects::Effect& effect,bool 
   actor.EditChangeForm([&](MpChangeForm& form){form.activeMagicEffects.AddStacked(data.primaryAV,next);});
   actor.ReconcileSrpMaximums(old);
   return true;
+}
+
+
+void SrpActorModifiers::ReconcileOrigins(MpActor& actor)
+{
+ if(!Managed(actor))return;
+ auto current=Read(actor,true).equipmentEffects;
+ const auto fields=actor.GetDynamicFields().GetAsJson();
+ if(current.empty()&&!fields.contains("private.srpEquipmentOriginsV1"))return;
+ if(!current.empty()&&ActorIdentity(actor).at("incarnation")==""){EnsureIdentity(actor);current=Read(actor,true).equipmentEffects;}
+ nlohmann::json ledger={{"schemaVersion",1},{"origins",nlohmann::json::array()}};
+ if(fields.contains("private.srpEquipmentOriginsV1")){
+  ledger=fields.at("private.srpEquipmentOriginsV1");
+  if(ledger.value("schemaVersion",0)!=1||!ledger.contains("origins")||!ledger.at("origins").is_array())throw std::runtime_error("SRP_EQUIPMENT_ORIGIN_CORRUPT");
+ }
+ std::map<std::string,nlohmann::json> entries;
+ for(auto row:ledger.at("origins")){const auto key=row.at("key").get<std::string>();if(!entries.emplace(key,row).second)throw std::runtime_error("SRP_EQUIPMENT_ORIGIN_DUPLICATE");}
+ std::set<std::string> live;
+ for(const auto& row:current){const auto key=row.at("key").get<std::string>();live.insert(key);entries[key]=row;}
+ for(auto& [key,row]:entries)if(!live.count(key)&&row.value("state",std::string())!="REMOVED"){row["state"]="REMOVED";row["removalReason"]="NO_LONGER_IN_VERIFIED_EQUIPMENT";}
+ ledger["origins"]=nlohmann::json::array();for(const auto& [key,row]:entries)ledger["origins"].push_back(row);
+ if(!fields.contains("private.srpEquipmentOriginsV1")||fields.at("private.srpEquipmentOriginsV1")!=ledger)actor.SetPropertyValueDump("private.srpEquipmentOriginsV1",ledger.dump(),false,false);
+}
+
+
+nlohmann::json SrpActorModifiers::SpellReceipt(MpActor& actor,const std::string& opId)
+{
+ const auto& fields=actor.GetDynamicFields().GetAsJson();
+ if(!fields.contains("private.srpSpellReceiptsV1"))return nullptr;
+ const auto& ledger=fields.at("private.srpSpellReceiptsV1");
+ if(ledger.value("schemaVersion",0)!=1||!ledger.contains("receipts")||!ledger.at("receipts").is_object())throw std::runtime_error("SRP_SPELL_RECEIPTS_CORRUPT");
+ if(!ledger.at("receipts").contains(opId))return nullptr;
+ auto receipt=ledger.at("receipts").at(opId);
+ if(receipt.at("caster")!=ActorIdentity(actor)||receipt.at("target")!=ActorIdentity(actor))throw std::runtime_error("SRP_SPELL_RECEIPT_FOREIGN_CHARACTER");
+ bool changed=false;
+ for(auto& effect:receipt.at("effects"))if(effect.at("state")=="ACTIVE"){
+  const auto& origin=effect.at("origin");
+  const auto row=actor.GetActiveMagicEffects().GetByStackKey(static_cast<espm::ActorValue>(origin.at("actorValue").get<int>()),origin.at("stackKey").get<std::string>());
+  if(!row||!row->get().provenance||row->get().provenance->at("instanceId")!=origin.at("instanceId")){
+   effect["state"]="REMOVED";effect["removalReason"]="ACTIVE_INSTANCE_ABSENT";
+   effect["removalObservedAtMs"]=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();changed=true;
+  }
+ }
+ if(changed){auto next=ledger;next["receipts"][opId]=receipt;actor.SetPropertyValueDump("private.srpSpellReceiptsV1",next.dump(),false,false);}
+ return receipt;
+}
+
+nlohmann::json SrpActorModifiers::CastSelf(MpActor& caster,uint32_t spell,const std::string& opId)
+{
+ if(opId.size()<16||opId.size()>100||!std::all_of(opId.begin(),opId.end(),[](unsigned char c){return std::isalnum(c)||c=='-'||c=='_';}))throw std::runtime_error("SRP_SPELL_OPERATION_ID_INVALID");
+ auto world=caster.GetParent();if(!world||!world->HasEspm()||!Managed(caster))throw std::runtime_error("SRP_SPELL_ACTOR_AUTHORITY_REQUIRED");
+ const auto source=FormDesc::FromFormId(spell,world->espmFiles).ToString();
+ if(auto old=SpellReceipt(caster,opId);!old.is_null()){
+  if(old.at("source")!=source)throw std::runtime_error("SRP_SPELL_OPERATION_EQUIVOCATION");
+  old["duplicate"]=true;return old;
+ }
+ if(caster.IsDead())throw std::runtime_error("SRP_SPELL_CASTER_DEAD");
+ if(!caster.GetEquipment().IsSpellEquipped(spell))throw std::runtime_error("SRP_SPELL_NOT_EQUIPPED");
+ const auto owner=world->GetEspm().GetBrowser().LookupById(spell);
+ if(!owner.rec||owner.rec->GetType()!=espm::SPEL::kType)throw std::runtime_error("SRP_SPELL_SOURCE_INVALID");
+ const auto learned=caster.GetSpellList();bool knows=std::find(learned.begin(),learned.end(),spell)!=learned.end();
+ for(const auto sourceId:{caster.GetBaseId(),caster.GetRaceId()}){
+  const auto sourceRecord=world->GetEspm().GetBrowser().LookupById(sourceId);if(!sourceRecord.rec)throw std::runtime_error("SRP_SPELL_KNOWLEDGE_CONTEXT_UNKNOWN");
+  std::set<uint32_t> spells;
+  if(sourceRecord.rec->GetType()==espm::NPC_::kType)spells=espm::GetData<espm::NPC_>(sourceId,world).spells;
+  else if(sourceRecord.rec->GetType()==espm::RACE::kType)spells=espm::GetData<espm::RACE>(sourceId,world).spells;
+  for(const auto id:spells)if(sourceRecord.ToGlobalId(id)==spell)knows=true;
+ }
+ if(!knows)throw std::runtime_error("SRP_SPELL_NOT_LEARNED");
+ const auto record=espm::GetData<espm::SPEL>(spell,world);
+ if(!record.spellItem||record.spellItem->type!=espm::SPEL::SpellType::Spell||record.spellItem->castType!=espm::SPEL::CastType::FireAndForget||record.spellItem->delivery!=espm::SPEL::Delivery::Self)throw std::runtime_error("SRP_SPELL_DELIVERY_REQUIRES_APPLICATION_PROOF");
+ const auto fields=caster.GetDynamicFields().GetAsJson();
+ if(fields.value("private.srpSpellCostPolicyV1",std::string())!="RECORD_BASE_ONLY_V1")throw std::runtime_error("SRP_SPELL_COST_AUTHORITY_UNAVAILABLE");
+ const auto cost=record.spellItem->spellCost;
+ if(!cost||cost>100000||!std::isfinite(record.spellItem->chargeTime)||record.spellItem->chargeTime<0||record.spellItem->chargeTime>60)throw std::runtime_error("SRP_SPELL_COST_OR_CHARGE_UNSUPPORTED");
+ if(!Read(caster).complete)throw std::runtime_error("SRP_SPELL_MODIFIER_CONTEXT_UNKNOWN");
+ const auto effects=SourceEffects(spell,world);if(effects.empty()||effects.size()>128)throw std::runtime_error("SRP_SPELL_EFFECT_SET_UNSUPPORTED");
+ for(uint32_t i=0;i<effects.size();++i){
+  const auto data=EffectData(effects[i].effectId,world);
+  if(data.IsFlagSet(espm::MGEF::Flags::NoRecast)||data.IsFlagSet(espm::MGEF::Flags::DispelEffects))throw std::runtime_error("SRP_SPELL_STACKING_POLICY_NOT_PROVEN");
+  const bool restore=data.effectType==espm::MGEF::EffectType::ValueMod&&!data.IsFlagSet(espm::MGEF::Flags::Recover)&&!data.IsFlagSet(espm::MGEF::Flags::Detrimental)&&effects[i].duration==0&&(data.primaryAV==espm::ActorValue::Health||data.primaryAV==espm::ActorValue::Magicka||data.primaryAV==espm::ActorValue::Stamina);
+  if(effects[i].areaOfEffect||(!Peak(data)&&!restore)||data.IsFlagSet(espm::MGEF::Flags::NoMagnitude))throw std::runtime_error("SRP_SPELL_EFFECT_APPLICATION_UNSUPPORTED");
+  Magnitude(effects[i],data);
+  if(TestConditions(caster,owner,i,&caster)==Result::Unknown||EffectConditions(caster,effects[i].effectId,&caster)==Result::Unknown)throw std::runtime_error("SRP_SPELL_CONDITIONS_UNKNOWN");
+ }
+ const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+ nlohmann::json ledger={{"schemaVersion",1},{"receipts",nlohmann::json::object()}};
+ if(fields.contains("private.srpSpellReceiptsV1"))ledger=fields.at("private.srpSpellReceiptsV1");
+ if(ledger.value("schemaVersion",0)!=1||!ledger.at("receipts").is_object())throw std::runtime_error("SRP_SPELL_RECEIPTS_CORRUPT");
+ if(ledger.at("receipts").size()>=4096)throw std::runtime_error("SRP_SPELL_RECEIPT_CAPACITY_REQUIRES_RECONCILIATION");
+ for(const auto& [key,receipt]:ledger.at("receipts").items())if(receipt.at("caster").at("characterId")==ActorIdentity(caster).at("characterId")&&now-receipt.at("appliedAtMs").get<int64_t>()<std::max<int64_t>(500,int64_t(record.spellItem->chargeTime*1000)))throw std::runtime_error("SRP_SPELL_CAST_RATE_LIMIT");
+ const auto values=caster.GetActorValues();if(values.magicka*values.magickaPercentage<float(cost))throw std::runtime_error("SRP_SPELL_INSUFFICIENT_MAGICKA");
+ nlohmann::json result;
+ caster.RunChangeFormTransaction([&](){
+  EnsureIdentity(caster);
+  result={{"schemaVersion",1},{"sourceType","SPEL"},{"source",source},{"operationId",opId},{"caster",ActorIdentity(caster)},{"target",ActorIdentity(caster)},{"appliedAtMs",now},{"cost",cost},{"costPolicy","RECORD_BASE_ONLY_V1"},{"state","APPLIED"},{"effects",nlohmann::json::array()}};
+  caster.DamageActorValue(espm::ActorValue::Magicka,cost);
+  for(uint32_t i=0;i<effects.size();++i){
+   auto effect=effects[i];auto origin=CreateProvenance(caster,spell,i,caster,opId);
+   const auto sourceCondition=TestConditions(caster,owner,i,&caster),effectCondition=EffectConditions(caster,effect.effectId,&caster);
+   const bool active=sourceCondition==Result::Active&&effectCondition==Result::Active;
+   origin["sourceConditionAtApply"]=sourceCondition==Result::Active?"TRUE":"FALSE";
+   origin["sourceConditionCount"]=Conditions(owner.rec,world,i).values.size();
+   if(active)caster.ApplyMagicEffect(effect,false,false,&origin);
+   result["effects"].push_back({{"origin",origin},{"magnitude",effect.magnitude},{"duration",effect.duration},{"expiresAtMs",origin.at("expiresAtMs")},{"state",!active?"CONDITION_FALSE":Peak(EffectData(effect.effectId,world))?"ACTIVE":"INSTANT_COMPLETE"}});
+  }
+  ledger["receipts"][opId]=result;caster.SetPropertyValueDump("private.srpSpellReceiptsV1",ledger.dump(),false,false);return true;
+ });
+ result["duplicate"]=false;return result;
 }

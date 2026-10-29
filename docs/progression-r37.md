@@ -99,3 +99,50 @@ Rollback must keep a V1-compatible reader, receipts and current progress. An old
 reader is rejected even if origins have expired; do not discard rows to downgrade.
 `effectProvenanceVersion=1` is mandatory for the gamemode allocation capability.
 Allocation OFF, RELEASE_BLOCKED; no production replacement or Skyrim human test.
+
+## R37.2, 28 October: gated self casts and equipment origins
+
+The experimental addon now exposes `castSrpSpell(user, spell, opId,
+characterId, queryOnly)`. It resolves the authenticated user's actor and accepts
+only learned/equipped, supported Self/FireAndForget spells. Source/EFID/MGEF
+conditions, resource availability and cast interval are validated before one
+ChangeForm transaction records cost, effects and `private.srpSpellReceiptsV1`.
+The gamemode waits for the saved-generation barrier before ACK. A duplicate or
+fresh-process query returns the existing receipt without another debit/effect.
+NoRecast and DispelEffects are rejected until their policies are proven.
+
+This path is OFF by default. It requires an explicit RECORD_BASE_ONLY_V1 cost
+policy, which is not the complete vanilla cost formula. Player/NPC targeted
+impacts and cross-actor recovery are not implemented by this path. Animation
+packets remain animation events and do not confirm an application. Engine/server
+composition and real Skyrim acceptance remain blocking gates.
+
+Verified inventory variants, slots, ENCH/EFIDs and conditions feed the existing
+modifier composer. A derived `private.srpEquipmentOriginsV1` ledger tracks
+individual equipment contributions and marks absent origins REMOVED. It does not
+invent physical UUIDs for indistinguishable vanilla copies or duplicate the
+inventory/effect executor. Legacy effect origins are not inferred.
+
+Added native CTDA contexts: GetDead, GetInFaction, GetInWorldspace, HasPerk,
+HasKeyword, GetActorValuePercent and WornApparelHasKeywordCount. HasPerk requires
+a scoped, explicitly complete SRP-PERKS-V1 ledger; no production producer was
+invented. Missing context stays Unknown. The installed-record audit classifies
+60 records as 2 structurally supported, 20 requiring runtime authority and 38
+blocked, across 347 condition rows. These counts are not true-condition results.
+
+Recast timers survive a transaction abort, while instance/expiry checks prevent
+an old callback removing a committed replacement. Death removes only eligible
+provenanced temporary origins and respects NoDeathDispel. Re-adding a faction
+reactivates a negative-rank tombstone and preserves existing valid ranks.
+
+Official isolated clang 20/CMake/Ninja build: 44 R36/R37 cases, 333 assertions,
+zero failures. Candidate addon SHA-256 (never installed in PUBLIC):
+`73b81a29b2b97e4e1256968ae75560caec8fcb3dc856625b1c54246c16e1cf4e`.
+The gamemode PR #60 contains the exact-byte runtime, restart, SIGKILL, Mongo,
+launcher and source-parity evidence. New reader capability checks prohibit
+rollback to a reader that cannot preserve the SPEL receipts or ENCH ledger.
+Keep current progress and all receipts; do not restore an old world over it.
+
+PUBLIC R35/hotfix R3, API, Mongo, CDN and launcher remain unchanged. Allocation,
+self-spell flags and R37 release remain blocked. No real Skyrim R37 acceptance
+or production deployment is claimed.

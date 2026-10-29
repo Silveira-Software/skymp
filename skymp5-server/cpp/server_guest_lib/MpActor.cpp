@@ -278,8 +278,11 @@ void MpActor::AddToFaction(Faction faction, bool lazyLoad)
       changeForm.factions = std::vector<Faction>();
       changeForm.factions.value().push_back(faction);
     } else {
-      for (const auto& fact : changeForm.factions.value()) {
+      for (auto& fact : changeForm.factions.value()) {
         if (faction.formDesc == fact.formDesc) {
+          // A persisted rank -1 is not membership. Re-adding the same faction
+          // must update its rank instead of leaving that tombstone unchanged.
+          if(fact.rank<0&&faction.rank>=0)fact.rank=faction.rank;
           return;
         }
       }
@@ -1098,6 +1101,19 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     changeForm.actorValues.staminaPercentage =
       isDead ? 0.f : GetStaminaRespawnPercentage();
   });
+
+  if(isDead&&SrpActorModifiers::Managed(*this)){
+    const auto before=GetActorValues();
+    for(const auto& entry:GetActiveMagicEffects().GetEntries()){
+      if(!entry.provenance)continue; // never invent legacy dispel semantics
+      const auto id=FormDesc::FromString(entry.provenance->at("mgef").get<std::string>()).ToFormId(GetParent()->espmFiles);
+      const auto data=espm::GetData<espm::MGEF>(id,GetParent()).data;
+      if(data.IsFlagSet(espm::MGEF::Flags::NoDeathDispel))continue;
+      GetParent()->RemoveEffectTimer(entry.timerId);
+      EditChangeForm([&](MpChangeForm& form){form.activeMagicEffects.RemoveByStackKey(data.primaryAV,ActiveMagicEffectsMap::StackKey(entry));});
+    }
+    ReconcileSrpMaximums(before);
+  }
 
   if (shouldTeleport) {
     SetCellOrWorldObsolete(position.cellOrWorldDesc);
@@ -1940,6 +1956,7 @@ void MpActor::SetActorValues(const ActorValues& actorValues)
 
 void MpActor::ReconcileSrpMaximums(const ActorValues& before)
 {
+  SrpActorModifiers::ReconcileOrigins(*this);
   const auto maximum=GetMaximumValues();auto values=GetActorValues();
   if(maximum.health==before.health&&maximum.magicka==before.magicka&&maximum.stamina==before.stamina)return;
   auto keep=[](float pct,float oldMax,float newMax){return std::clamp(pct*oldMax/std::max(newMax,1.f),0.f,1.f);};
@@ -2044,7 +2061,9 @@ void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
     if (activeEffects.Has(av)) {
       const ActiveMagicEffectsMap::Entry& entry =
         activeEffects.Get(av).value().get();
-      worldState->RemoveEffectTimer(entry.timerId);
+      // Managed transactions may roll back this replacement. Old callbacks
+      // check effect+expiry, so retaining them also preserves aborted recasts.
+      if(!SrpActorModifiers::Managed(*this))worldState->RemoveEffectTimer(entry.timerId);
     }
     EditChangeForm([av, pEntry = &entry](MpChangeForm& changeForm) {
       changeForm.activeMagicEffects.Add(av, *pEntry);
