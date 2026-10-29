@@ -1,5 +1,6 @@
 #include "ScampServer.h"
 #include "SrpActorModifiers.h"
+#include "SrpOriginalReference.h"
 
 #include "AtomicActorSpawnV16.h"
 #include "Bot.h"
@@ -125,6 +126,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("castSrpSpell", &ScampServer::CastSrpSpell),
       InstanceMethod("inspectSrpSpell", &ScampServer::InspectSrpSpell),
       InstanceMethod("inspectSrpCast", &ScampServer::InspectSrpCast),
+      InstanceMethod("adoptSrpOriginalActor", &ScampServer::AdoptSrpOriginalActor),
       InstanceMethod("runChangeFormTransaction", &ScampServer::RunChangeFormTransaction),
       InstanceMethod("getChangeFormGeneration",
                      &ScampServer::GetChangeFormGeneration),
@@ -1849,4 +1851,22 @@ Napi::Value ScampServer::InspectSrpCast(const Napi::CallbackInfo& info)
   report["authenticatedUser"]=user;report["targetConnected"]=target&&partOne->serverState.UserByActor(target)!=Networking::InvalidUserId;
   return NapiHelper::ParseJson(env,report.dump());
  }catch(const std::exception& e){Napi::Error::New(env,e.what()).ThrowAsJavaScriptException();return env.Undefined();}
+}
+
+Napi::Value ScampServer::AdoptSrpOriginalActor(const Napi::CallbackInfo& info)
+{
+  const auto env = info.Env();
+  try {
+    const auto id = NapiHelper::ExtractUInt32(info[0], "reference");
+    auto form = partOne->worldState.LookupFormByIdNoLoad(id);
+    auto* actor = form ? form->AsActor() : nullptr;
+    if (!actor) throw std::runtime_error("SRP_ORIGINAL_LOADED_ACTOR_REQUIRED");
+    if (partOne->serverState.UserByActor(actor) != Networking::InvalidUserId)
+      throw std::runtime_error("SRP_ORIGINAL_PLAYER_FORBIDDEN");
+    const auto policy = nlohmann::json::parse(NapiHelper::Stringify(env, info[1]));
+    return NapiHelper::ParseJson(env, SrpOriginalReference::Adopt(*actor, policy).dump());
+  } catch (const std::exception& e) {
+    Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
 }

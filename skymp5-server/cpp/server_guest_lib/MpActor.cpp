@@ -231,12 +231,18 @@ void MpActor::SetRaceMenuOpen(bool isOpen)
 
 void MpActor::SetAppearance(const Appearance* newAppearance)
 {
+  // A race changes resource maxima. Preserve absolute resources, as equipment
+  // and temporary effects already do; retaining the old fraction grants a
+  // free heal on a larger race. Legacy/unmanaged actors keep their behavior.
+  const auto before = SrpActorModifiers::Managed(*this)
+    ? std::optional<ActorValues>(GetActorValues()) : std::nullopt;
   EditChangeForm([&](MpChangeForm& changeForm) {
     if (newAppearance)
       changeForm.appearanceDump = newAppearance->ToJson();
     else
       changeForm.appearanceDump.clear();
   });
+  if (before) ReconcileSrpMaximums(*before);
 }
 
 void MpActor::SetEquipment(const Equipment& newEquipment)

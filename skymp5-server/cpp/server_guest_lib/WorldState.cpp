@@ -114,9 +114,9 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
                          bool skipChecks,
                          const MpChangeForm* optionalChangeFormToApply)
 {
-  if (!skipChecks && forms.find(formId) != forms.end()) {
-    throw std::runtime_error(
-      fmt::format("Form with id {:x} already exists", formId));
+  if (forms.find(formId) != forms.end()) {
+    if (skipChecks) return; // Keep the existing original reference untouched.
+    throw std::runtime_error(fmt::format("Form with id {:x} already exists", formId));
   }
 
   // Assign formIndex before Init
@@ -691,6 +691,10 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
 
 bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
 {
+  // Chunk discovery calls LoadForm directly, even for already loaded actors.
+  // Initializing another object for the same FormID queues an orphan snapshot
+  // under another idx, which can overwrite the canonical actor in one batch.
+  if (forms.find(formId) != forms.end()) return true;
   ANTIGO_CONTEXT_INIT(ctx);
   ctx.AddUnsigned(formId);
 
