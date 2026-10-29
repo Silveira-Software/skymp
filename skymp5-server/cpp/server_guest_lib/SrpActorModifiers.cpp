@@ -455,7 +455,11 @@ nlohmann::json SrpActorModifiers::SpellReceipt(MpActor& actor,const std::string&
  if(ledger.value("schemaVersion",0)!=1||!ledger.contains("receipts")||!ledger.at("receipts").is_object())throw std::runtime_error("SRP_SPELL_RECEIPTS_CORRUPT");
  if(!ledger.at("receipts").contains(opId))return nullptr;
  auto receipt=ledger.at("receipts").at(opId);
- if(receipt.at("caster")!=ActorIdentity(actor)||receipt.at("target")!=ActorIdentity(actor))throw std::runtime_error("SRP_SPELL_RECEIPT_FOREIGN_CHARACTER");
+ if(receipt.at("caster")!=ActorIdentity(actor))throw std::runtime_error("SRP_SPELL_RECEIPT_FOREIGN_CHARACTER");
+ // A completed outbox receipt belongs to this caster but its effects live on
+ // the other ChangeForm. Do not infer removal by searching the caster's rows.
+ if(receipt.value("applicationType",std::string())=="REMOTE_OUTBOX_V1")return receipt;
+ if(receipt.at("target")!=ActorIdentity(actor))throw std::runtime_error("SRP_SPELL_RECEIPT_FOREIGN_CHARACTER");
  bool changed=false;
  for(auto& effect:receipt.at("effects"))if(effect.at("state")=="ACTIVE"){
   const auto& origin=effect.at("origin");
@@ -531,4 +535,29 @@ nlohmann::json SrpActorModifiers::CastSelf(MpActor& caster,uint32_t spell,const 
   ledger["receipts"][opId]=result;caster.SetPropertyValueDump("private.srpSpellReceiptsV1",ledger.dump(),false,false);return true;
  });
  result["duplicate"]=false;return result;
+}
+
+nlohmann::json SrpActorModifiers::SpellAuthority(const MpActor& actor,uint32_t spell,bool dual)
+{
+ auto world=actor.GetParent();if(!world||!world->HasEspm())throw std::runtime_error("SRP_SPELL_RECORD_AUTHORITY_UNAVAILABLE");
+ const auto owner=world->GetEspm().GetBrowser().LookupById(spell);
+ if(!owner.rec||owner.rec->GetType()!=espm::SPEL::kType)throw std::runtime_error("SRP_SPELL_SOURCE_INVALID");
+ const auto data=espm::GetData<espm::SPEL>(spell,world);if(!data.spellItem)throw std::runtime_error("SRP_SPELL_SPIT_MISSING");
+ nlohmann::json effects=nlohmann::json::array();
+ for(const auto& effect:SourceEffects(spell,world)){
+  const auto record=world->GetEspm().GetBrowser().LookupById(effect.effectId);if(!record.rec)throw std::runtime_error("SRP_SPELL_MGEF_MISSING");
+  nlohmann::json metadata={{"mgef",FormDesc::FromFormId(effect.effectId,world->espmFiles).ToString()},{"school",nullptr},{"baseCost",nullptr}};
+  espm::RecordHeaderAccess::IterateFields(record.rec,[&](const char* type,uint32_t size,const char* bytes){if(memcmp(type,"DATA",4)||size<20)return;float cost;int32_t school;memcpy(&cost,bytes+4,4);memcpy(&school,bytes+12,4);if(std::isfinite(cost)&&cost>=0)metadata["baseCost"]=cost;metadata["school"]=school;},world->GetEspmCache());
+  effects.push_back(metadata);
+ }
+ // The installed Platform only observes TESSpellCastEvent; it cannot suppress
+ // precisely one cast/cost/effect before application. Client cost/LOS reports
+ // cannot supply server authority. Do not fall back to the R37.2 base tariff.
+ return {{"schemaVersion",2},{"source",FormDesc::FromFormId(spell,world->espmFiles).ToString()},{"caster",ActorIdentity(actor)},
+ {"recordBaseCost",data.spellItem->spellCost},{"autoCalculate",!(static_cast<uint32_t>(data.spellItem->flags)&1u)},
+ {"castType",static_cast<int>(data.spellItem->castType)},{"delivery",static_cast<int>(data.spellItem->delivery)},
+ {"perk",data.spellItem->perkFormId? nlohmann::json(FormDesc::FromFormId(owner.ToGlobalId(data.spellItem->perkFormId),world->espmFiles).ToString()):nlohmann::json(nullptr)},
+ {"effects",effects},{"dualCast",dual},{"policy","ENGINE_LEGACY_ONLY_NO_ADDITIONAL_SERVER_APPLICATION"},
+ {"finalCost",nullptr},{"applicationAllowed",false},{"engineControlSupported",false},{"finalCostAuthoritySupported",false},
+ {"blockedBy",nlohmann::json::array({"PRECAST_ENGINE_CONTROL_UNAVAILABLE","FINAL_COST_RULES_AND_RUNTIME_CONTEXT_UNAVAILABLE",dual?"DUAL_CAST_RULES_UNPROVEN":"NO_CLIENT_COST_AUTHORITY"})}};
 }

@@ -271,3 +271,19 @@ TEST_CASE("R37.2 aborted recast retains the original instance expiration timer",
  auto& w=GetPartOne();auto& a=Create(w);espm::Effects::Effect initial{0x3eaf3,20,0,1},replacement{0x3eaf3,40,0,60};a.ApplyMagicEffect(initial);const auto hp=Health(a);
  REQUIRE_THROWS(a.RunChangeFormTransaction([&](){a.ApplyMagicEffect(replacement);throw std::runtime_error("FAIL_AFTER_RECAST");return true;}));REQUIRE(a.GetMaximumValues().health==Catch::Approx(144));std::this_thread::sleep_for(std::chrono::milliseconds(1100));w.Tick();REQUIRE(a.GetActiveMagicEffects().Empty());REQUIRE(a.GetMaximumValues().health==Catch::Approx(124));REQUIRE(Health(a)==Catch::Approx(hp));
 }
+
+TEST_CASE("R37.3 real SPEL cost metadata never substitutes for final engine authority", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);PrepareSelfSpell(a);const auto before=MpChangeForm::ToJson(a.GetChangeForm());
+ auto report=SrpActorModifiers::SpellAuthority(a,0x2f3b8);
+ REQUIRE(report.at("recordBaseCost")==73);REQUIRE(report.at("finalCost").is_null());REQUIRE(report.at("applicationAllowed")==false);REQUIRE(report.at("engineControlSupported")==false);REQUIRE(report.at("effects").size()==2);REQUIRE(report.at("effects")[0].at("school").is_number_integer());
+ REQUIRE(SrpActorModifiers::SpellAuthority(a,0x2f3b8,true).at("dualCast")==true);
+ REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==before);REQUIRE_THROWS(SrpActorModifiers::SpellAuthority(a,0x12e49));
+}
+
+TEST_CASE("R37.3 remote outbox caster receipt does not erase target effect metadata", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);PrepareSelfSpell(a);const auto self=SrpActorModifiers::CastSelf(a,0x2f3b8,"cast-r373-legacy-identity");
+ auto receipt=self;receipt["operationId"]="cast-r373-remote-receipt";receipt["applicationType"]="REMOTE_OUTBOX_V1";receipt["target"]["characterId"]="other-character";receipt["effects"]=nlohmann::json::array({{{"state","ACTIVE"},{"origin",{{"instanceId","target-instance"}}}}});
+ a.SetPropertyValueDump("private.srpSpellReceiptsV1",nlohmann::json{{"schemaVersion",1},{"receipts",{{"cast-r373-remote-receipt",receipt}}}}.dump(),false,false);
+ const auto before=MpChangeForm::ToJson(a.GetChangeForm());REQUIRE(SrpActorModifiers::SpellReceipt(a,"cast-r373-remote-receipt")==receipt);REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==before);
+ a.SetPropertyValueDump("srpActiveCharacterId","\"replacement\"",false,false);REQUIRE_THROWS(SrpActorModifiers::SpellReceipt(a,"cast-r373-remote-receipt"));
+}

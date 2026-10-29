@@ -26,6 +26,7 @@ struct SrpActorModifiers
     const std::string& operationId,bool hasSweetpie=false);
   static nlohmann::json CastSelf(MpActor& caster,uint32_t spell,const std::string& opId);
   static nlohmann::json SpellReceipt(MpActor& actor,const std::string& opId);
+  static nlohmann::json SpellAuthority(const MpActor& actor,uint32_t spell,bool dual=false);
   static void ReconcileOrigins(MpActor& actor);
   static SrpActorModifiers Read(const MpActor& actor,bool preparingProjection=false);
   static bool Apply(MpActor& actor, espm::Effects::Effect& effect, bool restoring,

@@ -30,6 +30,9 @@ Napi::Value SrpActorStatsBinding::Get(Napi::Env env, ScampServer& server,
   result["effectProvenanceVersion"]=1;
   result["equipmentProvenanceVersion"]=1;
   result["spellReceiptVersion"]=1;
+  result["spellAuthorityVersion"]=2;
+  result["spellEngineControlSupported"]=false;
+  result["spellFinalCostAuthoritySupported"]=false;
   result["equipmentEffectOrigins"]=modifiers.equipmentEffects;
   result["effectOrigins"]={{"known",knownOrigins},{"legacyUnknown",legacyOrigins}};
   result["permanent"]={{"health",permanent.health},{"magicka",permanent.magicka},{"stamina",permanent.stamina},{"carryWeight",300.f+stats.CarryBonus()}};

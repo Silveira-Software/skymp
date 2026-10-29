@@ -146,3 +146,35 @@ Keep current progress and all receipts; do not restore an old world over it.
 PUBLIC R35/hotfix R3, API, Mongo, CDN and launcher remain unchanged. Allocation,
 self-spell flags and R37 release remain blocked. No real Skyrim R37 acceptance
 or production deployment is claimed.
+
+## R37.3: prevent a second application after the engine cast
+
+The addon no longer calls CastSelf for a new castSrpSpell operation. The current
+Platform TESSpellCastEvent is post-engine observation, not proof that the engine
+suppressed cost/effects. New commands fail with an explicit authority error even
+when the former RECORD_BASE_ONLY_V1 property is present. Existing R37.2 receipts
+remain queryable/replayable without another effect or debit. CastSelf remains an
+internal isolated-test primitive, not a newly enabled network path.
+
+inspectSrpSpell returns scoped readonly metadata from real SPEL/SPIT/MGEF records
+(base costs, schools, perk, delivery, cast type, autocalculate and dual-cast
+request). finalCost is null and applicationAllowed=false. The native does not
+accept a client cost/LOS/suppression claim as authority. Engine control and final
+cost capabilities are explicitly false. No global vanilla effect suppression was
+added; the legacy hit/change-values path is preserved and is not claimed to be a
+new transactional impact protocol.
+
+REMOTE_OUTBOX_V1 receipts on the caster retain effects belonging to their target;
+querying them does not falsely mark them removed by inspecting the caster's map.
+The matching gamemode implements durable caster reservation -> target receipt ->
+caster completion with the existing transactions and save barrier. Its trusted
+impact/cost producer is still absent. New unproven target applications stay
+blocked. Reader admission must preserve the outbox and current progress.
+
+Official isolated build: 46 cases / 345 assertions. Candidate Linux addon:
+`20a6c31c370f6d3109a498c981be3fb17be43c7b33e9a8b1ff796ac9f30b187c`.
+R37.2 internal record-base tests are retained, with their experimental scope;
+they are not evidence of the final vanilla cost or of an impact in Skyrim.
+The PR #60 evidence distinguishes controlled native resource/storage SIGKILL
+tests from actual network/engine effects. PUBLIC remains untouched; allocation
+and SPEL OFF, RELEASE_BLOCKED, real Skyrim acceptance NOT TESTED.
