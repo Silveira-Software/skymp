@@ -1,4 +1,4 @@
-# R38.2 â€” original corpse quarantine and atomic race/resource writes
+# R38.2 — original corpse quarantine and atomic race/resource writes
 
 Offline candidate only. PUBLIC R35/R3 was not changed. Full High Fantasy,
 supernatural engine transitions and authoritative SPEL remain RELEASE_BLOCKED.
