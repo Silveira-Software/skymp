@@ -51,7 +51,8 @@ bool SrpOriginalLifecycle::Managed(const MpActor& actor)
   // Corruption must not downgrade a corpse into the unguarded legacy path.
   // An orphan lifecycle marker still quarantines interaction and respawn;
   // Inspect/Kill will reject the missing identity without erasing the receipt.
-  return fields.contains(originKey)||fields.contains(lifeKey);
+  return fields.contains(originKey)||fields.contains(lifeKey)||
+    (actor.GetParent()&&actor.GetParent()->IsSrpOriginalControlled(actor.GetFormId()));
 }
 
 nlohmann::json SrpOriginalLifecycle::Inspect(const MpActor& actor)

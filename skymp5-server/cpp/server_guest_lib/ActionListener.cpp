@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "SrpOriginalLifecycle.h"
 #include "AnimationSystem.h"
 #include "ConditionsEvaluator.h"
 #include "ConsoleCommands.h"
@@ -1088,6 +1089,11 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     return;
   }
 
+  if (SrpOriginalLifecycle::Managed(*aggressor) ||
+      (targetRef->AsActor() &&
+       SrpOriginalLifecycle::Managed(*targetRef->AsActor())))
+    return;
+
   const FormDesc& aggressorCellOrWorld = aggressor->GetCellOrWorld();
   const FormDesc& targetCellOrWorld = targetRef->GetCellOrWorld();
 
@@ -1199,6 +1205,13 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     spellCastData.target = myActor->GetFormId();
   }
 
+  const auto observedTarget =
+    partOne.worldState.LookupFormByIdNoLoad(spellCastData.target);
+  if (SrpOriginalLifecycle::Managed(*caster) ||
+      (observedTarget && observedTarget->AsActor() &&
+       SrpOriginalLifecycle::Managed(*observedTarget->AsActor())))
+    return;
+
   if (caster->IsDead()) {
     spdlog::info(fmt::format("{:x} actor is dead and can't spell cast. "
                              "requesting respawn in order to fix death state",
@@ -1256,6 +1269,10 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
                                 const HitData& hitData)
 {
+  if (SrpOriginalLifecycle::Managed(*aggressor) ||
+      (targetRef && targetRef->AsActor() &&
+       SrpOriginalLifecycle::Managed(*targetRef->AsActor())))
+    return;
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
 
   auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
@@ -1295,6 +1312,10 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
                                  MpObjectReference* targetRef, HitData hitData,
                                  [[maybe_unused]] bool isUnarmed)
 {
+  if (SrpOriginalLifecycle::Managed(*aggressor) ||
+      (targetRef && targetRef->AsActor() &&
+       SrpOriginalLifecycle::Managed(*targetRef->AsActor())))
+    return;
   const auto currentHitTime = std::chrono::steady_clock::now();
 
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);

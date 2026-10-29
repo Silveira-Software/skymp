@@ -660,6 +660,7 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     throw std::runtime_error(
       "Expected record type to be ACHR, but found REFR");
   }
+  if(GetParent())GetParent()->CheckSrpNpcMovement(GetFormId(),newChangeForm.worldOrCellDesc,newChangeForm.position);
   MpObjectReference::ApplyChangeForm(newChangeForm);
   EditChangeForm(
     [&](MpChangeForm& changeForm) {

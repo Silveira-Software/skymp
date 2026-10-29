@@ -92,6 +92,12 @@ public:
   uint64_t GetChangeFormGeneration(uint32_t formId) const;
   bool IsChangeFormSaved(uint32_t formId, uint64_t generation) const;
   void RetainOriginalForUnload(MpObjectReference& actor);
+  void ConfigureSrpNpcAdmission(const nlohmann::json& config);
+  nlohmann::json InspectSrpNpcAdmission() const;
+  bool IsSrpOriginalControlled(uint32_t formId);
+  void CheckSrpNpcMovement(uint32_t formId,const FormDesc& location,const NiPoint3& pos);
+  std::vector<uint32_t> GetLoadedActors(uint32_t modIndex) const;
+  void ReleaseSrpNpcAdmission(uint32_t formId);
   bool HasEspmFile(std::string_view filename) const noexcept;
 
   template <typename T>
@@ -209,6 +215,7 @@ public:
     }
 
     forms.erase(it);
+    ReleaseSrpNpcAdmission(formId);
   };
 
   espm::Loader& GetEspm() const;
@@ -279,6 +286,8 @@ public:
   std::vector<GameModeEvent*> currentGameModeEventsStack;
 
 private:
+  std::string SrpNpcRegion(const FormDesc& location,const NiPoint3& pos) const;
+  std::string SrpNpcSource(uint32_t formId,uint32_t baseId) const;
   bool AttachEspmRecord(const espm::CombineBrowser& br,
                         const espm::RecordHeader* record,
                         const espm::IdMapping& mapping,

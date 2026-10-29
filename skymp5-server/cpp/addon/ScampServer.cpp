@@ -122,6 +122,8 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("getNeighborsByPosition",
                      &ScampServer::GetNeighborsByPosition),
       InstanceMethod("getAllForms", &ScampServer::GetAllForms),
+      InstanceMethod("getLoadedActors", &ScampServer::GetLoadedActors),
+      InstanceMethod("inspectSrpNpcAdmission", &ScampServer::InspectSrpNpcAdmission),
       InstanceMethod("getDescFromId", &ScampServer::GetDescFromId),
       InstanceMethod("getIdFromDesc", &ScampServer::GetIdFromDesc),
       InstanceMethod("castSrpSpell", &ScampServer::CastSrpSpell),
@@ -405,6 +407,8 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       ScriptStorageFactory::Create(serverSettings));
 
     partOne->AttachEspm(espm);
+    if(serverSettings.contains("srpNpcAdmissionV1"))
+      partOne->worldState.ConfigureSrpNpcAdmission(serverSettings.at("srpNpcAdmissionV1"));
     partOne->animationSystem.Init(&partOne->worldState);
 
     if (conditionsEvaluatorSettings.is_object()) {
@@ -1231,6 +1235,24 @@ Napi::Value ScampServer::GetNeighborsByPosition(const Napi::CallbackInfo& info)
   }
 }
 
+Napi::Value ScampServer::GetLoadedActors(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto ids = partOne->worldState.GetLoadedActors(
+      NapiHelper::ExtractUInt32(info[0], "modIndex"));
+    auto out = Napi::Uint32Array::New(info.Env(), ids.size());
+    for (size_t i = 0; i < ids.size(); ++i)
+      out[i] = ids[i];
+    return out;
+  } catch (const std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+Napi::Value ScampServer::InspectSrpNpcAdmission(const Napi::CallbackInfo& info)
+{
+  return NapiHelper::ParseJson(
+    info.Env(), partOne->worldState.InspectSrpNpcAdmission().dump());
+}
 Napi::Value ScampServer::GetAllForms(const Napi::CallbackInfo& info)
 {
   try {

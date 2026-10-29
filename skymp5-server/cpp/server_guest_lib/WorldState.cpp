@@ -1,4 +1,5 @@
 #include "WorldState.h"
+#include "SrpNpcAdmission.h"
 #include "SaveGenerationTracker.h"
 #include "gamemode_events/ChangeFormsSavedEvent.h"
 #include "EvaluateTemplate.h"
@@ -40,6 +41,9 @@ struct RelootTimeForTypesEntry
 
 struct WorldState::Impl
 {
+  SrpNpcAdmission npcAdmission;
+  bool npcAdmissionDeferred = false;
+  bool npcInitializationFailed = false;
   std::vector<std::optional<MpChangeForm>> changesByIdx;
   bool changesByIdxEmpty = true;
 
@@ -78,6 +82,8 @@ void WorldState::Clear()
   forms.clear();
   grids.clear();
   formIdxManager.reset();
+  pImpl->npcAdmission.ResetLeases();
+  pImpl->npcAdmissionDeferred=false;
 }
 
 const std::chrono::steady_clock::time_point& WorldState::GetStartPoint() const
@@ -114,12 +120,58 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
                          bool skipChecks,
                          const MpChangeForm* optionalChangeFormToApply)
 {
+  if (pImpl->npcInitializationFailed)
+    throw std::runtime_error("SRP_NPC_INITIALIZATION_FAILED_RESTART_REQUIRED");
   if (forms.find(formId) != forms.end()) {
-    if (skipChecks) return; // Keep the existing original reference untouched.
-    throw std::runtime_error(fmt::format("Form with id {:x} already exists", formId));
+    if (skipChecks)
+      return; // Keep the existing original reference untouched.
+    throw std::runtime_error(
+      fmt::format("Form with id {:x} already exists", formId));
   }
 
+  // Reserve identity before Init can materialize items, scripts or grid state.
+  // The same path counts original and dynamic NPCs; a player never consumes a
+  // fauna/creature slot. Saved static state determines current occupancy.
+  if (auto* actor = form->AsActor(); actor && pImpl->npcAdmission.Enabled()) {
+    const MpChangeForm* saved = optionalChangeFormToApply;
+    if (!saved) {
+      auto it = pImpl->changeFormsForDeferredLoad.find(formId);
+      if (it != pImpl->changeFormsForDeferredLoad.end())
+        saved = &it->second;
+    }
+    const bool player = formId >= 0xff000000 &&
+      (actor->GetBaseId() <= 7 || (saved && saved->profileId >= 0));
+    const auto location =
+      saved ? saved->worldOrCellDesc : actor->GetCellOrWorld();
+    const auto pos = saved ? saved->position : actor->GetPos();
+    pImpl->npcAdmission.Reserve(
+      formId, FormDesc::FromFormId(formId, espmFiles).ToString(),
+      FormDesc::FromFormId(actor->GetBaseId(), espmFiles).ToString(),
+      SrpNpcRegion(location, pos), player,
+      SrpNpcSource(formId, actor->GetBaseId()));
+  }
+  struct AdmissionState
+  {
+    SrpNpcAdmission* gate;
+    uint32_t id;
+    bool* initializationFailed;
+    bool started = false;
+    bool inserted = false;
+    bool complete = false;
+  };
+  AdmissionState admission{ &pImpl->npcAdmission, formId,
+                            &pImpl->npcInitializationFailed };
+  Viet::ScopedTask<AdmissionState> releaseOnFailure(
+    [](AdmissionState& state) {
+      if (!state.complete && state.started && state.gate->Enabled())
+        *state.initializationFailed = true;
+      if (!state.complete && !state.inserted)
+        state.gate->Release(state.id);
+    },
+    admission);
+
   // Assign formIndex before Init
+  admission.started = true;
   if (auto refr = form->AsObjectReference()) {
     if (!formIdxManager) {
       formIdxManager.reset(new MakeID(FormIndex::g_invalidIdx - 1));
@@ -140,20 +192,169 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
   form->Init(this, formId, optionalChangeFormToApply != nullptr);
 
   auto it = forms.insert({ formId, std::move(form) }).first;
+  // After insertion the actor is still loaded even if applying a corrupt saved
+  // image throws. Keep its slot until destruction; never undercount live
+  // forms.
+  admission.inserted = true;
 
   if (optionalChangeFormToApply) {
     auto refr = it->second->AsObjectReference();
     if (!refr) {
       forms.erase(it); // Rollback changes due to exception
+      admission.inserted = false;
       throw std::runtime_error(
         "Unable to apply ChangeForm, cast to ObjectReference failed");
     }
     refr->ApplyChangeForm(*optionalChangeFormToApply);
   }
+  admission.complete = true;
+}
+
+std::string WorldState::SrpNpcRegion(const FormDesc& location,
+                                     const NiPoint3& pos) const
+{
+  for (int i = 0; i < 3; ++i)
+    if (!std::isfinite(pos[i]) || std::abs(pos[i]) > 100000000)
+      throw std::runtime_error("SRP_NPC_ADMISSION_POSITION_INVALID");
+  const auto name = location.ToString();
+  if (espm) {
+    const auto record =
+      espm->GetBrowser().LookupById(location.ToFormId(espmFiles));
+    if (!record.rec ||
+        (record.rec->GetType() != "WRLD" && record.rec->GetType() != "CELL"))
+      throw std::runtime_error("SRP_NPC_ADMISSION_LOCATION_INVALID");
+    if (record.rec->GetType() == "CELL")
+      return name;
+  }
+  return name + ":" +
+    std::to_string(static_cast<int64_t>(std::floor(pos.x / 4096))) + ":" +
+    std::to_string(static_cast<int64_t>(std::floor(pos.y / 4096)));
+}
+std::string WorldState::SrpNpcSource(uint32_t formId, uint32_t baseId) const
+{
+  if (!espm || !pImpl->npcAdmission.Enabled())
+    return {};
+  auto& browser = espm->GetBrowser();
+  // An override retains the master's FormDesc. Use the winning record source,
+  // and also gate dynamic/vanilla references using a controlled NPC_ base.
+  std::string controlled;
+  for (const auto id : { formId, baseId }) {
+    const auto row = browser.LookupById(id);
+    if (row.rec && row.fileIdx < espmFiles.size() &&
+        pImpl->npcAdmission.ControlsPlugin(espmFiles[row.fileIdx])) {
+      if (!controlled.empty() && controlled != espmFiles[row.fileIdx])
+        throw std::runtime_error(
+          "SRP_NPC_ADMISSION_AMBIGUOUS_SOURCE_REQUIRES_REVIEW");
+      controlled = espmFiles[row.fileIdx];
+    }
+  }
+  return controlled;
+}
+void WorldState::ConfigureSrpNpcAdmission(const nlohmann::json& config)
+{
+  if (!forms.empty())
+    throw std::runtime_error("SRP_NPC_ADMISSION_CONFIG_BEFORE_LOAD_REQUIRED");
+  SrpNpcAdmission validated;
+  validated.Configure(config); // Reject malformed descriptors before
+                               // FormDesc's legacy permissive parser.
+  // Canonical descriptors must resolve in the ACTUAL load order, not an index
+  // guessed from the catalog. Validate before replacing the admission policy.
+  if (config.is_object())
+    for (const auto& source :
+         config.value("sources", nlohmann::json::array())) {
+      const auto plugin = source.at("plugin").get<std::string>();
+      if (!HasEspmFile(plugin))
+        throw std::runtime_error("SRP_NPC_ADMISSION_PLUGIN_NOT_LOADED");
+      for (const auto& desc : source.at("references")) {
+        auto d = FormDesc::FromString(desc.get<std::string>());
+        auto id = d.ToFormId(espmFiles);
+        auto record = GetEspm().GetBrowser().LookupById(id);
+        if (id >= 0xff000000 || !record.rec || record.rec->GetType() != "ACHR")
+          throw std::runtime_error("SRP_NPC_ADMISSION_ACHR_REQUIRED");
+        const auto baseId =
+          record.ToGlobalId(reinterpret_cast<const espm::ACHR*>(record.rec)
+                              ->GetData(GetEspmCache())
+                              .baseId);
+        const auto base = GetEspm().GetBrowser().LookupById(baseId);
+        if (espmFiles.at(record.fileIdx) != plugin &&
+            (!base.rec || espmFiles.at(base.fileIdx) != plugin))
+          throw std::runtime_error(
+            "SRP_NPC_ADMISSION_REFERENCE_SOURCE_MISMATCH");
+      }
+    }
+  if (config.is_object())
+    for (const auto& desc :
+         config.value("faunaBases", nlohmann::json::array())) {
+      auto d = FormDesc::FromString(desc.get<std::string>());
+      auto record = GetEspm().GetBrowser().LookupById(d.ToFormId(espmFiles));
+      if (!record.rec || record.rec->GetType() != "NPC_")
+        throw std::runtime_error("SRP_NPC_ADMISSION_BASE_REQUIRED");
+    }
+  pImpl->npcAdmission.Configure(config);
+}
+nlohmann::json WorldState::InspectSrpNpcAdmission() const
+{
+  auto result = pImpl->npcAdmission.Inspect();
+  result["initializationFailed"] = pImpl->npcInitializationFailed;
+  return result;
+}
+bool WorldState::IsSrpOriginalControlled(uint32_t formId)
+{
+  if (formId >= 0xff000000 || !pImpl->npcAdmission.Enabled())
+    return false;
+  uint32_t baseId = 0;
+  if (espm) {
+    const auto row = espm->GetBrowser().LookupById(formId);
+    if (row.rec && row.rec->GetType() == "ACHR")
+      baseId = row.ToGlobalId(reinterpret_cast<const espm::ACHR*>(row.rec)
+                                ->GetData(GetEspmCache())
+                                .baseId);
+  }
+  return pImpl->npcAdmission.Controlled(
+           FormDesc::FromFormId(formId, espmFiles).ToString()) ||
+    !SrpNpcSource(formId, baseId).empty();
+}
+void WorldState::CheckSrpNpcMovement(uint32_t formId, const FormDesc& location,
+                                     const NiPoint3& pos)
+{
+  if (pImpl->npcAdmission.HasLease(formId) &&
+      pImpl->npcAdmission.Move(formId, SrpNpcRegion(location, pos)) &&
+      pImpl->npcAdmissionDeferred) {
+    for (auto& [_, grid] : grids)
+      grid.loadedChunks.clear();
+    pImpl->npcAdmissionDeferred = false;
+  }
+}
+void WorldState::ReleaseSrpNpcAdmission(uint32_t formId)
+{
+  const bool counted = pImpl->npcAdmission.HasLease(formId);
+  pImpl->npcAdmission.Release(formId);
+  if (counted && pImpl->npcAdmissionDeferred) {
+    for (auto& [_, grid] : grids)
+      grid.loadedChunks.clear();
+    pImpl->npcAdmissionDeferred = false;
+  }
+}
+std::vector<uint32_t> WorldState::GetLoadedActors(uint32_t modIndex) const
+{
+  if (modIndex > 255)
+    throw std::runtime_error("SRP_LOADED_ACTORS_MOD_INDEX_INVALID");
+  std::vector<uint32_t> ids;
+  for (const auto& [id, form] : forms)
+    if ((id >> 24) == modIndex && form && form->AsActor())
+      ids.push_back(id);
+  std::sort(ids.begin(), ids.end());
+  return ids;
 }
 
 void WorldState::Tick()
 {
+  // A failed Init/ApplyChangeForm may have queued a partial image or exposed
+  // indices. Never save/activate that world or retry it as a successful load.
+  // Clear deliberately cannot reset this latch: only a fresh world may read
+  // the unchanged durable image again after the cause is addressed.
+  if (pImpl->npcInitializationFailed)
+    throw std::runtime_error("SRP_NPC_INITIALIZATION_FAILED_RESTART_REQUIRED");
   const auto now = std::chrono::system_clock::now();
   TickSaveStorage(now);
   TickTimers(now);
@@ -333,6 +534,7 @@ void WorldState::RetainOriginalForUnload(MpObjectReference& actor)
 
 uint64_t WorldState::GetChangeFormGeneration(uint32_t formId) const
 {
+  if(pImpl->npcInitializationFailed)return 0;
   auto it = forms.find(formId);
   if (it == forms.end() || !it->second) {
     return 0;
@@ -343,18 +545,21 @@ uint64_t WorldState::GetChangeFormGeneration(uint32_t formId) const
 
 bool WorldState::IsChangeFormSaved(uint32_t formId, uint64_t generation) const
 {
+  if (pImpl->npcInitializationFailed)
+    return false;
   auto it = forms.find(formId);
   if (it == forms.end() || !it->second) {
     return false;
   }
   auto refr = it->second->AsObjectReference();
-  return refr &&
-    pImpl->saveGenerations.IsSaved(refr->GetIdx(), generation);
+  return refr && pImpl->saveGenerations.IsSaved(refr->GetIdx(), generation);
 }
 
 const std::shared_ptr<MpForm>& WorldState::LookupFormById(
   uint32_t formId, std::stringstream* optionalOutTrace)
 {
+  if (pImpl->npcInitializationFailed)
+    throw std::runtime_error("SRP_NPC_INITIALIZATION_FAILED_RESTART_REQUIRED");
   static const std::shared_ptr<MpForm> kNullForm;
 
   if (optionalOutTrace) {
@@ -400,6 +605,8 @@ const std::shared_ptr<MpForm>& WorldState::LookupFormById(
 const std::shared_ptr<MpForm>& WorldState::LookupFormByIdNoLoad(
   uint32_t formId)
 {
+  if(pImpl->npcInitializationFailed)
+    throw std::runtime_error("SRP_NPC_INITIALIZATION_FAILED_RESTART_REQUIRED");
   static const std::shared_ptr<MpForm> kNullForm;
 
   auto it = forms.find(formId);
@@ -692,7 +899,13 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
     form.reset(
       new MpActor(formLocationalData, formCallbacksFactory(), baseId));
   }
-  AddForm(std::move(form), formId, true, changeForm);
+  try{AddForm(std::move(form), formId, true, changeForm);}
+  catch(const std::runtime_error& e){
+    if(std::string(e.what()).find("SRP_NPC_ADMISSION_")!=0)throw;
+    pImpl->npcAdmissionDeferred=true;
+    if(optionalOutTrace)*optionalOutTrace<<e.what()<<std::endl;
+    return false;
+  }
 
   // Do not TriggerFormInitEvent here, doing it later after changeForm apply
 
@@ -705,10 +918,13 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
 
 bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
 {
+  if(pImpl->npcInitializationFailed)
+    throw std::runtime_error("SRP_NPC_INITIALIZATION_FAILED_RESTART_REQUIRED");
   // Chunk discovery calls LoadForm directly, even for already loaded actors.
   // Initializing another object for the same FormID queues an orphan snapshot
   // under another idx, which can overwrite the canonical actor in one batch.
-  if (forms.find(formId) != forms.end()) return true;
+  if (forms.find(formId) != forms.end())
+    return true;
   ANTIGO_CONTEXT_INIT(ctx);
   ctx.AddUnsigned(formId);
 
@@ -738,7 +954,13 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
     auto it = pImpl->changeFormsForDeferredLoad.find(formId);
     if (it != pImpl->changeFormsForDeferredLoad.end()) {
       auto copy = it->second; // crashes without copying
-      refr.ApplyChangeForm(copy);
+      try {
+        refr.ApplyChangeForm(copy);
+      } catch (...) {
+        if (pImpl->npcAdmission.Enabled() && refr.AsActor())
+          pImpl->npcInitializationFailed = true;
+        throw;
+      }
     }
 
     refr.ForceSubscriptionsUpdate();

@@ -551,6 +551,7 @@ void MpObjectReference::Enable()
 
 void MpObjectReference::SetPos(const NiPoint3& newPos, SetPosMode setPosMode)
 {
+  if(GetParent()&&AsActor())GetParent()->CheckSrpNpcMovement(GetFormId(),GetCellOrWorld(),newPos);
   auto oldGridPos = GetGridPos(ChangeForm().position);
   auto newGridPos = GetGridPos(newPos);
 
@@ -1295,6 +1296,7 @@ void MpObjectReference::SetCellOrWorldObsolete(const FormDesc& newWorldOrCell)
   if (!worldState) {
     return;
   }
+  if(AsActor())worldState->CheckSrpNpcMovement(GetFormId(),newWorldOrCell,GetPos());
 
   auto worldOrCell =
     ChangeForm().worldOrCellDesc.ToFormId(worldState->espmFiles);
