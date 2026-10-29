@@ -1,4 +1,5 @@
 #include "MpObjectReference.h"
+#include "SrpOriginalLifecycle.h"
 #include <unordered_set>
 static thread_local std::unordered_set<const MpObjectReference*> srpConsumptionTransactions;
 #include "ChangeFormGuard.h"
@@ -456,6 +457,7 @@ void MpObjectReference::Activate(MpObjectReference& activationSource,
                                  bool defaultProcessingOnly,
                                  bool isSecondActivation)
 {
+  if(AsActor()&&SrpOriginalLifecycle::Managed(*AsActor()))return;
   if (spdlog::should_log(spdlog::level::trace)) {
     for (auto& script : ListActivePexInstances()) {
       spdlog::trace("MpObjectReference::Activate {:x} - found script {}",
@@ -646,6 +648,8 @@ void MpObjectReference::SetOpen(bool open)
 
 void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 {
+  if(AsActor()&&SrpOriginalLifecycle::Managed(*AsActor()))
+    throw std::runtime_error("SRP_ORIGINAL_INVENTORY_LIFECYCLE_NOT_APPROVED");
   CheckInteractionAbility(ac);
   if (this->occupant != &ac) {
     std::stringstream err;
@@ -660,6 +664,8 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 
 void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 {
+  if(AsActor()&&SrpOriginalLifecycle::Managed(*AsActor()))
+    throw std::runtime_error("SRP_ORIGINAL_LOOT_LIFECYCLE_NOT_APPROVED");
   CheckInteractionAbility(ac);
   if (this->occupant != &ac) {
     std::stringstream err;

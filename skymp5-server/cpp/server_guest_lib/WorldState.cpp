@@ -317,6 +317,18 @@ void WorldState::RequestSave(MpObjectReference& ref)
   pImpl->saveGenerations.OnRequestSave(idx);
 }
 
+void WorldState::RetainOriginalForUnload(MpObjectReference& actor)
+{
+  if(actor.GetFormId()>=0xff000000 ||
+    !actor.GetDynamicFields().GetAsJson().contains("private.srpOriginalReferenceV1"))return;
+  const auto generation=GetChangeFormGeneration(actor.GetFormId());
+  if(!generation || !IsChangeFormSaved(actor.GetFormId(),generation))
+    throw std::runtime_error("SRP_ORIGINAL_UNLOAD_REQUIRES_DURABLE_STATE");
+  // The lazy-load cache is a current image, never the old pre-death snapshot.
+  pImpl->changeFormsForDeferredLoad[actor.GetFormId()]=actor.GetChangeForm();
+  hosters.erase(actor.GetFormId()); // a network lease cannot survive unload
+}
+
 uint64_t WorldState::GetChangeFormGeneration(uint32_t formId) const
 {
   auto it = forms.find(formId);

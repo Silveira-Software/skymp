@@ -1,6 +1,7 @@
 #include "MpActor.h"
 #include "SrpActorStats.h"
 #include "SrpActorModifiers.h"
+#include "SrpOriginalLifecycle.h"
 #include "ActiveMagicEffectsMap.h"
 #include "ActorValues.h"
 #include "ChangeFormGuard.h"
@@ -236,13 +237,21 @@ void MpActor::SetAppearance(const Appearance* newAppearance)
   // free heal on a larger race. Legacy/unmanaged actors keep their behavior.
   const auto before = SrpActorModifiers::Managed(*this)
     ? std::optional<ActorValues>(GetActorValues()) : std::nullopt;
-  EditChangeForm([&](MpChangeForm& changeForm) {
-    if (newAppearance)
-      changeForm.appearanceDump = newAppearance->ToJson();
-    else
-      changeForm.appearanceDump.clear();
-  });
-  if (before) ReconcileSrpMaximums(*before);
+  auto apply = [&] {
+    EditChangeForm([&](MpChangeForm& changeForm) {
+      if (newAppearance)
+        changeForm.appearanceDump = newAppearance->ToJson();
+      else
+        changeForm.appearanceDump.clear();
+    });
+    if (before) ReconcileSrpMaximums(*before);
+    return true;
+  };
+  // A failed race/composition lookup must not queue an appearance snapshot
+  // with the old maxima. This is one ChangeForm operation, not proof of a
+  // complete engine transformation or a network/animation transaction.
+  if (before) RunChangeFormTransaction(apply);
+  else apply();
 }
 
 void MpActor::SetEquipment(const Equipment& newEquipment)
@@ -1401,6 +1410,7 @@ void MpActor::ModifyActorValuePercentage(espm::ActorValue av,
 
 void MpActor::BeforeDestroy()
 {
+  if(SrpOriginalLifecycle::Managed(*this))GetParent()->RetainOriginalForUnload(*this);
   for (auto& sink : pImpl->destroyEventSinks) {
     sink->BeforeDestroy(*this);
   }
@@ -1426,6 +1436,19 @@ void MpActor::Init(WorldState* worldState, uint32_t formId, bool hasChangeForm)
 
 void MpActor::Kill(MpActor* killer, bool shouldTeleport)
 {
+  if(SrpOriginalLifecycle::Managed(*this)){
+    // One corpse state, selected native drops and death receipt in one world
+    // record. No generic onDeath reward callback or unverified respawn timer.
+    SrpOriginalLifecycle::Inspect(*this);
+    if(IsDead())return;
+    RunChangeFormTransaction([&]{
+      SendAndSetDeathState(true,false);
+      AddDeathItem();
+      SrpOriginalLifecycle::RecordDeath(*this,killer);
+      return true;
+    });
+    return;
+  }
   spdlog::trace("MpActor::Kill {:x} - killer is {:x}", GetFormId(),
                 killer ? killer->GetFormId() : 0);
 
@@ -1450,6 +1473,7 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
 
 void MpActor::RespawnWithDelay(bool shouldTeleport)
 {
+  if(SrpOriginalLifecycle::Managed(*this))return;
   spdlog::trace("MpActor::RespawnWithDelay {:x} - isRespawning: {}",
                 GetFormId(), pImpl->isRespawning);
 
@@ -1524,6 +1548,7 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
 
 void MpActor::Respawn(bool shouldTeleport)
 {
+  if(SrpOriginalLifecycle::Managed(*this))return;
   if (IsDead() == false) {
     return;
   }
@@ -1625,6 +1650,10 @@ void MpActor::SetRespawnTime(float time)
 
 void MpActor::SetIsDead(bool isDead)
 {
+  if(SrpOriginalLifecycle::Managed(*this)){
+    if(isDead)Kill(nullptr,false);
+    return;
+  }
   spdlog::trace("MpActor::SetIsDead {:x} - isDead: {}", GetFormId(), isDead);
 
   constexpr bool kShouldTeleport = false;

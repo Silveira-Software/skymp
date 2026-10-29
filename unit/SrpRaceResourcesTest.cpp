@@ -37,3 +37,19 @@ TEST_CASE("R38 managed race appearance preserves absolute resources through repl
   a.ApplyChangeForm(decoded);check();
   a.SetAppearance(nullptr);check();
 }
+
+TEST_CASE("R38.2 invalid managed race cannot persist appearance with stale resource maxima", "[srp-r38-race]")
+{
+  auto& w=GetPartOne();w.CreateActor(0xff000000,{0,0,0},0,0x3c,1);
+  auto& a=w.worldState.GetFormAt<MpActor>(0xff000000);
+  nlohmann::json p={{"schemaVersion",2},{"rulesVersion","SRP-PROGRESSION-A1"},{"revision",1},{"level",3},{"profileId",std::to_string(a.GetProfileId())},{"characterId","r382-race"},{"attributes",{{"vigor",10},{"strength",10},{"dexterity",10},{"intelligence",10},{"willpower",10},{"constitution",10}}}};
+  a.SetPropertyValueDump("srpActiveCharacterId","\"r382-race\"",false,false);
+  a.SetPropertyValueDump("srpProgression",p.dump(),false,false);a.ApplySrpActorStats(p);
+  a.DamageActorValue(espm::ActorValue::Health,25);
+  const auto before=MpChangeForm::ToJson(a.GetChangeForm());
+  const auto generation=w.worldState.GetChangeFormGeneration(a.GetFormId());
+  Appearance invalid;invalid.raceId=0xdeadbeef;
+  REQUIRE_THROWS(a.SetAppearance(&invalid));
+  REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==before);
+  REQUIRE(w.worldState.GetChangeFormGeneration(a.GetFormId())==generation);
+}

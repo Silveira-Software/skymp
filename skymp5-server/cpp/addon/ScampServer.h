@@ -71,6 +71,7 @@ public:
   Napi::Value InspectSrpSpell(const Napi::CallbackInfo& info);
   Napi::Value InspectSrpCast(const Napi::CallbackInfo& info);
   Napi::Value AdoptSrpOriginalActor(const Napi::CallbackInfo& info);
+  Napi::Value InspectSrpOriginalActor(const Napi::CallbackInfo& info);
   Napi::Value RunChangeFormTransaction(const Napi::CallbackInfo& info);
   Napi::Value GetChangeFormGeneration(const Napi::CallbackInfo& info);
   Napi::Value IsChangeFormSaved(const Napi::CallbackInfo& info);

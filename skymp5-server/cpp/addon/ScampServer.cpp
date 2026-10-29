@@ -1,6 +1,7 @@
 #include "ScampServer.h"
 #include "SrpActorModifiers.h"
 #include "SrpOriginalReference.h"
+#include "SrpOriginalLifecycle.h"
 
 #include "AtomicActorSpawnV16.h"
 #include "Bot.h"
@@ -127,6 +128,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("inspectSrpSpell", &ScampServer::InspectSrpSpell),
       InstanceMethod("inspectSrpCast", &ScampServer::InspectSrpCast),
       InstanceMethod("adoptSrpOriginalActor", &ScampServer::AdoptSrpOriginalActor),
+      InstanceMethod("inspectSrpOriginalActor", &ScampServer::InspectSrpOriginalActor),
       InstanceMethod("runChangeFormTransaction", &ScampServer::RunChangeFormTransaction),
       InstanceMethod("getChangeFormGeneration",
                      &ScampServer::GetChangeFormGeneration),
@@ -1868,5 +1870,19 @@ Napi::Value ScampServer::AdoptSrpOriginalActor(const Napi::CallbackInfo& info)
   } catch (const std::exception& e) {
     Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
     return env.Undefined();
+  }
+}
+
+Napi::Value ScampServer::InspectSrpOriginalActor(const Napi::CallbackInfo& info)
+{
+  const auto env=info.Env();
+  try{
+    const auto id=NapiHelper::ExtractUInt32(info[0],"reference");
+    auto form=partOne->worldState.LookupFormByIdNoLoad(id);
+    auto* actor=form?form->AsActor():nullptr;
+    if(!actor)throw std::runtime_error("SRP_ORIGINAL_LOADED_ACTOR_REQUIRED");
+    return NapiHelper::ParseJson(env,SrpOriginalLifecycle::Inspect(*actor).dump());
+  }catch(const std::exception& e){
+    Napi::Error::New(env,e.what()).ThrowAsJavaScriptException();return env.Undefined();
   }
 }

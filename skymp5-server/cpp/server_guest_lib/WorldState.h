@@ -91,6 +91,7 @@ public:
   // none) and whether the database driver already stored that copy.
   uint64_t GetChangeFormGeneration(uint32_t formId) const;
   bool IsChangeFormSaved(uint32_t formId, uint64_t generation) const;
+  void RetainOriginalForUnload(MpObjectReference& actor);
   bool HasEspmFile(std::string_view filename) const noexcept;
 
   template <typename T>
