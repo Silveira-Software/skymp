@@ -124,6 +124,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("getIdFromDesc", &ScampServer::GetIdFromDesc),
       InstanceMethod("castSrpSpell", &ScampServer::CastSrpSpell),
       InstanceMethod("inspectSrpSpell", &ScampServer::InspectSrpSpell),
+      InstanceMethod("inspectSrpCast", &ScampServer::InspectSrpCast),
       InstanceMethod("runChangeFormTransaction", &ScampServer::RunChangeFormTransaction),
       InstanceMethod("getChangeFormGeneration",
                      &ScampServer::GetChangeFormGeneration),
@@ -1831,5 +1832,21 @@ Napi::Value ScampServer::InspectSrpSpell(const Napi::CallbackInfo& info)
   if(character.empty()||actor->GetDynamicFields().GetAsJson().value("srpActiveCharacterId",std::string())!=character)throw std::runtime_error("SRP_SPELL_CHARACTER_MISMATCH");
   const bool dual=info.Length()>3&&info[3].IsBoolean()&&info[3].As<Napi::Boolean>().Value();
   return NapiHelper::ParseJson(env,SrpActorModifiers::SpellAuthority(*actor,spell,dual).dump());
+ }catch(const std::exception& e){Napi::Error::New(env,e.what()).ThrowAsJavaScriptException();return env.Undefined();}
+}
+
+Napi::Value ScampServer::InspectSrpCast(const Napi::CallbackInfo& info)
+{
+ const auto env=info.Env();try{
+  const auto user=NapiHelper::ExtractUInt32(info[0],"userId"),spell=NapiHelper::ExtractUInt32(info[1],"spell"),targetId=NapiHelper::ExtractUInt32(info[3],"target");
+  if(user>=65535)throw std::runtime_error("SRP_SPELL_USER_INVALID");
+  auto* caster=partOne->serverState.ActorByUser(user);if(!caster)throw std::runtime_error("SRP_SPELL_USER_NOT_ATTACHED");
+  const auto character=info[2].As<Napi::String>().Utf8Value();
+  if(character.empty()||caster->GetDynamicFields().GetAsJson().value("srpActiveCharacterId",std::string())!=character)throw std::runtime_error("SRP_SPELL_CHARACTER_MISMATCH");
+  auto form=partOne->worldState.LookupFormByIdNoLoad(targetId);auto* target=form?form->AsActor():nullptr;
+  const bool dual=info.Length()>4&&info[4].IsBoolean()&&info[4].As<Napi::Boolean>().Value();
+  auto report=SrpActorModifiers::CastPreflight(*caster,spell,target,dual);
+  report["authenticatedUser"]=user;report["targetConnected"]=target&&partOne->serverState.UserByActor(target)!=Networking::InvalidUserId;
+  return NapiHelper::ParseJson(env,report.dump());
  }catch(const std::exception& e){Napi::Error::New(env,e.what()).ThrowAsJavaScriptException();return env.Undefined();}
 }

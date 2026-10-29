@@ -561,3 +561,67 @@ nlohmann::json SrpActorModifiers::SpellAuthority(const MpActor& actor,uint32_t s
  {"finalCost",nullptr},{"applicationAllowed",false},{"engineControlSupported",false},{"finalCostAuthoritySupported",false},
  {"blockedBy",nlohmann::json::array({"PRECAST_ENGINE_CONTROL_UNAVAILABLE","FINAL_COST_RULES_AND_RUNTIME_CONTEXT_UNAVAILABLE",dual?"DUAL_CAST_RULES_UNPROVEN":"NO_CLIENT_COST_AUTHORITY"})}};
 }
+
+nlohmann::json SrpActorModifiers::CastPreflight(const MpActor& caster,uint32_t spell,const MpActor* target,bool dual)
+{
+ auto result=SpellAuthority(caster,spell,dual);auto world=caster.GetParent();
+ nlohmann::json checks=nlohmann::json::object();
+ auto check=[&](const char* key,Result state,const char* producer){checks[key]={{"state",state==Result::Active?"TRUE":state==Result::Inactive?"FALSE":"UNKNOWN"},{"producer",producer}};};
+ auto truth=[](bool b){return b?Result::Active:Result::Inactive;};
+ auto persistent=[](const MpActor& a){auto id=ActorIdentity(a);return !id.at("characterId").get<std::string>().empty()&&!id.at("incarnation").get<std::string>().empty()&&a.GetProfileId()>0;};
+ auto managed=[](const MpActor& a){return Managed(a)&&SrpActorStats::Read(a).enabled&&Read(a).complete;};
+ const auto owner=world->GetEspm().GetBrowser().LookupById(spell);const auto record=espm::GetData<espm::SPEL>(spell,world);
+ check("casterIdentity",truth(persistent(caster)),"native private identity/profile/character");
+ check("casterAlive",truth(!caster.IsDead()),"MpActor::IsDead");
+ check("casterResources",truth(managed(caster)),"SrpActorStats::Read + existing modifier composer");
+ check("spellEquipped",truth(caster.GetEquipment().IsSpellEquipped(spell)),"native Equipment");
+ bool known=false,knowledgeComplete=true;for(auto id:caster.GetSpellList())if(id==spell)known=true;
+ for(auto id:{caster.GetBaseId(),caster.GetRaceId()}){
+  const auto rec=world->GetEspm().GetBrowser().LookupById(id);if(!rec.rec){knowledgeComplete=false;continue;}std::set<uint32_t> list;
+  if(rec.rec->GetType()==espm::NPC_::kType)list=espm::GetData<espm::NPC_>(id,world).spells;
+  if(rec.rec->GetType()==espm::RACE::kType)list=espm::GetData<espm::RACE>(id,world).spells;
+  for(auto s:list)if(rec.ToGlobalId(s)==spell)known=true;
+ }
+ check("spellKnown",known?Result::Active:knowledgeComplete?Result::Inactive:Result::Unknown,"native learnedSpells/NPC/RACE; missing records remain UNKNOWN");
+ check("precastControl",Result::Unknown,"no installed Platform pre-cast admission hook");
+ check("finalCost",Result::Unknown,"no complete server cost/skill/perk/ENCH producer");
+ check("uniqueImpact",Result::Unknown,"legacy packets carry no durable impact identity");
+ check("instance",Result::Unknown,"no separate authoritative spell instance epoch");
+ check("lineOfSight",Result::Unknown,"no server collision/LOS world in current SkyMP");
+ check("collision",Result::Unknown,"client hit/projectile is an untrusted observation");
+ check("dualCast",Result::Unknown,"requested dual mode is not proof of actual engine mode or cost policy");
+ result["target"]=target?ActorIdentity(*target):nlohmann::json(nullptr);
+ if(!target||target->GetParent()!=world){
+  check("targetIdentity",Result::Unknown,"target actor not resolved in this WorldState");
+  check("sameWorld",Result::Unknown,"target actor unavailable");
+  check("targetAlive",Result::Unknown,"target actor unavailable");
+  check("targetResources",Result::Unknown,"target actor unavailable");
+  check("range",Result::Unknown,"target actor unavailable");
+  check("effectConditions",Result::Unknown,"target actor unavailable");
+  check("targetHost",Result::Unknown,"target actor unavailable");
+ }else{
+  check("targetIdentity",truth(persistent(*target)),"native private identity/profile/character");
+  check("targetAlive",truth(!target->IsDead()),"MpActor::IsDead");
+  check("targetResources",truth(managed(*target)),"SrpActorStats::Read + existing modifier composer");
+  const bool sameWorld=caster.GetCellOrWorld()==target->GetCellOrWorld();
+  check("sameWorld",truth(sameWorld),"native accepted cellOrWorld; not independent collision proof");
+  const auto d=(caster.GetPos()-target->GetPos()).SqrLength();
+  result["distanceSquared"]=std::isfinite(d)?nlohmann::json(d):nlohmann::json(nullptr);
+  result["recordRange"]=record.spellItem->range;
+  Result range=Result::Unknown;
+  if(!sameWorld)range=Result::Inactive;
+  else if(record.spellItem->delivery==espm::SPEL::Delivery::Self)range=truth(&caster==target);
+  check("range",range,"Self exact actor only; non-Self SPIT units/defaults and projectile travel authority unproven");
+  Result conditions=Result::Active;const auto effects=SourceEffects(spell,world);
+  for(uint32_t i=0;i<effects.size();++i){const auto a=TestConditions(*target,owner,i,&caster),b=EffectConditions(*target,effects[i].effectId,&caster);if(a==Result::Unknown||b==Result::Unknown){conditions=Result::Unknown;break;}if(a==Result::Inactive||b==Result::Inactive)conditions=Result::Inactive;}
+  check("effectConditions",conditions,"source EFID/MGEF tri-state with explicit native caster/target");
+  const auto host=world->hosters.find(target->GetFormId());result["targetHostReference"]=host==world->hosters.end()?nlohmann::json(nullptr):nlohmann::json(FormDesc::FromFormId(host->second,world->espmFiles).ToString());
+  // Hoster ownership authorizes transport, never proves an engine collision.
+  check("targetHost",Result::Unknown,"host map observation only; actor class/host epoch not a spell-impact grant");
+ }
+ result["authorityContract"]="SRP-SPELL-AUTHORITY-R374";result["checks"]=checks;
+ result["evidenceType"]="NATIVE_READONLY_PREFLIGHT_NOT_IMPACT_PROOF";result["applicationAllowed"]=false;
+ result["blockedBy"]=nlohmann::json::array();
+ for(const auto& [key,row]:checks.items())if(row.at("state")!="TRUE")result["blockedBy"].push_back(key+":"+row.at("state").get<std::string>());
+ return result;
+}

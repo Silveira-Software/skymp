@@ -178,3 +178,32 @@ they are not evidence of the final vanilla cost or of an impact in Skyrim.
 The PR #60 evidence distinguishes controlled native resource/storage SIGKILL
 tests from actual network/engine effects. PUBLIC remains untouched; allocation
 and SPEL OFF, RELEASE_BLOCKED, real Skyrim acceptance NOT TESTED.
+
+## R37.4: scoped readonly preflight, without fabricated cast authority
+
+`inspectSrpCast(user, spell, characterId, target, dual)` resolves the caster from
+the authenticated user and validates the active character. It only resolves an
+already loaded target. `SrpActorModifiers::CastPreflight` reads actual persistent
+actor identity, known/equipped spells, alive/resource state, accepted CELL/WRLD,
+distance and source/MGEF conditions with explicit caster/target. Missing records
+remain UNKNOWN. A host-map entry is an observation, never collision permission.
+
+Contract SRP-SPELL-AUTHORITY-R374 uses TRUE/FALSE/UNKNOWN checks. Self range is
+proved only for the exact same actor; non-Self SPIT units/defaults, pre-cast
+control, effective final cost, instance, unique impact, LOS/collision and actual
+dual-cast mode remain unproven. `applicationAllowed=false`, `finalCost=null` and
+NATIVE_READONLY_PREFLIGHT_NOT_IMPACT_PROOF prevent mistaking inspection for an
+application grant. No new debit, damage, healing or receipt path was enabled.
+
+Official isolated Linux build: 50 cases / 381 assertions; broader native suite:
+168 passing cases (includes the focused cases). Real addon: 14 groups plus four
+fresh-process restart checks. New preflight tests confirm no mutation, foreign
+character rejection, missing target and host ownership not granting authority.
+Candidate SHA-256:
+`2fbeafe315ab95bc3fae7f11b696222835ac60ab45a74a7499edf4db522871d5`.
+
+PR #60 documents the Platform post-engine event, engine hook candidates that
+still need AE 1170 proof, missing final-cost/geometry/NPC contracts and durable
+outbox ACK recovery. Controlled resource callbacks and bots are storage evidence,
+not Skyrim impact acceptance. No Windows Platform hook was built or installed.
+PUBLIC remains R35/R3; API/Mongo/CDN/launcher untouched; allocation and SPEL OFF.

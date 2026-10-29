@@ -69,6 +69,7 @@ public:
   Napi::Value GetIdFromDesc(const Napi::CallbackInfo& info);
   Napi::Value CastSrpSpell(const Napi::CallbackInfo& info);
   Napi::Value InspectSrpSpell(const Napi::CallbackInfo& info);
+  Napi::Value InspectSrpCast(const Napi::CallbackInfo& info);
   Napi::Value RunChangeFormTransaction(const Napi::CallbackInfo& info);
   Napi::Value GetChangeFormGeneration(const Napi::CallbackInfo& info);
   Napi::Value IsChangeFormSaved(const Napi::CallbackInfo& info);

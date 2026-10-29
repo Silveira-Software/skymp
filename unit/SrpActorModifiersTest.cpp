@@ -287,3 +287,29 @@ TEST_CASE("R37.3 remote outbox caster receipt does not erase target effect metad
  const auto before=MpChangeForm::ToJson(a.GetChangeForm());REQUIRE(SrpActorModifiers::SpellReceipt(a,"cast-r373-remote-receipt")==receipt);REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==before);
  a.SetPropertyValueDump("srpActiveCharacterId","\"replacement\"",false,false);REQUIRE_THROWS(SrpActorModifiers::SpellReceipt(a,"cast-r373-remote-receipt"));
 }
+
+TEST_CASE("R37.4 Self preflight proves only real actor facts and never spends or applies", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);PrepareSelfSpell(a);a.SetPropertyValueDump("private.srpEffectActorIdentityV1","\"r374-a\"",false,false);
+ const auto before=MpChangeForm::ToJson(a.GetChangeForm());auto p=SrpActorModifiers::CastPreflight(a,0x2f3b8,&a);
+ REQUIRE(p.at("authorityContract")=="SRP-SPELL-AUTHORITY-R374");REQUIRE(p.at("applicationAllowed")==false);
+ for(auto key:{"casterIdentity","casterAlive","spellKnown","spellEquipped","sameWorld","range"})REQUIRE(p.at("checks").at(key).at("state")=="TRUE");
+ for(auto key:{"precastControl","finalCost","lineOfSight","collision","uniqueImpact","instance"})REQUIRE(p.at("checks").at(key).at("state")=="UNKNOWN");
+ REQUIRE(p.at("finalCost").is_null());REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==before);
+}
+TEST_CASE("R37.4 preflight rejects missing knowledge equipment and dead actors from server state", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);a.RemoveSpell(0x2f3b8);a.SetEquipment(Equipment{});
+ auto p=SrpActorModifiers::CastPreflight(a,0x2f3b8,&a);REQUIRE(p.at("checks").at("spellKnown").at("state")=="FALSE");REQUIRE(p.at("checks").at("spellEquipped").at("state")=="FALSE");
+ a.SetIsDead(true);p=SrpActorModifiers::CastPreflight(a,0x2f3b8,&a);REQUIRE(p.at("checks").at("casterAlive").at("state")=="FALSE");REQUIRE(p.at("applicationAllowed")==false);
+}
+TEST_CASE("R37.4 target and NPC preflight never promote host ownership to collision authority", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);PrepareSelfSpell(a);w.CreateActor(0xff000001,{100,0,0},0,0x3c,2);auto& b=w.worldState.GetFormAt<MpActor>(0xff000001);
+ w.worldState.hosters[b.GetFormId()]=a.GetFormId();const auto before=MpChangeForm::ToJson(b.GetChangeForm());
+ auto p=SrpActorModifiers::CastPreflight(a,0x12fd2,&b);REQUIRE(p.at("targetHostReference")=="0");REQUIRE(p.at("checks").at("targetHost").at("state")=="UNKNOWN");REQUIRE(p.at("checks").at("targetResources").at("state")=="FALSE");REQUIRE(p.at("checks").at("range").at("state")=="UNKNOWN");REQUIRE(p.at("checks").at("effectConditions").at("state")=="UNKNOWN");
+ REQUIRE(p.at("distanceSquared")==10000);REQUIRE(p.at("applicationAllowed")==false);REQUIRE(MpChangeForm::ToJson(b.GetChangeForm())==before);
+ p=SrpActorModifiers::CastPreflight(a,0x2f3b8,&b);REQUIRE(p.at("checks").at("range").at("state")=="FALSE");
+ b.SetCellOrWorldObsolete(FormDesc::FromFormId(0x1a26f,w.worldState.espmFiles));p=SrpActorModifiers::CastPreflight(a,0x12fd2,&b);REQUIRE(p.at("checks").at("sameWorld").at("state")=="FALSE");REQUIRE(p.at("checks").at("range").at("state")=="FALSE");
+}
+TEST_CASE("R37.4 unavailable target and dual cast retain Unknown without applying", "[srp-r37]"){
+ auto& w=GetPartOne();auto& a=Create(w);const auto before=MpChangeForm::ToJson(a.GetChangeForm());auto p=SrpActorModifiers::CastPreflight(a,0x2f3b8,nullptr,true);
+ REQUIRE(p.at("target").is_null());REQUIRE(p.at("checks").at("targetIdentity").at("state")=="UNKNOWN");REQUIRE(p.at("checks").at("dualCast").at("state")=="UNKNOWN");REQUIRE(p.at("applicationAllowed")==false);REQUIRE(MpChangeForm::ToJson(a.GetChangeForm())==before);
+}
