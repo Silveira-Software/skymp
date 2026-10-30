@@ -197,7 +197,9 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
     const auto location =
       saved ? saved->worldOrCellDesc : actor->GetCellOrWorld();
     const auto pos = saved ? saved->position : actor->GetPos();
-    pImpl->npcAdmission.Reserve(
+    // Exempt legacy/player actors before evaluating any NPC region/source.
+    // Parked disabled player images can retain the historical off-map sentinel.
+    if (!player) pImpl->npcAdmission.Reserve(
       formId, FormDesc::FromFormId(formId, espmFiles).ToString(),
       FormDesc::FromFormId(actor->GetBaseId(), espmFiles).ToString(),
       SrpNpcRegion(location, pos), player,

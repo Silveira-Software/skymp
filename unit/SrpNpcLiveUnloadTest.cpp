@@ -248,3 +248,17 @@ TEST_CASE("R38.5 opt-in NPC host changes preserve non-actor object loading", "[s
   REQUIRE(w.CanSrpNpcHost(*w.LookupFormByIdNoLoad(barrel)->AsObjectReference(),w.GetFormAt<MpActor>(0xff001001)));
   DoDisconnect(p,0);
 }
+
+TEST_CASE("R38.5 NPC region validation cannot reject legacy parked player images", "[srp-r385][espm]") {
+  auto& w=GetPartOne().worldState;Configure(w);Storage(w);
+  auto image=Image(w);image.baseDesc=FormDesc::FromString("7:Skyrim.esm");
+  image.position={-1000000000.f,0,0};image.isDisabled=true;
+  SECTION("profile-owned actor") {image.profileId=991;}
+  SECTION("legacy reserved player base") {image.profileId=-1;}
+  w.LoadChangeForm(image,FormCallbacks::DoNothing());
+  auto& actor=w.GetFormAt<MpActor>(npcId);
+  REQUIRE(actor.GetPos().x==image.position.x);REQUIRE(actor.IsDisabled());
+  REQUIRE(actor.GetInventory().GetItemCount(15)==17);
+  REQUIRE(w.InspectSrpNpcAdmission().at("total")==0);
+  REQUIRE_FALSE(w.IsSrpNpcSuspending(npcId));
+}
