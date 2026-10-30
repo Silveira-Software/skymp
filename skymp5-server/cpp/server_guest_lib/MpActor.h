@@ -174,6 +174,7 @@ public:
 
   BaseActorValues GetBaseValues() const;
   BaseActorValues GetMaximumValues() const;
+  nlohmann::json ApplySrpOriginalStats();
   void ApplySrpActorStats(const nlohmann::json& input);
   void ReconcileSrpMaximums(const ActorValues& before);
   friend struct SrpActorModifiers;
