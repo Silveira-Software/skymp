@@ -349,6 +349,7 @@ void PartOne::AttachSaveStorage(
     }
 
     if (changeForm.isDeleted) {
+      worldState.RetainSrpNpcTombstone(changeForm);
       pImpl->logger->info(
         "Skipping deleted form {}, will likely overwrite at some point",
         changeForm.formDesc.ToString());

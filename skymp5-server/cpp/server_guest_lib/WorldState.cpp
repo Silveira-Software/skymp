@@ -1,7 +1,4 @@
 #include "WorldState.h"
-#include "SrpNpcAdmission.h"
-#include "SaveGenerationTracker.h"
-#include "gamemode_events/ChangeFormsSavedEvent.h"
 #include "EvaluateTemplate.h"
 #include "FormCallbacks.h"
 #include "LeveledListUtils.h"
@@ -9,6 +6,9 @@
 #include "MpActor.h"
 #include "MpChangeForms.h"
 #include "MpObjectReference.h"
+#include "SaveGenerationTracker.h"
+#include "SrpNpcAdmission.h"
+#include "gamemode_events/ChangeFormsSavedEvent.h"
 #include "libespm/GroupUtils.h"
 #include "papyrus-vm/Reader.h"
 #include "papyrus-vm/Utils.h"
@@ -26,7 +26,16 @@
 #include <optional>
 #include <save_storages/AsyncSaveStorage.h> // UpsertFailedException
 #include <save_storages/ISaveStorage.h>
+#include <tuple>
 #include <unordered_map>
+
+namespace {
+std::pair<int16_t, int16_t> ColdGridPos(const NiPoint3& pos)
+{
+  // Same truncation used by the existing grid. Caller validates the range.
+  return { int16_t(pos.x / 4096.0), int16_t(pos.y / 4096.0) };
+}
+}
 
 namespace {
 
@@ -44,6 +53,12 @@ struct WorldState::Impl
   SrpNpcAdmission npcAdmission;
   bool npcAdmissionDeferred = false;
   bool npcInitializationFailed = false;
+  // Existing dynamic NPC images may far exceed active admission budgets.
+  // Keep their exact ChangeForms cold; only interest/direct lookup may load.
+  std::set<uint32_t> coldNpcIds, loadingColdNpcIds;
+  std::set<uint32_t> retiringNpcIds, preparingNpcIds, npcTombstoneIds;
+  std::map<std::tuple<uint32_t, int16_t, int16_t>, std::set<uint32_t>>
+    coldNpcRegions;
   std::vector<std::optional<MpChangeForm>> changesByIdx;
   bool changesByIdxEmpty = true;
 
@@ -83,6 +98,8 @@ void WorldState::Clear()
   grids.clear();
   formIdxManager.reset();
   pImpl->npcAdmission.ResetLeases();
+  pImpl->retiringNpcIds.clear();
+  pImpl->preparingNpcIds.clear();
   pImpl->npcAdmissionDeferred=false;
 }
 
@@ -128,6 +145,11 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
     throw std::runtime_error(
       fmt::format("Form with id {:x} already exists", formId));
   }
+
+  if (pImpl->npcTombstoneIds.count(formId) ||
+      (pImpl->coldNpcIds.count(formId) &&
+       !pImpl->loadingColdNpcIds.count(formId)))
+    throw std::runtime_error("SRP_COLD_NPC_ID_RESERVED");
 
   // Reserve identity before Init can materialize items, scripts or grid state.
   // The same path counts original and dynamic NPCs; a player never consumes a
@@ -296,6 +318,11 @@ nlohmann::json WorldState::InspectSrpNpcAdmission() const
 {
   auto result = pImpl->npcAdmission.Inspect();
   result["initializationFailed"] = pImpl->npcInitializationFailed;
+  result["deferredDynamicNpcs"] = pImpl->coldNpcIds.size();
+  result["retiringNpcs"] = pImpl->retiringNpcIds.size();
+  result["reservedNpcTombstones"] = pImpl->npcTombstoneIds.size();
+  result["coldDynamicStorageVersion"] = 1;
+  result["durableNpcRetirementVersion"] = 1;
   return result;
 }
 bool WorldState::IsSrpOriginalControlled(uint32_t formId)
@@ -317,6 +344,12 @@ bool WorldState::IsSrpOriginalControlled(uint32_t formId)
 void WorldState::CheckSrpNpcMovement(uint32_t formId, const FormDesc& location,
                                      const NiPoint3& pos)
 {
+  // BeforeDestroy moves a deleted NPC out of the grid. It remains charged to
+  // its old region until the final save and actual removal, not a new region.
+  if (pImpl->preparingNpcIds.count(formId))
+    return;
+  if (pImpl->retiringNpcIds.count(formId))
+    throw std::runtime_error("SRP_NPC_RETIREMENT_IN_PROGRESS");
   if (pImpl->npcAdmission.HasLease(formId) &&
       pImpl->npcAdmission.Move(formId, SrpNpcRegion(location, pos)) &&
       pImpl->npcAdmissionDeferred) {
@@ -329,12 +362,104 @@ void WorldState::ReleaseSrpNpcAdmission(uint32_t formId)
 {
   const bool counted = pImpl->npcAdmission.HasLease(formId);
   pImpl->npcAdmission.Release(formId);
+  pImpl->retiringNpcIds.erase(formId);
+  hosters.erase(formId);
   if (counted && pImpl->npcAdmissionDeferred) {
     for (auto& [_, grid] : grids)
       grid.loadedChunks.clear();
     pImpl->npcAdmissionDeferred = false;
   }
 }
+void WorldState::RetainSrpNpcTombstone(const MpChangeForm& image)
+{
+  const auto& fields = image.dynamicFields.GetAsJson();
+  const bool character = fields.contains("srpActiveCharacterId") &&
+    !fields.at("srpActiveCharacterId").is_null() &&
+    fields.at("srpActiveCharacterId") != "";
+  if (!pImpl->npcAdmission.Enabled() || !image.isDeleted ||
+      image.recType != MpChangeForm::ACHR || image.profileId >= 0 ||
+      character || !image.formDesc.file.empty())
+    return;
+  const auto id = image.formDesc.ToFormId(espmFiles);
+  if (image.baseDesc.ToFormId(espmFiles) <= 7)
+    return;
+  // A tombstone reserves identity without materializing an actor or its items.
+  pImpl->npcTombstoneIds.insert(id);
+  pImpl->changeFormsForDeferredLoad.erase(id);
+  pImpl->allFormsByModIndexCache[255].reset();
+}
+
+bool WorldState::FinalizeSrpNpcRetirement(uint32_t formId)
+{
+  if (!pImpl->retiringNpcIds.count(formId))
+    return false;
+  if (pImpl->preparingNpcIds.count(formId))
+    throw std::runtime_error("SRP_NPC_RETIREMENT_TEARDOWN_IN_PROGRESS");
+  auto& actor = GetFormAt<MpActor>(formId);
+  const auto generation = GetChangeFormGeneration(formId);
+  if (!actor.IsDeleted() || !actor.IsDisabled() || !generation ||
+      !IsChangeFormSaved(formId, generation))
+    throw std::runtime_error("SRP_NPC_RETIREMENT_REQUIRES_DURABLE_STATE");
+  // BeforeDestroy has completed. Preserve that final image and prevent index
+  // reuse until all its writes are acknowledged. Never clear an unsaved write.
+  const auto idx = actor.GetIdx();
+  if (pImpl->changesByIdx.size() > idx && pImpl->changesByIdx[idx])
+    throw std::runtime_error("SRP_NPC_RETIREMENT_HAS_PENDING_WRITE");
+  RetainSrpNpcTombstone(actor.GetChangeForm());
+  if (!pImpl->npcTombstoneIds.count(formId)) {
+    pImpl->npcInitializationFailed = true;
+    throw std::runtime_error("SRP_NPC_RETIREMENT_IDENTITY_CHANGED");
+  }
+  return true;
+}
+
+void WorldState::TickSrpNpcRetirements()
+{
+  if (!pImpl->npcAdmission.Enabled())
+    return;
+  std::vector<uint32_t> candidates;
+  for (const auto& [id, form] : forms) {
+    auto* actor = form ? form->AsActor() : nullptr;
+    if (id < 0xff000000 || !actor || actor->GetBaseId() <= 7 ||
+        actor->GetChangeForm().profileId >= 0 || !actor->IsDeleted() ||
+        !actor->IsDisabled())
+      continue;
+    const auto& fields = actor->GetDynamicFields().GetAsJson();
+    if (fields.contains("srpActiveCharacterId") &&
+        !fields.at("srpActiveCharacterId").is_null() &&
+        fields.at("srpActiveCharacterId") != "")
+      continue;
+    candidates.push_back(id);
+  }
+  for (auto id : candidates) {
+    const auto it = forms.find(id);
+    if (it == forms.end())
+      continue;
+    // Teardown callbacks may remove other candidates; keep this object alive
+    // and never use a lookup that could materialize a replacement identity.
+    auto keepAlive = it->second;
+    auto& actor = *keepAlive->AsActor();
+    const auto generation = GetChangeFormGeneration(id);
+    if (!generation || !IsChangeFormSaved(id, generation))
+      continue;
+    if (pImpl->retiringNpcIds.insert(id).second) {
+      pImpl->preparingNpcIds.insert(id);
+      try {
+        keepAlive->BeforeDestroy();
+        pImpl->preparingNpcIds.erase(id);
+      } catch (...) {
+        // Trigger exits or teardown callbacks may have partially run. Restart
+        // re-reads the last durable tombstone; do not save a partial teardown.
+        pImpl->npcInitializationFailed = true;
+        throw;
+      }
+    }
+    const auto finalGeneration = GetChangeFormGeneration(id);
+    if (IsChangeFormSaved(id, finalGeneration))
+      DestroyForm<MpActor>(id);
+  }
+}
+
 std::vector<uint32_t> WorldState::GetLoadedActors(uint32_t modIndex) const
 {
   if (modIndex > 255)
@@ -358,6 +483,7 @@ void WorldState::Tick()
   const auto now = std::chrono::system_clock::now();
   TickSaveStorage(now);
   TickTimers(now);
+  TickSrpNpcRetirements();
 }
 
 bool WorldState::IsFormLoadingInProgress() const
@@ -429,6 +555,39 @@ void WorldState::LoadChangeForm(const MpChangeForm& changeForm,
     } else {
       pImpl->changeFormsForDeferredLoad[formId] = changeForm;
     }
+    return;
+  }
+
+  const auto& fields = changeForm.dynamicFields.GetAsJson();
+  const bool hasCharacter = fields.contains("srpActiveCharacterId") &&
+    !fields.at("srpActiveCharacterId").is_null() &&
+    fields.at("srpActiveCharacterId") != "";
+  if (pImpl->npcAdmission.Enabled() &&
+      changeForm.recType == MpChangeForm::ACHR && changeForm.profileId < 0 &&
+      baseId > 7 && !hasCharacter && !pImpl->loadingColdNpcIds.count(formId) &&
+      !forms.count(formId)) {
+    // Validate persisted location before indexing. Do not alter inventory,
+    // receipts, death state or coordinates, and do not request a save here.
+    const bool legacyParked = changeForm.position.x == -1000000000.f &&
+      changeForm.position.y == 0 && changeForm.position.z == 0;
+    try {
+      if (!legacyParked)
+        SrpNpcRegion(changeForm.worldOrCellDesc, changeForm.position);
+    } catch (...) {
+      // Recovery drivers catch per-record exceptions. Latch the whole world so
+      // a rejected durable NPC cannot become a successful, incomplete boot.
+      pImpl->npcInitializationFailed = true;
+      throw;
+    }
+    const auto world = changeForm.worldOrCellDesc.ToFormId(espmFiles);
+    pImpl->changeFormsForDeferredLoad[formId] = changeForm;
+    pImpl->coldNpcIds.insert(formId);
+    // Historical off-map images stay quarantined, not moved or deleted.
+    if (!legacyParked) {
+      const auto pos = ColdGridPos(changeForm.position);
+      pImpl->coldNpcRegions[{ world, pos.first, pos.second }].insert(formId);
+    }
+    pImpl->allFormsByModIndexCache[255].reset();
     return;
   }
 
@@ -568,6 +727,45 @@ const std::shared_ptr<MpForm>& WorldState::LookupFormById(
 
   auto it = forms.find(formId);
   if (it == forms.end()) {
+    if (formId >= 0xff000000 && pImpl->coldNpcIds.count(formId)) {
+      if (pImpl->loadingColdNpcIds.count(formId))
+        return kNullForm;
+      auto copy = pImpl->changeFormsForDeferredLoad.at(formId);
+      pImpl->loadingColdNpcIds.insert(formId);
+      struct Loading
+      {
+        std::set<uint32_t>* ids;
+        uint32_t id;
+      };
+      Loading state{ &pImpl->loadingColdNpcIds, formId };
+      Viet::ScopedTask<Loading> done([](Loading& s) { s.ids->erase(s.id); },
+                                     state);
+      try {
+        LoadChangeForm(copy, formCallbacksFactory());
+      } catch (const std::runtime_error& e) {
+        if (std::string(e.what()).find("SRP_NPC_ADMISSION_") != 0)
+          throw;
+        pImpl->npcAdmissionDeferred = true;
+        if (optionalOutTrace)
+          *optionalOutTrace << e.what() << std::endl;
+        return kNullForm;
+      }
+      it = forms.find(formId);
+      if (it != forms.end()) {
+        pImpl->coldNpcIds.erase(formId);
+        const auto pos = ColdGridPos(copy.position);
+        const auto zone = std::make_tuple(
+          copy.worldOrCellDesc.ToFormId(espmFiles), pos.first, pos.second);
+        auto region = pImpl->coldNpcRegions.find(zone);
+        if (region != pImpl->coldNpcRegions.end()) {
+          region->second.erase(formId);
+          if (region->second.empty())
+            pImpl->coldNpcRegions.erase(region);
+        }
+        return it->second;
+      }
+      throw std::runtime_error("SRP_COLD_NPC_LOAD_DID_NOT_MATERIALIZE");
+    }
     if (formId < 0xff000000) {
       if (LoadForm(formId, optionalOutTrace)) {
         it = forms.find(formId);
@@ -1144,6 +1342,21 @@ const std::set<MpObjectReference*>& WorldState::GetNeighborsByPosition(
     pImpl->chunkLoadingInProgress = true;
 
     auto& br = espm->GetBrowser();
+    // Dynamic legacy NPCs have no ESP placement. Index their saved coordinates
+    // in the existing interest grid; never replace them with a new spawn.
+    for (int x = int(cellX) - 1; x <= int(cellX) + 1; ++x)
+      for (int y = int(cellY) - 1; y <= int(cellY) + 1; ++y) {
+        if (x < INT16_MIN || x > INT16_MAX || y < INT16_MIN || y > INT16_MAX)
+          continue;
+        auto region =
+          pImpl->coldNpcRegions.find({ cellOrWorld, int16_t(x), int16_t(y) });
+        if (region == pImpl->coldNpcRegions.end())
+          continue;
+        const std::vector<uint32_t> ids(region->second.begin(),
+                                        region->second.end());
+        for (auto id : ids)
+          LookupFormById(id);
+      }
     for (int16_t x = cellX - 1; x <= cellX + 1; ++x) {
       for (int16_t y = cellY - 1; y <= cellY + 1; ++y) {
         const bool loaded = grids[cellOrWorld].loadedChunks[x][y];
@@ -1214,6 +1427,10 @@ std::shared_ptr<std::vector<uint32_t>> WorldState::GetAllForms(
       }
     }
 
+    for (auto id : pImpl->npcTombstoneIds) {
+      if ((id >> 24) == modIndex)
+        formIds.insert(id);
+    }
     for (auto failedToAttachFormId : pImpl->attachEspmRecordFailures) {
       formIds.erase(failedToAttachFormId);
     }
@@ -1388,9 +1605,17 @@ std::string WorldState::MakePrivateIndexedPropertyMapKey(
 
 uint32_t WorldState::GenerateFormId()
 {
-  while (LookupFormById(pImpl->nextId)) {
+  // Identity exists independently of admission. Looking it up can return null
+  // when its saved NPC is cold or budget-denied; never reuse that durable ID.
+  while (forms.count(pImpl->nextId) ||
+         pImpl->changeFormsForDeferredLoad.count(pImpl->nextId) ||
+         pImpl->npcTombstoneIds.count(pImpl->nextId)) {
+    if (pImpl->nextId == UINT32_MAX)
+      throw std::runtime_error("SRP_DYNAMIC_FORM_ID_SPACE_EXHAUSTED");
     ++pImpl->nextId;
   }
+  if (pImpl->nextId < 0xff000000)
+    throw std::runtime_error("SRP_DYNAMIC_FORM_ID_SPACE_EXHAUSTED");
   return pImpl->nextId++;
 }
 

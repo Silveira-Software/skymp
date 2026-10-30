@@ -98,6 +98,9 @@ public:
   void CheckSrpNpcMovement(uint32_t formId,const FormDesc& location,const NiPoint3& pos);
   std::vector<uint32_t> GetLoadedActors(uint32_t modIndex) const;
   void ReleaseSrpNpcAdmission(uint32_t formId);
+  void RetainSrpNpcTombstone(const MpChangeForm& image);
+  bool FinalizeSrpNpcRetirement(uint32_t formId);
+  void TickSrpNpcRetirements();
   bool HasEspmFile(std::string_view filename) const noexcept;
 
   template <typename T>
@@ -207,7 +210,10 @@ public:
     if (outDestroyedForm)
       *outDestroyedForm = std::dynamic_pointer_cast<FormType>(it->second);
 
-    it->second->BeforeDestroy();
+    // The retirement path already ran BeforeDestroy while retaining the actor
+    // and its index until the resulting generation reached durable storage.
+    if (!FinalizeSrpNpcRetirement(formId))
+      it->second->BeforeDestroy();
 
     if (auto formIndex = dynamic_cast<FormIndex*>(form.get())) {
       if (formIdxManager && !formIdxManager->DestroyID(formIndex->idx))
