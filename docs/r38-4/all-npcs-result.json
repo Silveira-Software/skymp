@@ -1,0 +1,25 @@
+{
+  "status": "PASS",
+  "kind": "ALL_CURRENT_NPC_IMAGES_RECOVERED_OFFLINE_NOT_BACKUP",
+  "count": 34668,
+  "dynamic": 33497,
+  "original": 1171,
+  "admitted": 2,
+  "allInputHashesUnchanged": true,
+  "playerImagesCopied": 0,
+  "measurement": {
+    "scope": "file recovery and two admitted NPCs, NOT capacity of 300 AI",
+    "elapsedMs": 6350.900962,
+    "cpuMicroseconds": {
+      "user": 3446142,
+      "system": 1321278
+    },
+    "rssBefore": 129040384,
+    "rssAfter": 839794688
+  },
+  "productionWritten": false,
+  "realSkyrim": false,
+  "nativeSha256": "aaf156a6ee7432c47dc9ec42f35fabf21c5f4867c3744df3e86f9989612676d5",
+  "remoteEvidence": "/opt/skymp/candidates/r38-4-operation-20261029/all-npcs-1793322176198600831",
+  "exitCode": 0
+}
