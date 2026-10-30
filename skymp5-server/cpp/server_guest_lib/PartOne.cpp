@@ -462,6 +462,7 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           this_->animationSystem.ClearInfo(actor);
         }
         this_->serverState.Disconnect(userId);
+        this_->worldState.NotifySrpNpcConnection(userId, false);
         this_->serverState.disconnectingUserId = Networking::InvalidUserId;
       });
 
@@ -916,6 +917,7 @@ void PartOne::AddUser(Networking::UserId userId, UserType type,
                       const std::string& guid)
 {
   serverState.Connect(userId, guid);
+  worldState.NotifySrpNpcConnection(userId, true);
   for (auto& listener : worldState.listeners)
     listener->OnConnect(userId);
 

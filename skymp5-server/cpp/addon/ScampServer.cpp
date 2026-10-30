@@ -409,6 +409,8 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     partOne->AttachEspm(espm);
     if(serverSettings.contains("srpNpcAdmissionV1"))
       partOne->worldState.ConfigureSrpNpcAdmission(serverSettings.at("srpNpcAdmissionV1"));
+    if (serverSettings.contains("srpNpcLiveUnloadV1"))
+      partOne->worldState.ConfigureSrpNpcLiveUnload(serverSettings.at("srpNpcLiveUnloadV1"));
     partOne->animationSystem.Init(&partOne->worldState);
 
     if (conditionsEvaluatorSettings.is_object()) {

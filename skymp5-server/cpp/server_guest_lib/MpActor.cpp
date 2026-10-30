@@ -114,6 +114,15 @@ MpActor::MpActor(const LocationalData& locationalData_,
   asActor = this;
 }
 
+bool MpActor::HasSrpPendingNpcOperations() const
+{
+  return HasSrpUnloadDependencies() || !pImpl->snippetPromises.empty() ||
+    !pImpl->droppedItemsQueue.empty() || pImpl->isRespawning ||
+    pImpl->isBlockActive || ShouldSkipRestoration() ||
+    !pImpl->destroyEventSinks.empty() || !pImpl->disableEventSinks.empty() ||
+    !GetChangeForm().activeMagicEffects.Empty();
+}
+
 void MpActor::IncreaseBlockCount() noexcept
 {
   ++pImpl->blockActiveCount;
@@ -701,6 +710,13 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
           changeForm.actorValues.healthPercentage = std::clamp(persistedValues.healthPercentage*persistedValues.health/std::max(maximum.health,1.f),0.f,1.f);
           changeForm.actorValues.magickaPercentage = std::clamp(persistedValues.magickaPercentage*persistedValues.magicka/std::max(maximum.magicka,1.f),0.f,1.f);
           changeForm.actorValues.staminaPercentage = std::clamp(persistedValues.staminaPercentage*persistedValues.stamina/std::max(maximum.stamina,1.f),0.f,1.f);
+        } else if (!IsCreatedAsPlayer() && changeForm.profileId < 0 &&
+                   GetParent()->InspectSrpNpcAdmission().value("enabled", false)) {
+          // Residency is not healing. Reuse the same template/base maximums
+          // while retaining the durable NPC fractions across cold/restart load.
+          changeForm.actorValues.healthPercentage = persistedValues.healthPercentage;
+          changeForm.actorValues.magickaPercentage = persistedValues.magickaPercentage;
+          changeForm.actorValues.staminaPercentage = persistedValues.staminaPercentage;
         }
       }
     },
@@ -708,7 +724,9 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   ReapplyMagicEffects();
 
   // We do the same in PartOne::SetUserActor for player characters
-  if (IsDead() && !IsRespawning()) {
+  const bool admittedNpc = !IsCreatedAsPlayer() && GetProfileId() < 0 &&
+    GetParent() && GetParent()->InspectSrpNpcAdmission().value("enabled", false);
+  if (IsDead() && !IsRespawning() && !admittedNpc) {
     spdlog::info("MpActor::ApplyChangeForm {:x} - respawning dead actor",
                  GetFormId());
     RespawnWithDelay();

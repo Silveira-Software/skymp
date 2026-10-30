@@ -370,6 +370,20 @@ FormCallbacks MpObjectReference::GetCallbacks() const
   return *callbacks;
 }
 
+bool MpObjectReference::HasSrpUnloadDependencies() const
+{
+  // Merely observing nearby trigger volumes is not an active script use.
+  // Unsubscribe detaches false/outside entries without an enter/leave event.
+  // Inside volumes and any previously acquired VM handle remain pinned.
+  const bool activeTrigger = emittersWithPrimitives && std::any_of(
+    emittersWithPrimitives->begin(), emittersWithPrimitives->end(),
+    [](const auto& entry) { return entry.second; });
+  return HasSrpVmReferences() || !ListActivePexInstances().empty() || GetSingleUpdateTimerId() ||
+    pImpl->scriptState || pImpl->primitive || occupant ||
+    occupantDestroySink || occupantDisableSink ||
+    (primitivesWeAreInside && !primitivesWeAreInside->empty()) || activeTrigger;
+}
+
 bool MpObjectReference::HasScript(const char* name) const
 {
   return ToGameObject()->HasScript(name);
@@ -603,7 +617,7 @@ void MpObjectReference::SetPos(const NiPoint3& newPos, SetPosMode setPosMode)
       }
     }
 
-    if (primitivesWeAreInside) {
+    if (primitivesWeAreInside && !primitivesWeAreInside->empty()) {
       auto me = ToVarValue();
 
       // May be modified inside loop, so copying

@@ -77,6 +77,10 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
       return nullptr;
     }
 
+    if (!partOne.worldState.CanSrpNpcHost(*actor, *myActor)) {
+      partOne.SendHostStop(userId, *actor);
+      return nullptr;
+    }
     auto it = partOne.worldState.hosters.find(actor->GetFormId());
     if (it == partOne.worldState.hosters.end() ||
         it->second != myActor->GetFormId()) {
@@ -683,14 +687,27 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
     return;
   }
 
-  // Preserve vanilla reference loading; dynamic IDs are never loaded by this API.
-  const auto remoteForm = partOne.worldState.LookupFormById(remoteId);
+  // Cold NPCs cannot be materialized by a remote host request. Preserve the
+  // original lazy-loading behavior for non-actor objects used by other systems.
+  auto remoteForm = partOne.worldState.LookupFormByIdNoLoad(remoteId);
+  if (!remoteForm) {
+    const bool live = partOne.worldState.InspectSrpNpcAdmission().value("liveNpcUnloadEnabled", false);
+    if (!live) {
+      remoteForm = partOne.worldState.LookupFormById(remoteId);
+    } else if (remoteId < 0xff000000 && partOne.worldState.HasEspm()) {
+      const auto record = partOne.GetEspm().GetBrowser().LookupById(remoteId);
+      if (record.rec && record.rec->GetType() != "ACHR")
+        remoteForm = partOne.worldState.LookupFormById(remoteId);
+    }
+  }
   auto* remoteRef = remoteForm ? remoteForm->AsObjectReference() : nullptr;
   if (!remoteRef) {
     spdlog::warn("OnHostAttempt - Rejected missing or despawned reference");
     return;
   }
   auto& remote = *remoteRef;
+  if (!partOne.worldState.CanSrpNpcHost(remote, *me))
+    return;
 
   auto user = partOne.serverState.UserByActor(remote.AsActor());
   if (user != Networking::InvalidUserId) {

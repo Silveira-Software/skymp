@@ -8,6 +8,12 @@
 #include "MpObjectReference.h"
 #include "SaveGenerationTracker.h"
 #include "SrpNpcAdmission.h"
+#include "HostStopMessage.h"
+#include "libespm/NPC_.h"
+#include "libespm/ScriptData.h"
+#include "libespm/RecordHeaderAccess.h"
+#include "libespm/ReadUnaligned.h"
+#include "SrpOriginalLifecycle.h"
 #include "gamemode_events/ChangeFormsSavedEvent.h"
 #include "libespm/GroupUtils.h"
 #include "papyrus-vm/Reader.h"
@@ -18,11 +24,14 @@
 #include <ScopedTask.h>
 #include <Timer.h>
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <antigo/Context.h>
 #include <deque>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <save_storages/AsyncSaveStorage.h> // UpsertFailedException
 #include <save_storages/ISaveStorage.h>
@@ -33,7 +42,11 @@ namespace {
 std::pair<int16_t, int16_t> ColdGridPos(const NiPoint3& pos)
 {
   // Same truncation used by the existing grid. Caller validates the range.
-  return { int16_t(pos.x / 4096.0), int16_t(pos.y / 4096.0) };
+  const auto coordinate = [](float v) -> int16_t {
+    const double g = double(v) / 4096.0;
+    return std::isfinite(g) ? int16_t(std::clamp(g, -32767.0, 32765.0)) : 0;
+  };
+  return { coordinate(pos.x), coordinate(pos.y) };
 }
 }
 
@@ -51,6 +64,19 @@ struct RelootTimeForTypesEntry
 struct WorldState::Impl
 {
   SrpNpcAdmission npcAdmission;
+  bool liveUnloadEnabled = false;
+  uint32_t liveUnloadGraceMs = 30000, maxNpcsPerHost = 64;
+  struct Suspension {
+    std::chrono::steady_clock::time_point since;
+    uint64_t generation = 0;
+  };
+  std::map<uint32_t, Suspension> suspendingNpcs;
+  uint64_t liveUnloads = 0, cancelledUnloads = 0;
+  bool questPinsScanned = false;
+  std::set<uint32_t> questPinnedForms;
+  uint64_t connectionSerial = 0;
+  std::map<uint32_t, uint64_t> networkSessions, retiredNetworkIndices;
+
   bool npcAdmissionDeferred = false;
   bool npcInitializationFailed = false;
   // Existing dynamic NPC images may far exceed active admission budgets.
@@ -94,6 +120,11 @@ WorldState::WorldState()
 
 void WorldState::Clear()
 {
+  if (pImpl->liveUnloadEnabled && !pImpl->networkSessions.empty())
+    throw std::runtime_error("SRP_NPC_LIVE_CLEAR_REQUIRES_NETWORK_DRAIN");
+  pImpl->suspendingNpcs.clear();
+  pImpl->retiredNetworkIndices.clear();
+  pImpl->networkSessions.clear();
   forms.clear();
   grids.clear();
   formIdxManager.reset();
@@ -213,7 +244,16 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
   // we want formIndex to be assigned before init.
   form->Init(this, formId, optionalChangeFormToApply != nullptr);
 
-  auto it = forms.insert({ formId, std::move(form) }).first;
+  // MpForm's legacy destructor is not virtual. Auto-unloaded concrete actors
+  // must retain a typed owner so their inventory/subscription/Impl members are
+  // actually destroyed. Keep unknown subclasses on the existing resident path.
+  std::shared_ptr<MpForm> ownedForm;
+  if (pImpl->liveUnloadEnabled && pImpl->npcAdmission.HasLease(formId) &&
+      typeid(*form) == typeid(MpActor))
+    ownedForm = std::shared_ptr<MpActor>(static_cast<MpActor*>(form.release()));
+  else
+    ownedForm = std::move(form);
+  auto it = forms.insert({ formId, std::move(ownedForm) }).first;
   // After insertion the actor is still loaded even if applying a corrupt saved
   // image throws. Keep its slot until destruction; never undercount live
   // forms.
@@ -323,6 +363,15 @@ nlohmann::json WorldState::InspectSrpNpcAdmission() const
   result["reservedNpcTombstones"] = pImpl->npcTombstoneIds.size();
   result["coldDynamicStorageVersion"] = 1;
   result["durableNpcRetirementVersion"] = 1;
+  result["liveNpcUnloadVersion"] = 1;
+  result["liveNpcUnloadEnabled"] = pImpl->liveUnloadEnabled;
+  result["suspendingNpcs"] = pImpl->suspendingNpcs.size();
+  result["liveUnloads"] = pImpl->liveUnloads;
+  result["cancelledUnloads"] = pImpl->cancelledUnloads;
+  result["maxNpcsPerHost"] = pImpl->maxNpcsPerHost;
+  result["npcIndexQuarantineVersion"] = 1;
+  result["quarantinedNetworkIndices"] = pImpl->retiredNetworkIndices.size();
+  result["networkSessions"] = pImpl->networkSessions.size();
   return result;
 }
 bool WorldState::IsSrpOriginalControlled(uint32_t formId)
@@ -363,6 +412,7 @@ void WorldState::ReleaseSrpNpcAdmission(uint32_t formId)
   const bool counted = pImpl->npcAdmission.HasLease(formId);
   pImpl->npcAdmission.Release(formId);
   pImpl->retiringNpcIds.erase(formId);
+  pImpl->suspendingNpcs.erase(formId);
   hosters.erase(formId);
   if (counted && pImpl->npcAdmissionDeferred) {
     for (auto& [_, grid] : grids)
@@ -391,6 +441,9 @@ void WorldState::RetainSrpNpcTombstone(const MpChangeForm& image)
 
 bool WorldState::FinalizeSrpNpcRetirement(uint32_t formId)
 {
+  if (pImpl->liveUnloadEnabled && pImpl->npcAdmission.HasLease(formId) &&
+      !pImpl->networkSessions.empty() && pImpl->retiredNetworkIndices.size() >= 65536)
+    throw std::runtime_error("SRP_NPC_NETWORK_INDEX_QUARANTINE_SATURATED");
   if (!pImpl->retiringNpcIds.count(formId))
     return false;
   if (pImpl->preparingNpcIds.count(formId))
@@ -429,6 +482,7 @@ void WorldState::TickSrpNpcRetirements()
         !fields.at("srpActiveCharacterId").is_null() &&
         fields.at("srpActiveCharacterId") != "")
       continue;
+    pImpl->suspendingNpcs.erase(id); // Deletion uses its own durable protocol.
     candidates.push_back(id);
   }
   for (auto id : candidates) {
@@ -440,7 +494,9 @@ void WorldState::TickSrpNpcRetirements()
     auto keepAlive = it->second;
     auto& actor = *keepAlive->AsActor();
     const auto generation = GetChangeFormGeneration(id);
-    if (!generation || !IsChangeFormSaved(id, generation))
+    if ((pImpl->liveUnloadEnabled && !pImpl->networkSessions.empty() &&
+         pImpl->retiredNetworkIndices.size() >= 65536) ||
+        !generation || !IsChangeFormSaved(id, generation))
       continue;
     if (pImpl->retiringNpcIds.insert(id).second) {
       pImpl->preparingNpcIds.insert(id);
@@ -457,6 +513,319 @@ void WorldState::TickSrpNpcRetirements()
     const auto finalGeneration = GetChangeFormGeneration(id);
     if (IsChangeFormSaved(id, finalGeneration))
       DestroyForm<MpActor>(id);
+  }
+}
+
+// HostStop has no client ACK/lease epoch in the current protocol. Never hand
+// an old index to another reference while a pre-existing connection can still
+// send an idx-only movement packet. A fresh connection cannot know older idxs.
+void WorldState::NotifySrpNpcConnection(uint32_t userId, bool connected)
+{
+  if (connected) {
+    if (pImpl->connectionSerial == std::numeric_limits<uint64_t>::max())
+      throw std::runtime_error("SRP_NPC_CONNECTION_SERIAL_EXHAUSTED");
+    pImpl->networkSessions[userId] = ++pImpl->connectionSerial;
+    return;
+  }
+  pImpl->networkSessions.erase(userId);
+  auto oldest = std::numeric_limits<uint64_t>::max();
+  for (const auto& [_, serial] : pImpl->networkSessions)
+    oldest = std::min(oldest, serial);
+  for (auto it = pImpl->retiredNetworkIndices.begin();
+       it != pImpl->retiredNetworkIndices.end();) {
+    if (it->second < oldest) {
+      if (!formIdxManager || !formIdxManager->DestroyID(it->first)) {
+        pImpl->npcInitializationFailed = true;
+        throw std::runtime_error("SRP_NPC_QUARANTINE_RELEASE_FAILED");
+      }
+      it = pImpl->retiredNetworkIndices.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+bool WorldState::ReleaseSrpNpcIndex(uint32_t idx)
+{
+  const auto* ref = idx < refrByIdxUnreliable.size() ? refrByIdxUnreliable[idx] : nullptr;
+  const bool guardedNpc = pImpl->liveUnloadEnabled && ref &&
+    pImpl->npcAdmission.HasLease(ref->GetFormId());
+  if (guardedNpc && !pImpl->networkSessions.empty() &&
+      pImpl->retiredNetworkIndices.size() >= 65536)
+    return false;
+  if (idx < refrByIdxUnreliable.size())
+    refrByIdxUnreliable[idx] = nullptr;
+  if (idx < lastMovUpdateByIdx.size())
+    lastMovUpdateByIdx[idx].reset();
+  if (guardedNpc && !pImpl->networkSessions.empty()) {
+    // Index budget differs from the active NPC budget. Bound memory without
+    // assigning an ambiguous index; saturation retains the actor/slot.
+    if (pImpl->retiredNetworkIndices.size() >= 65536)
+      return false;
+    return pImpl->retiredNetworkIndices.emplace(idx, pImpl->connectionSerial).second;
+  }
+  return formIdxManager->DestroyID(idx);
+}
+
+void WorldState::ConfigureSrpNpcLiveUnload(const nlohmann::json& config)
+{
+  if (!forms.empty())
+    throw std::runtime_error("SRP_NPC_UNLOAD_CONFIG_BEFORE_LOAD_REQUIRED");
+  if (!config.is_object() || config.size() != 4 ||
+      config.value("schemaVersion", 0) != 1 ||
+      !config.contains("enabled") || !config.at("enabled").is_boolean() ||
+      !config.contains("graceMs") || !config.at("graceMs").is_number_unsigned() ||
+      !config.contains("maxNpcsPerHost") ||
+      !config.at("maxNpcsPerHost").is_number_unsigned())
+    throw std::runtime_error("SRP_NPC_UNLOAD_CONFIG_INVALID");
+  const auto grace = config.at("graceMs").get<uint64_t>();
+  const auto cap = config.at("maxNpcsPerHost").get<uint64_t>();
+  if (grace > 300000 || cap < 1 || cap > 180 ||
+      (config.at("enabled").get<bool>() && !pImpl->npcAdmission.Enabled()))
+    throw std::runtime_error("SRP_NPC_UNLOAD_CONFIG_INVALID");
+  pImpl->liveUnloadEnabled = config.at("enabled").get<bool>();
+  pImpl->liveUnloadGraceMs = uint32_t(grace);
+  pImpl->maxNpcsPerHost = uint32_t(cap);
+}
+
+bool WorldState::IsSrpNpcSuspending(uint32_t id) const
+{
+  auto it = pImpl->suspendingNpcs.find(id);
+  return it != pImpl->suspendingNpcs.end() && it->second.generation != 0;
+}
+
+bool WorldState::SrpNpcHasInterest(const MpActor& actor) const
+{
+  const auto region = ColdGridPos(actor.GetPos());
+  for (const auto& [_, form] : forms) {
+    const auto* player = form ? form->AsActor() : nullptr;
+    if (!player || player == &actor ||
+        player->GetUserId() == Networking::InvalidUserId ||
+        player->GetCellOrWorld() != actor.GetCellOrWorld())
+      continue;
+    const auto p = ColdGridPos(player->GetPos());
+    // Same regional interest envelope as GetNeighborsByPosition, plus actual
+    // subscriptions (e.g. an observer attached before a position update).
+    if ((std::abs(int(p.first) - int(region.first)) <= 1 &&
+         std::abs(int(p.second) - int(region.second)) <= 1) ||
+        actor.GetListeners().count(const_cast<MpActor*>(player)))
+      return true;
+  }
+  return false;
+}
+
+bool WorldState::CanSrpNpcHost(const MpObjectReference& remote,
+                                const MpActor& host) const
+{
+  if (!pImpl->liveUnloadEnabled || !remote.AsActor() ||
+      !pImpl->npcAdmission.HasLease(remote.GetFormId()))
+    return true; // Non-NPC systems and the legacy protocol are unchanged.
+  if (host.GetUserId() == Networking::InvalidUserId || remote.IsDeleted() ||
+      remote.IsDisabled() || IsSrpNpcSuspending(remote.GetFormId()) ||
+      remote.GetCellOrWorld() != host.GetCellOrWorld() ||
+      !remote.GetListeners().count(const_cast<MpActor*>(&host)))
+    return false;
+  const auto a = ColdGridPos(remote.GetPos()), b = ColdGridPos(host.GetPos());
+  if (std::abs(int(a.first) - int(b.first)) > 1 ||
+      std::abs(int(a.second) - int(b.second)) > 1)
+    return false;
+  uint32_t count = 0;
+  for (const auto& [npc, owner] : hosters)
+    if (owner == host.GetFormId() && npc != remote.GetFormId() &&
+        pImpl->npcAdmission.HasLease(npc))
+      ++count;
+  return count < pImpl->maxNpcsPerHost;
+}
+
+void WorldState::ReleaseSrpNpcHost(uint32_t id)
+{
+  const auto h = hosters.find(id);
+  if (h == hosters.end())
+    return;
+  const auto owner = forms.find(h->second), remote = forms.find(id);
+  hosters.erase(h); // Revoke before callbacks or stale movement can arrive.
+  if (remote == forms.end())
+    return;
+  if (owner != forms.end()) {
+    auto* actor = owner->second->AsActor();
+    if (actor && actor->GetUserId() != Networking::InvalidUserId) {
+      HostStopMessage msg;
+      msg.target = id < 0xff000000 ? uint64_t(id) + 0x100000000 : id;
+      actor->SendToUser(msg, true);
+    }
+  }
+  auto* ref = remote->second->AsObjectReference();
+  if (ref) {
+    ref->UpdateHoster(0);
+    if (ref->GetIdx() < lastMovUpdateByIdx.size())
+      lastMovUpdateByIdx[ref->GetIdx()].reset();
+  }
+}
+
+bool WorldState::SrpNpcCanSuspend(const MpActor& actor)
+{
+  const auto id = actor.GetFormId();
+  if (!espm || typeid(actor) != typeid(MpActor) ||
+      !pImpl->npcAdmission.HasLease(id) ||
+      actor.GetBaseId() <= 7 || actor.GetChangeForm().profileId >= 0 ||
+      actor.GetUserId() != Networking::InvalidUserId || actor.IsDead() ||
+      actor.IsDeleted() || actor.IsDisabled() ||
+      actor.GetChangeForm().nextRelootDatetime != 0 ||
+      actor.HasSrpPendingNpcOperations() ||
+      pImpl->retiredNetworkIndices.size() >= 65536)
+    return false;
+  const auto& f = actor.GetDynamicFields().GetAsJson();
+  if (f.contains("srpActiveCharacterId") &&
+      !f.at("srpActiveCharacterId").is_null() && f.at("srpActiveCharacterId") != "")
+    return false;
+  if (id >= 0xff000000) {
+    if (!f.contains("srpSpawnSource") ||
+        (f.at("srpSpawnSource") != "FAUNA" &&
+         f.at("srpSpawnSource") != "HUNTING_NATIVE"))
+      return false;
+  } else {
+    // Only explicitly approved source references with a real durable identity
+    // enter original unload. Vanilla quest actors never become eligible just
+    // because they lack scripts. No source is enabled in the PUBLIC subset.
+    if (!IsSrpOriginalControlled(id) ||
+        !f.contains("private.srpOriginalReferenceV1"))
+      return false;
+    try {
+      if (SrpOriginalLifecycle::Inspect(actor).at("state") != "ALIVE_OBSERVED")
+        return false;
+    } catch (...) { return false; }
+    const auto original = espm->GetBrowser().LookupById(id);
+    if (!original.rec || original.rec->GetType() != "ACHR" ||
+        (original.rec->GetFlags() & (0x20 | 0x200 | 0x400 | 0x800)))
+      return false; // Deleted, quest item, persistent or initially disabled.
+    espm::ScriptData referenceScripts;
+    original.rec->GetScriptData(&referenceScripts, GetEspmCache());
+    if (!referenceScripts.scripts.empty())
+      return false;
+    if (!pImpl->questPinsScanned) {
+      // Inspect immutable QUST reference/base bindings, including overrides,
+      // without instantiating actors or executing a quest/Papyrus callback.
+      for (const auto& quest : espm->GetBrowser().GetDistinctRecordsByType("QUST"))
+        espm::RecordHeaderAccess::IterateFields(quest.rec,
+          [&](const char* type, uint32_t size, const char* bytes) {
+            if (std::memcmp(type, "ALFR", 4) == 0 ||
+                std::memcmp(type, "ALUA", 4) == 0 ||
+                std::memcmp(type, "ALCO", 4) == 0) {
+              if (size != 4)
+                throw std::runtime_error("SRP_NPC_QUEST_PIN_RECORD_INVALID");
+              const auto raw = espm::ReadFieldScalar<uint32_t>(bytes, size);
+              if (raw) pImpl->questPinnedForms.insert(quest.ToGlobalId(raw));
+            }
+          }, GetEspmCache());
+      pImpl->questPinsScanned = true;
+    }
+    if (pImpl->questPinnedForms.count(id) ||
+        pImpl->questPinnedForms.count(actor.GetBaseId()))
+      return false;
+  }
+  if (activationChildsByActivationParent.count(id))
+    return false;
+  for (const auto& [_, children] : activationChildsByActivationParent)
+    if (children.count(id))
+      return false;
+  if (!espm)
+    return false;
+  const auto base = espm->GetBrowser().LookupById(actor.GetBaseId());
+  if (!base.rec || base.rec->GetType() != "NPC_")
+    return false;
+  // Reuse the engine-side template contract and the actor's already-selected,
+  // durable chain. Never reroll a leveled template while deciding residency.
+  const auto unprotected = EvaluateTemplateNoThrow<espm::NPC_::UseBaseData>(
+    this, actor.GetBaseId(), actor.GetTemplateChain(),
+    [](const auto&, const auto& data) {
+      return !data.isEssential && !data.isProtected && !data.isUnique;
+    }, nullptr);
+  const auto scriptFree = EvaluateTemplateNoThrow<espm::NPC_::UseScript>(
+    this, actor.GetBaseId(), actor.GetTemplateChain(),
+    [this](const auto& record, const auto&) {
+      espm::ScriptData scripts;
+      record.rec->GetScriptData(&scripts, GetEspmCache());
+      return scripts.scripts.empty();
+    }, nullptr);
+  // Unknown or incomplete inheritance stays resident, never presumed safe.
+  return unprotected.value_or(false) && scriptFree.value_or(false);
+}
+
+void WorldState::TickSrpNpcLiveUnload()
+{
+  if (!pImpl->liveUnloadEnabled || pImpl->npcInitializationFailed)
+    return;
+  // Expire host leases independently from unloading eligibility. A disconnected
+  // or remote host must not keep a corpse/quest actor's network lease forever.
+  std::vector<uint32_t> revoke;
+  for (const auto& [id, owner] : hosters) {
+    const auto n = forms.find(id), h = forms.find(owner);
+    if (n == forms.end() || h == forms.end() || !h->second->AsActor() ||
+        !n->second->AsObjectReference() ||
+        !CanSrpNpcHost(*n->second->AsObjectReference(), *h->second->AsActor()))
+      revoke.push_back(id);
+  }
+  for (auto id : revoke)
+    ReleaseSrpNpcHost(id);
+  const auto now = std::chrono::steady_clock::now();
+  std::vector<uint32_t> candidates;
+  for (const auto& [id, form] : forms)
+    if (form && form->AsActor()) candidates.push_back(id);
+  for (auto id : candidates) {
+    const auto found = forms.find(id);
+    if (found == forms.end() || !found->second->AsActor())
+      continue;
+    auto keepAlive = found->second;
+    auto& actor = *keepAlive->AsActor();
+    if (!SrpNpcCanSuspend(actor) || SrpNpcHasInterest(actor)) {
+      if (pImpl->suspendingNpcs.erase(id))
+        ++pImpl->cancelledUnloads;
+      continue;
+    }
+    const auto inserted = pImpl->suspendingNpcs.emplace(id, Impl::Suspension{now, 0});
+    auto& pending = inserted.first->second;
+    if (now - pending.since < std::chrono::milliseconds(pImpl->liveUnloadGraceMs))
+      continue;
+    if (!pending.generation) {
+      ReleaseSrpNpcHost(id);
+      RequestSave(actor); // Full, unchanged ChangeForm. No BeforeDestroy.
+      pending.generation = GetChangeFormGeneration(id);
+      continue;
+    }
+    const auto generation = GetChangeFormGeneration(id);
+    const auto idx = actor.GetIdx();
+    if (!generation || !IsChangeFormSaved(id, generation) ||
+        (idx < pImpl->changesByIdx.size() && pImpl->changesByIdx[idx]))
+      continue; // Includes later writes and failed/retried batches.
+    const auto image = actor.GetChangeForm();
+    // No observer exists and no script/trigger callbacks are eligible. These
+    // two operations only detach subscriptions, without death/delete events.
+    actor.UnsubscribeFromAll();
+    actor.RemoveFromGridAndUnsubscribeAll();
+    if (forms.find(id) == forms.end() || forms.at(id) != keepAlive ||
+        GetChangeFormGeneration(id) != generation ||
+        MpChangeForm::ToJson(actor.GetChangeForm()) != MpChangeForm::ToJson(image)) {
+      pImpl->npcInitializationFailed = true;
+      throw std::runtime_error("SRP_NPC_UNLOAD_CALLBACK_MUTATION_RESTART_REQUIRED");
+    }
+    // Reuse the already-versioned cold reader. No new disk schema, marker,
+    // tombstone, respawn, item compensation, or position change is introduced.
+    pImpl->changeFormsForDeferredLoad[id] = image;
+    if (id >= 0xff000000) pImpl->coldNpcIds.insert(id);
+    const auto region = ColdGridPos(image.position);
+    pImpl->coldNpcRegions[{ image.worldOrCellDesc.ToFormId(espmFiles),
+                            region.first, region.second }].insert(id);
+    if (!ReleaseSrpNpcIndex(idx)) {
+      pImpl->npcInitializationFailed = true;
+      throw std::runtime_error("SRP_NPC_UNLOAD_INDEX_RELEASE_FAILED");
+    }
+    if (idx < refrByIdxUnreliable.size())
+      refrByIdxUnreliable[idx] = nullptr;
+    forms.erase(id);
+    pImpl->suspendingNpcs.erase(id);
+    pImpl->allFormsByModIndexCache[id >> 24].reset();
+    ReleaseSrpNpcAdmission(id);
+    ++pImpl->liveUnloads;
   }
 }
 
@@ -484,6 +853,7 @@ void WorldState::Tick()
   TickSaveStorage(now);
   TickTimers(now);
   TickSrpNpcRetirements();
+  TickSrpNpcLiveUnload();
 }
 
 bool WorldState::IsFormLoadingInProgress() const
@@ -770,6 +1140,16 @@ const std::shared_ptr<MpForm>& WorldState::LookupFormById(
       if (LoadForm(formId, optionalOutTrace)) {
         it = forms.find(formId);
         if (it != forms.end()) {
+          auto saved = pImpl->changeFormsForDeferredLoad.find(formId);
+          if (saved != pImpl->changeFormsForDeferredLoad.end()) {
+            const auto pos = ColdGridPos(saved->second.position);
+            const auto zone = std::make_tuple(saved->second.worldOrCellDesc.ToFormId(espmFiles), pos.first, pos.second);
+            auto cold = pImpl->coldNpcRegions.find(zone);
+            if (cold != pImpl->coldNpcRegions.end()) {
+              cold->second.erase(formId);
+              if (cold->second.empty()) pImpl->coldNpcRegions.erase(cold);
+            }
+          }
           if (optionalOutTrace) {
             *optionalOutTrace << "found after successful LoadForm" << std::hex
                               << formId << std::endl;
@@ -1299,6 +1679,12 @@ void WorldState::SendPapyrusEvent(MpForm* form, const char* eventName,
                                   const VarValue* arguments,
                                   size_t argumentsCount)
 {
+  // MpForm already fired the gamemode PapyrusEventEvent, and the reference
+  // initialized its script bindings before reaching here. A scriptless object
+  // has no VM receivers: do not manufacture a raw VM handle just for OnLoad.
+  // Real VM references remain a conservative pin in the unload eligibility.
+  if (form->ListActivePexInstances().empty())
+    return;
   std::vector<VarValue> args = { arguments, arguments + argumentsCount };
 
   if (spdlog::should_log(spdlog::level::trace)) {

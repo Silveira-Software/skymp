@@ -101,6 +101,12 @@ public:
   void RetainSrpNpcTombstone(const MpChangeForm& image);
   bool FinalizeSrpNpcRetirement(uint32_t formId);
   void TickSrpNpcRetirements();
+  void ConfigureSrpNpcLiveUnload(const nlohmann::json& config);
+  void TickSrpNpcLiveUnload();
+  bool CanSrpNpcHost(const MpObjectReference& remote, const MpActor& host) const;
+  bool IsSrpNpcSuspending(uint32_t formId) const;
+  void NotifySrpNpcConnection(uint32_t userId, bool connected);
+
   bool HasEspmFile(std::string_view filename) const noexcept;
 
   template <typename T>
@@ -210,13 +216,16 @@ public:
     if (outDestroyedForm)
       *outDestroyedForm = std::dynamic_pointer_cast<FormType>(it->second);
 
+    if (IsSrpNpcSuspending(formId))
+      throw std::runtime_error("SRP_NPC_UNLOAD_REQUIRES_DURABLE_COMPLETION");
+
     // The retirement path already ran BeforeDestroy while retaining the actor
     // and its index until the resulting generation reached durable storage.
     if (!FinalizeSrpNpcRetirement(formId))
       it->second->BeforeDestroy();
 
     if (auto formIndex = dynamic_cast<FormIndex*>(form.get())) {
-      if (formIdxManager && !formIdxManager->DestroyID(formIndex->idx))
+      if (formIdxManager && !ReleaseSrpNpcIndex(formIndex->idx))
         throw std::runtime_error("DestroyID failed");
     }
 
@@ -292,6 +301,10 @@ public:
   std::vector<GameModeEvent*> currentGameModeEventsStack;
 
 private:
+  bool ReleaseSrpNpcIndex(uint32_t idx);
+  bool SrpNpcHasInterest(const MpActor& actor) const;
+  bool SrpNpcCanSuspend(const MpActor& actor);
+  void ReleaseSrpNpcHost(uint32_t formId);
   std::string SrpNpcRegion(const FormDesc& location,const NiPoint3& pos) const;
   std::string SrpNpcSource(uint32_t formId,uint32_t baseId) const;
   bool AttachEspmRecord(const espm::CombineBrowser& br,
