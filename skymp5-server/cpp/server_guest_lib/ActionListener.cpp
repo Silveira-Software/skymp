@@ -1081,22 +1081,29 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     aggressor = myActor;
     hitData.aggressor = aggressor->GetFormId();
   } else {
-    aggressor = &partOne.worldState.GetFormAt<MpActor>(hitData.aggressor);
     auto it = partOne.worldState.hosters.find(hitData.aggressor);
     if (it == partOne.worldState.hosters.end() ||
         it->second != myActor->GetFormId()) {
       spdlog::error("SendToNeighbours - No permission to send OnHit with "
                     "aggressor actor {:x}",
-                    aggressor->GetFormId());
+                    hitData.aggressor);
       return;
     }
+    // Hosting only exists for an already loaded actor. Resolving a client
+    // supplied aggressor through GetFormAt first can materialize a cold ACHR
+    // before the permission check. Neither admission nor identity is a hit.
+    const auto form=partOne.worldState.LookupFormByIdNoLoad(hitData.aggressor);
+    aggressor=form?form->AsActor():nullptr;
+    if(!aggressor)return;
   }
 
   if (hitData.target == 0x14) {
     hitData.target = myActor->GetFormId();
   }
 
-  MpForm* targetForm = partOne.worldState.LookupFormById(hitData.target).get();
+  const auto targetForm = partOne.worldState.IsSrpOriginalControlled(hitData.target)
+    ? partOne.worldState.LookupFormByIdNoLoad(hitData.target)
+    : partOne.worldState.LookupFormById(hitData.target);
   MpObjectReference* targetRef =
     targetForm ? targetForm->AsObjectReference() : nullptr;
   if (!targetRef) {

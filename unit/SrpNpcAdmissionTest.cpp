@@ -297,3 +297,26 @@ TEST_CASE("R38.3 two player hit packets cannot damage an unapproved original "
   REQUIRE(MpChangeForm::ToJson(cow.GetChangeForm()) == before);
   REQUIRE_FALSE(cow.IsDead());
 }
+
+TEST_CASE("Original hit packets cannot materialize cold targets or unhosted aggressors",
+          "[srp-original-combat][espm]")
+{
+  auto& p=GetPartOne();auto& w=p.worldState;
+  w.ConfigureSrpNpcAdmission(Config());
+  DoConnect(p,0);
+  p.CreateActor(0xff000001,{0,0,0},0,0x3c,9101);
+  p.SetUserActor(0,0xff000001);
+  auto& player=w.GetFormAt<MpActor>(0xff000001);
+  const auto before=MpChangeForm::ToJson(player.GetChangeForm());
+  REQUIRE_FALSE(w.LookupFormByIdNoLoad(0x10ebaf));
+  w.npcEnabled=true;
+  HitMessage msg;msg.data.aggressor=0x14;msg.data.target=0x10ebaf;msg.data.source=80254;
+  RawMessageData raw;raw.userId=0;
+  REQUIRE_NOTHROW(p.GetActionListener().OnHit(raw,msg));
+  REQUIRE_FALSE(w.LookupFormByIdNoLoad(0x10ebaf));
+  msg.data.aggressor=0x10ebaf;msg.data.target=0x14;
+  REQUIRE_NOTHROW(p.GetActionListener().OnHit(raw,msg));
+  REQUIRE_FALSE(w.LookupFormByIdNoLoad(0x10ebaf));
+  REQUIRE(MpChangeForm::ToJson(player.GetChangeForm())==before);
+  REQUIRE(w.GetChangeFormGeneration(0x10ebaf)==0);
+}
