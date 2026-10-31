@@ -23,11 +23,19 @@ NPC_::Data NPC_::GetData(
 
         result.factions.push_back({ formId, rank });
       } else if (!std::memcmp(type, "ACBS", 4)) {
+        // A truncated ACBS is not a level-one actor. Keep the old fields for
+        // compatible readers, but do not authorize original NPC composition.
+        result.hasStatsConfiguration = dataSize >= 24;
         const uint32_t flags = ReadFieldScalar<uint32_t>(data, dataSize);
 
         result.isEssential = !!(flags & 0x2);
         result.isUnique = !!(flags & 0x20);
         result.isProtected = !!(flags & 0x800);
+        result.autoCalcStats = !!(flags & 0x10);
+        result.pcLevelMult = !!(flags & 0x80);
+        result.level = ReadFieldScalar<uint16_t>(data, dataSize, 8);
+        result.calcMinLevel = ReadFieldScalar<uint16_t>(data, dataSize, 10);
+        result.calcMaxLevel = ReadFieldScalar<uint16_t>(data, dataSize, 12);
         result.magickaOffset = ReadFieldScalar<int16_t>(data, dataSize, 4);
         result.staminaOffset = ReadFieldScalar<int16_t>(data, dataSize, 6);
         result.healthOffset = ReadFieldScalar<int16_t>(data, dataSize, 20);
@@ -36,6 +44,8 @@ NPC_::Data NPC_::GetData(
 
       } else if (!std::memcmp(type, "RNAM", 4)) {
         result.race = ReadFieldScalar<uint32_t>(data, dataSize);
+      } else if (!std::memcmp(type, "CNAM", 4)) {
+        result.classId = ReadFieldScalar<uint32_t>(data, dataSize);
       } else if (!std::memcmp(type, "OBND", 4)) {
         if (const auto objectBounds =
               reinterpret_cast<const ObjectBounds*>(data)) {

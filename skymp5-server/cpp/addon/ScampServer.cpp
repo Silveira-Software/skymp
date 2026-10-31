@@ -1,5 +1,8 @@
 #include "ScampServer.h"
 #include "SrpActorModifiers.h"
+#include "SrpOriginalReference.h"
+#include "SrpOriginalLifecycle.h"
+#include "SrpOriginalEncounter.h"
 
 #include "AtomicActorSpawnV16.h"
 #include "Bot.h"
@@ -120,11 +123,17 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("getNeighborsByPosition",
                      &ScampServer::GetNeighborsByPosition),
       InstanceMethod("getAllForms", &ScampServer::GetAllForms),
+      InstanceMethod("getLoadedActors", &ScampServer::GetLoadedActors),
+      InstanceMethod("inspectSrpNpcAdmission", &ScampServer::InspectSrpNpcAdmission),
       InstanceMethod("getDescFromId", &ScampServer::GetDescFromId),
       InstanceMethod("getIdFromDesc", &ScampServer::GetIdFromDesc),
       InstanceMethod("castSrpSpell", &ScampServer::CastSrpSpell),
       InstanceMethod("inspectSrpSpell", &ScampServer::InspectSrpSpell),
       InstanceMethod("inspectSrpCast", &ScampServer::InspectSrpCast),
+      InstanceMethod("adoptSrpOriginalActor", &ScampServer::AdoptSrpOriginalActor),
+      InstanceMethod("inspectSrpOriginalActor", &ScampServer::InspectSrpOriginalActor),
+      InstanceMethod("captureSrpOriginalEncounter", &ScampServer::CaptureSrpOriginalEncounter),
+      InstanceMethod("applySrpOriginalStats", &ScampServer::ApplySrpOriginalStats),
       InstanceMethod("runChangeFormTransaction", &ScampServer::RunChangeFormTransaction),
       InstanceMethod("getChangeFormGeneration",
                      &ScampServer::GetChangeFormGeneration),
@@ -401,6 +410,10 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       ScriptStorageFactory::Create(serverSettings));
 
     partOne->AttachEspm(espm);
+    if(serverSettings.contains("srpNpcAdmissionV1"))
+      partOne->worldState.ConfigureSrpNpcAdmission(serverSettings.at("srpNpcAdmissionV1"));
+    if (serverSettings.contains("srpNpcLiveUnloadV1"))
+      partOne->worldState.ConfigureSrpNpcLiveUnload(serverSettings.at("srpNpcLiveUnloadV1"));
     partOne->animationSystem.Init(&partOne->worldState);
 
     if (conditionsEvaluatorSettings.is_object()) {
@@ -1227,6 +1240,24 @@ Napi::Value ScampServer::GetNeighborsByPosition(const Napi::CallbackInfo& info)
   }
 }
 
+Napi::Value ScampServer::GetLoadedActors(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto ids = partOne->worldState.GetLoadedActors(
+      NapiHelper::ExtractUInt32(info[0], "modIndex"));
+    auto out = Napi::Uint32Array::New(info.Env(), ids.size());
+    for (size_t i = 0; i < ids.size(); ++i)
+      out[i] = ids[i];
+    return out;
+  } catch (const std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+Napi::Value ScampServer::InspectSrpNpcAdmission(const Napi::CallbackInfo& info)
+{
+  return NapiHelper::ParseJson(
+    info.Env(), partOne->worldState.InspectSrpNpcAdmission().dump());
+}
 Napi::Value ScampServer::GetAllForms(const Napi::CallbackInfo& info)
 {
   try {
@@ -1849,4 +1880,73 @@ Napi::Value ScampServer::InspectSrpCast(const Napi::CallbackInfo& info)
   report["authenticatedUser"]=user;report["targetConnected"]=target&&partOne->serverState.UserByActor(target)!=Networking::InvalidUserId;
   return NapiHelper::ParseJson(env,report.dump());
  }catch(const std::exception& e){Napi::Error::New(env,e.what()).ThrowAsJavaScriptException();return env.Undefined();}
+}
+
+Napi::Value ScampServer::AdoptSrpOriginalActor(const Napi::CallbackInfo& info)
+{
+  const auto env = info.Env();
+  try {
+    const auto id = NapiHelper::ExtractUInt32(info[0], "reference");
+    auto form = partOne->worldState.LookupFormByIdNoLoad(id);
+    auto* actor = form ? form->AsActor() : nullptr;
+    if (!actor) throw std::runtime_error("SRP_ORIGINAL_LOADED_ACTOR_REQUIRED");
+    if (partOne->serverState.UserByActor(actor) != Networking::InvalidUserId)
+      throw std::runtime_error("SRP_ORIGINAL_PLAYER_FORBIDDEN");
+    const auto policy = nlohmann::json::parse(NapiHelper::Stringify(env, info[1]));
+    return NapiHelper::ParseJson(env, SrpOriginalReference::Adopt(*actor, policy).dump());
+  } catch (const std::exception& e) {
+    Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+}
+
+Napi::Value ScampServer::InspectSrpOriginalActor(const Napi::CallbackInfo& info)
+{
+  const auto env=info.Env();
+  try{
+    const auto id=NapiHelper::ExtractUInt32(info[0],"reference");
+    auto form=partOne->worldState.LookupFormByIdNoLoad(id);
+    auto* actor=form?form->AsActor():nullptr;
+    if(!actor)throw std::runtime_error("SRP_ORIGINAL_LOADED_ACTOR_REQUIRED");
+    return NapiHelper::ParseJson(env,SrpOriginalLifecycle::Inspect(*actor).dump());
+  }catch(const std::exception& e){
+    Napi::Error::New(env,e.what()).ThrowAsJavaScriptException();return env.Undefined();
+  }
+}
+
+Napi::Value ScampServer::ApplySrpOriginalStats(const Napi::CallbackInfo& info)
+{
+  const auto env=info.Env();
+  try {
+    if(info.Length()!=1)throw std::runtime_error("SRP_ORIGINAL_STATS_NATIVE_INPUT_ONLY");
+    const auto id=NapiHelper::ExtractUInt32(info[0],"reference");
+    const auto form=partOne->worldState.LookupFormByIdNoLoad(id);
+    auto* actor=form?form->AsActor():nullptr;
+    if(!actor)throw std::runtime_error("SRP_ORIGINAL_LOADED_ACTOR_REQUIRED");
+    if(partOne->serverState.UserByActor(actor)!=Networking::InvalidUserId)
+      throw std::runtime_error("SRP_ORIGINAL_PLAYER_FORBIDDEN");
+    return NapiHelper::ParseJson(env,actor->ApplySrpOriginalStats().dump());
+  } catch(const std::exception& error) {
+    Napi::Error::New(env,error.what()).ThrowAsJavaScriptException();return env.Undefined();
+  }
+}
+
+Napi::Value ScampServer::CaptureSrpOriginalEncounter(const Napi::CallbackInfo& info)
+{
+  const auto env=info.Env();
+  try{
+    if(info.Length()!=2)throw std::runtime_error("SRP_ENCOUNTER_NATIVE_INPUT_ONLY");
+    const auto id=NapiHelper::ExtractUInt32(info[0],"originalReference");
+    const auto entrantId=NapiHelper::ExtractUInt32(info[1],"entrantActor");
+    const auto form=partOne->worldState.LookupFormByIdNoLoad(id);
+    const auto pcForm=partOne->worldState.LookupFormByIdNoLoad(entrantId);
+    auto* actor=form?form->AsActor():nullptr;auto* entrant=pcForm?pcForm->AsActor():nullptr;
+    if(!actor||!entrant)throw std::runtime_error("SRP_ENCOUNTER_LOADED_ACTORS_REQUIRED");
+    if(partOne->serverState.UserByActor(actor)!=Networking::InvalidUserId ||
+      partOne->serverState.UserByActor(entrant)==Networking::InvalidUserId || entrant->GetProfileId()<=0)
+      throw std::runtime_error("SRP_ENCOUNTER_AUTHENTICATED_ENTRANT_REQUIRED");
+    return NapiHelper::ParseJson(env,SrpOriginalEncounter::Capture(*actor,*entrant).dump());
+  }catch(const std::exception& e){
+    Napi::Error::New(env,e.what()).ThrowAsJavaScriptException();return env.Undefined();
+  }
 }

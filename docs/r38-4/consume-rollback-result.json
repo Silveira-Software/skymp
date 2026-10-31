@@ -1,0 +1,78 @@
+{
+  "status": "PASS",
+  "additionalDebit": 0,
+  "nativeExecuted": true,
+  "realSkyrim": false,
+  "kind": "REAL_TRANSACTIONAL_NATIVE_WITH_COMPATIBLE_PREVIOUS_GAMEMODE_INVENTORY_PREVIOUS_NATIVE_FAIL_CLOSED",
+  "rollbackMode": "CONFIRMED_RECEIPTS_READABLE_NEW_CONSUMPTION_HELD",
+  "checks": [
+    {
+      "name": "full-rollback-artifact-exits-78-on-incompatible-native",
+      "status": "PASS"
+    },
+    {
+      "name": "incompatible-previous-native-refused-before-gameplay",
+      "status": "PASS"
+    },
+    {
+      "name": "confirmed-replay",
+      "status": "PASS",
+      "additionalDebit": 0,
+      "observed": {
+        "status": "PASS",
+        "nativeExecuted": true,
+        "source": "srp",
+        "mode": "rollback",
+        "inventory": 2,
+        "hunger": 42,
+        "otherInventory": 3,
+        "otherHunger": 30,
+        "receipts": 1,
+        "ack": true,
+        "backend": "REAL_FILEDATABASE_FSYNC",
+        "mongo": "FILE_BACKED_API_FIXTURE_NOT_REAL_MONGO",
+        "productionAccess": false
+      }
+    },
+    {
+      "name": "reconnection-and-repeat",
+      "status": "PASS",
+      "additionalDebit": 0,
+      "observed": {
+        "status": "PASS",
+        "nativeExecuted": true,
+        "source": "srp",
+        "mode": "rollback",
+        "inventory": 2,
+        "hunger": 42,
+        "otherInventory": 3,
+        "otherHunger": 30,
+        "receipts": 1,
+        "ack": true,
+        "backend": "REAL_FILEDATABASE_FSYNC",
+        "mongo": "FILE_BACKED_API_FIXTURE_NOT_REAL_MONGO",
+        "productionAccess": false
+      }
+    },
+    {
+      "name": "kill-during-reversal-and-restart",
+      "status": "PASS",
+      "additionalDebit": 0
+    },
+    {
+      "name": "unconfirmed-operation-preserved-and-held",
+      "status": "PASS",
+      "additionalDebit": 0
+    },
+    {
+      "name": "pending-forward-recovery-exactly-once",
+      "status": "PASS",
+      "additionalDebit": 0
+    }
+  ],
+  "productionChanged": false,
+  "exitCode": 0,
+  "nativeSha256": "aaf156a6ee7432c47dc9ec42f35fabf21c5f4867c3744df3e86f9989612676d5",
+  "remoteEvidence": "/opt/skymp/candidates/r38-4-operation-20261029/consume-rollback-1793322318333921643",
+  "productionWritten": false
+}

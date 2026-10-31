@@ -1,6 +1,8 @@
 #include "MpActor.h"
 #include "SrpActorStats.h"
 #include "SrpActorModifiers.h"
+#include "SrpOriginalLifecycle.h"
+#include "SrpOriginalStats.h"
 #include "ActiveMagicEffectsMap.h"
 #include "ActorValues.h"
 #include "ChangeFormGuard.h"
@@ -111,6 +113,15 @@ MpActor::MpActor(const LocationalData& locationalData_,
 {
   pImpl.reset(new Impl);
   asActor = this;
+}
+
+bool MpActor::HasSrpPendingNpcOperations() const
+{
+  return HasSrpUnloadDependencies() || !pImpl->snippetPromises.empty() ||
+    !pImpl->droppedItemsQueue.empty() || pImpl->isRespawning ||
+    pImpl->isBlockActive || ShouldSkipRestoration() ||
+    !pImpl->destroyEventSinks.empty() || !pImpl->disableEventSinks.empty() ||
+    !GetChangeForm().activeMagicEffects.Empty();
 }
 
 void MpActor::IncreaseBlockCount() noexcept
@@ -231,12 +242,26 @@ void MpActor::SetRaceMenuOpen(bool isOpen)
 
 void MpActor::SetAppearance(const Appearance* newAppearance)
 {
-  EditChangeForm([&](MpChangeForm& changeForm) {
-    if (newAppearance)
-      changeForm.appearanceDump = newAppearance->ToJson();
-    else
-      changeForm.appearanceDump.clear();
-  });
+  // A race changes resource maxima. Preserve absolute resources, as equipment
+  // and temporary effects already do; retaining the old fraction grants a
+  // free heal on a larger race. Legacy/unmanaged actors keep their behavior.
+  const auto before = SrpActorModifiers::Managed(*this)
+    ? std::optional<ActorValues>(GetActorValues()) : std::nullopt;
+  auto apply = [&] {
+    EditChangeForm([&](MpChangeForm& changeForm) {
+      if (newAppearance)
+        changeForm.appearanceDump = newAppearance->ToJson();
+      else
+        changeForm.appearanceDump.clear();
+    });
+    if (before) ReconcileSrpMaximums(*before);
+    return true;
+  };
+  // A failed race/composition lookup must not queue an appearance snapshot
+  // with the old maxima. This is one ChangeForm operation, not proof of a
+  // complete engine transformation or a network/animation transaction.
+  if (before) RunChangeFormTransaction(apply);
+  else apply();
 }
 
 void MpActor::SetEquipment(const Equipment& newEquipment)
@@ -370,8 +395,7 @@ void MpActor::VisitProperties(CreateActorMessage& message,
   // this "if" is needed for unit testing: tests can call VisitProperties
   // without espm attached, which will cause tests to fail
   if (worldState && worldState->HasEspm()) {
-    baseActorValues = GetBaseActorValues(worldState, baseId, raceId,
-                                         ChangeForm().templateChain);
+    baseActorValues = GetBaseValues();
   }
 
   baseActorValues = SrpActorStats::Read(*this).ComposeMaximums(baseActorValues);
@@ -630,7 +654,8 @@ MpChangeForm MpActor::GetChangeForm() const
   // In-memory recovery/character handoff must carry the same resource snapshot
   // as serialized world records. Otherwise ApplyChangeForm treats a current
   // R37 copy as legacy R36 and rescales its percentages a second time.
-  if (res.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty)) {
+  if (res.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty) ||
+      res.dynamicFields.GetAsJson().contains(SrpOriginalStats::kProperty)) {
     const nlohmann::json maximums = {{"schemaVersion", 1},
       {"health", res.actorValues.health}, {"magicka", res.actorValues.magicka},
       {"stamina", res.actorValues.stamina}};
@@ -645,6 +670,7 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     throw std::runtime_error(
       "Expected record type to be ACHR, but found REFR");
   }
+  if(GetParent())GetParent()->CheckSrpNpcMovement(GetFormId(),newChangeForm.worldOrCellDesc,newChangeForm.position);
   MpObjectReference::ApplyChangeForm(newChangeForm);
   EditChangeForm(
     [&](MpChangeForm& changeForm) {
@@ -664,7 +690,8 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
         EnsureTemplateChainEvaluated(GetParent()->GetEspm(),
                                      Mode::NoRequestSave);
         auto persistedValues = changeForm.actorValues;
-        if(changeForm.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty)){
+        if(changeForm.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty) ||
+           changeForm.dynamicFields.GetAsJson().contains(SrpOriginalStats::kProperty)){
           const auto& fields=changeForm.dynamicFields.GetAsJson();
           const auto legacy=SrpActorStats::Read(*this).ComposeMaximums(GetBaseValues());
           persistedValues.health=legacy.health;persistedValues.magicka=legacy.magicka;persistedValues.stamina=legacy.stamina;
@@ -677,7 +704,8 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
         }
         changeForm.actorValues = GetBaseActorValues(
           GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
-        if (changeForm.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty)) {
+        if (changeForm.dynamicFields.GetAsJson().contains(SrpActorStats::kProperty) ||
+            changeForm.dynamicFields.GetAsJson().contains(SrpOriginalStats::kProperty)) {
           const auto maximum = GetMaximumValues();
           changeForm.actorValues.health = maximum.health;
           changeForm.actorValues.magicka = maximum.magicka;
@@ -685,6 +713,13 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
           changeForm.actorValues.healthPercentage = std::clamp(persistedValues.healthPercentage*persistedValues.health/std::max(maximum.health,1.f),0.f,1.f);
           changeForm.actorValues.magickaPercentage = std::clamp(persistedValues.magickaPercentage*persistedValues.magicka/std::max(maximum.magicka,1.f),0.f,1.f);
           changeForm.actorValues.staminaPercentage = std::clamp(persistedValues.staminaPercentage*persistedValues.stamina/std::max(maximum.stamina,1.f),0.f,1.f);
+        } else if (!IsCreatedAsPlayer() && changeForm.profileId < 0 &&
+                   GetParent()->InspectSrpNpcAdmission().value("enabled", false)) {
+          // Residency is not healing. Reuse the same template/base maximums
+          // while retaining the durable NPC fractions across cold/restart load.
+          changeForm.actorValues.healthPercentage = persistedValues.healthPercentage;
+          changeForm.actorValues.magickaPercentage = persistedValues.magickaPercentage;
+          changeForm.actorValues.staminaPercentage = persistedValues.staminaPercentage;
         }
       }
     },
@@ -692,7 +727,9 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   ReapplyMagicEffects();
 
   // We do the same in PartOne::SetUserActor for player characters
-  if (IsDead() && !IsRespawning()) {
+  const bool admittedNpc = !IsCreatedAsPlayer() && GetProfileId() < 0 &&
+    GetParent() && GetParent()->InspectSrpNpcAdmission().value("enabled", false);
+  if (IsDead() && !IsRespawning() && !admittedNpc) {
     spdlog::info("MpActor::ApplyChangeForm {:x} - respawning dead actor",
                  GetFormId());
     RespawnWithDelay();
@@ -1395,6 +1432,10 @@ void MpActor::ModifyActorValuePercentage(espm::ActorValue av,
 
 void MpActor::BeforeDestroy()
 {
+  if(SrpOriginalLifecycle::Managed(*this)){
+    SrpOriginalLifecycle::Inspect(*this);
+    GetParent()->RetainOriginalForUnload(*this);
+  }
   for (auto& sink : pImpl->destroyEventSinks) {
     sink->BeforeDestroy(*this);
   }
@@ -1420,6 +1461,19 @@ void MpActor::Init(WorldState* worldState, uint32_t formId, bool hasChangeForm)
 
 void MpActor::Kill(MpActor* killer, bool shouldTeleport)
 {
+  if(SrpOriginalLifecycle::Managed(*this)){
+    // One corpse state, selected native drops and death receipt in one world
+    // record. No generic onDeath reward callback or unverified respawn timer.
+    SrpOriginalLifecycle::Inspect(*this);
+    if(IsDead())return;
+    RunChangeFormTransaction([&]{
+      SendAndSetDeathState(true,false);
+      AddDeathItem();
+      SrpOriginalLifecycle::RecordDeath(*this,killer);
+      return true;
+    });
+    return;
+  }
   spdlog::trace("MpActor::Kill {:x} - killer is {:x}", GetFormId(),
                 killer ? killer->GetFormId() : 0);
 
@@ -1444,6 +1498,7 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
 
 void MpActor::RespawnWithDelay(bool shouldTeleport)
 {
+  if(SrpOriginalLifecycle::Managed(*this))return;
   spdlog::trace("MpActor::RespawnWithDelay {:x} - isRespawning: {}",
                 GetFormId(), pImpl->isRespawning);
 
@@ -1518,6 +1573,7 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
 
 void MpActor::Respawn(bool shouldTeleport)
 {
+  if(SrpOriginalLifecycle::Managed(*this))return;
   if (IsDead() == false) {
     return;
   }
@@ -1619,6 +1675,10 @@ void MpActor::SetRespawnTime(float time)
 
 void MpActor::SetIsDead(bool isDead)
 {
+  if(SrpOriginalLifecycle::Managed(*this)){
+    if(isDead)Kill(nullptr,false);
+    return;
+  }
   spdlog::trace("MpActor::SetIsDead {:x} - isDead: {}", GetFormId(), isDead);
 
   constexpr bool kShouldTeleport = false;
@@ -1671,8 +1731,48 @@ void MpActor::DamageActorValue(espm::ActorValue av, float value)
 BaseActorValues MpActor::GetBaseValues() const
 {
   if (!GetParent() || !GetParent()->HasEspm()) return {};
+  if (const auto original = SrpOriginalStats::Read(*this)) return *original;
   return GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
                             ChangeForm().templateChain);
+}
+
+nlohmann::json MpActor::ApplySrpOriginalStats()
+{
+  const auto proposed=SrpOriginalStats::Preview(*this);
+  const auto& fields=GetDynamicFields().GetAsJson();
+  const bool duplicate=fields.contains(SrpOriginalStats::kProperty);
+  if (duplicate) {
+    SrpOriginalStats::Read(*this); // Never normalize or bless a corrupt receipt.
+    if (!SrpOriginalStats::SameSnapshot(fields.at(SrpOriginalStats::kProperty),proposed))
+      throw std::runtime_error("SRP_ORIGINAL_STATS_MIGRATION_REQUIRED");
+  }
+  if (!duplicate) {
+    const auto before=GetMaximumValues();auto values=GetActorValues();
+    const auto& m=proposed.at("maximums");
+    const float health=m.at("health"),magicka=m.at("magicka"),stamina=m.at("stamina");
+    auto preserve=[](float fraction,float oldMax,float newMax){
+      if(!std::isfinite(fraction)||fraction<0||fraction>1||!std::isfinite(oldMax)||oldMax<0)
+        throw std::runtime_error("SRP_ORIGINAL_STATS_CURRENT_RESOURCE_CORRUPT");
+      if(fraction*oldMax>newMax+0.0001f)
+        throw std::runtime_error("SRP_ORIGINAL_STATS_RESOURCE_WOULD_BE_CLIPPED");
+      return std::clamp(fraction*oldMax/std::max(newMax,1.f),0.f,1.f);
+    };
+    values.healthPercentage=preserve(values.healthPercentage,before.health,health);
+    values.magickaPercentage=preserve(values.magickaPercentage,before.magicka,magicka);
+    values.staminaPercentage=preserve(values.staminaPercentage,before.stamina,stamina);
+    values.health=health;values.magicka=magicka;values.stamina=stamina;
+    RunChangeFormTransaction([&]{
+      EditChangeForm([&](MpChangeForm& form){
+        form.actorValues=values;
+        form.dynamicFields.SetValueDump(SrpOriginalStats::kProperty,proposed.dump());
+      });
+      return true;
+    });
+    NetSendChangeValues(values,std::nullopt);
+  }
+  const auto generation=GetParent()->GetChangeFormGeneration(GetFormId());
+  return {{"snapshot",duplicate?fields.at(SrpOriginalStats::kProperty):proposed},{"duplicate",duplicate},{"generation",generation},
+    {"saved",generation>0&&GetParent()->IsChangeFormSaved(GetFormId(),generation)}};
 }
 
 BaseActorValues MpActor::GetMaximumValues() const

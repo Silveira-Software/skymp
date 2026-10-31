@@ -20,7 +20,7 @@ TEST_CASE("Bug", "[espm]")
 
   std::atomic<bool> finished = false;
 
-  std::thread([&] {
+  auto watchdog = std::thread([&] {
     auto was = std::chrono::system_clock::now();
 
     while (finished.load() == false) {
@@ -34,7 +34,7 @@ TEST_CASE("Bug", "[espm]")
         std::abort();
       }
     }
-  }).detach();
+  });
 
   auto chest = espm::Convert<espm::CONT>(
     GetEspmLoader().GetBrowser().LookupById(chestId).rec);
@@ -52,6 +52,11 @@ TEST_CASE("Bug", "[espm]")
     }
   }
   finished = true;
+  // The detached thread used to read a destroyed stack atomic after this test
+  // returned, aborting unrelated later tests after its ten-second deadline.
+  // Keep the same timeout and workload, but finish the thread before the flag
+  // goes out of scope.
+  watchdog.join();
 }
 
 TEST_CASE("Evaluate LItemFoodCabbage75", "[espm]")

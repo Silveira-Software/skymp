@@ -21,7 +21,8 @@ void BaseActorValues::VisitBaseActorValuesAndPercentages(
   message.props.magickaPercentage = changeForm.actorValues.magickaPercentage;
 }
 
-// TODO: implement auto-calc flag
+// Legacy/player defaults. Original NPC fixed-level composition is scoped in
+// SrpOriginalStats; never change player maximums through an NPC growth rule.
 BaseActorValues GetBaseActorValues(WorldState* worldState, uint32_t baseId,
                                    uint32_t raceIdOverride,
                                    const std::vector<FormDesc>& templateChain)

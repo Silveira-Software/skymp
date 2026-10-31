@@ -1,4 +1,5 @@
 #include "MpObjectReference.h"
+#include "SrpOriginalLifecycle.h"
 #include <unordered_set>
 static thread_local std::unordered_set<const MpObjectReference*> srpConsumptionTransactions;
 #include "ChangeFormGuard.h"
@@ -369,6 +370,20 @@ FormCallbacks MpObjectReference::GetCallbacks() const
   return *callbacks;
 }
 
+bool MpObjectReference::HasSrpUnloadDependencies() const
+{
+  // Merely observing nearby trigger volumes is not an active script use.
+  // Unsubscribe detaches false/outside entries without an enter/leave event.
+  // Inside volumes and any previously acquired VM handle remain pinned.
+  const bool activeTrigger = emittersWithPrimitives && std::any_of(
+    emittersWithPrimitives->begin(), emittersWithPrimitives->end(),
+    [](const auto& entry) { return entry.second; });
+  return HasSrpVmReferences() || !ListActivePexInstances().empty() || GetSingleUpdateTimerId() ||
+    pImpl->scriptState || pImpl->primitive || occupant ||
+    occupantDestroySink || occupantDisableSink ||
+    (primitivesWeAreInside && !primitivesWeAreInside->empty()) || activeTrigger;
+}
+
 bool MpObjectReference::HasScript(const char* name) const
 {
   return ToGameObject()->HasScript(name);
@@ -456,6 +471,7 @@ void MpObjectReference::Activate(MpObjectReference& activationSource,
                                  bool defaultProcessingOnly,
                                  bool isSecondActivation)
 {
+  if(AsActor()&&SrpOriginalLifecycle::Managed(*AsActor()))return;
   if (spdlog::should_log(spdlog::level::trace)) {
     for (auto& script : ListActivePexInstances()) {
       spdlog::trace("MpObjectReference::Activate {:x} - found script {}",
@@ -549,6 +565,7 @@ void MpObjectReference::Enable()
 
 void MpObjectReference::SetPos(const NiPoint3& newPos, SetPosMode setPosMode)
 {
+  if(GetParent()&&AsActor())GetParent()->CheckSrpNpcMovement(GetFormId(),GetCellOrWorld(),newPos);
   auto oldGridPos = GetGridPos(ChangeForm().position);
   auto newGridPos = GetGridPos(newPos);
 
@@ -600,7 +617,7 @@ void MpObjectReference::SetPos(const NiPoint3& newPos, SetPosMode setPosMode)
       }
     }
 
-    if (primitivesWeAreInside) {
+    if (primitivesWeAreInside && !primitivesWeAreInside->empty()) {
       auto me = ToVarValue();
 
       // May be modified inside loop, so copying
@@ -646,6 +663,8 @@ void MpObjectReference::SetOpen(bool open)
 
 void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 {
+  if(AsActor()&&SrpOriginalLifecycle::Managed(*AsActor()))
+    throw std::runtime_error("SRP_ORIGINAL_INVENTORY_LIFECYCLE_NOT_APPROVED");
   CheckInteractionAbility(ac);
   if (this->occupant != &ac) {
     std::stringstream err;
@@ -660,6 +679,8 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 
 void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 {
+  if(AsActor()&&SrpOriginalLifecycle::Managed(*AsActor()))
+    throw std::runtime_error("SRP_ORIGINAL_LOOT_LIFECYCLE_NOT_APPROVED");
   CheckInteractionAbility(ac);
   if (this->occupant != &ac) {
     std::stringstream err;
@@ -1289,6 +1310,7 @@ void MpObjectReference::SetCellOrWorldObsolete(const FormDesc& newWorldOrCell)
   if (!worldState) {
     return;
   }
+  if(AsActor())worldState->CheckSrpNpcMovement(GetFormId(),newWorldOrCell,GetPos());
 
   auto worldOrCell =
     ChangeForm().worldOrCellDesc.ToFormId(worldState->espmFiles);

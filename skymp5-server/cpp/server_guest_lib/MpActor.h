@@ -49,6 +49,7 @@ public:
   espm::ObjectBounds GetBounds() const;
   const std::vector<FormDesc>& GetTemplateChain() const;
   bool IsCreatedAsPlayer() const;
+  bool HasSrpPendingNpcOperations() const;
   const ActorValues& GetActorValues() const;
   const ActiveMagicEffectsMap& GetActiveMagicEffects() const;
   int32_t GetProfileId() const;
@@ -173,6 +174,7 @@ public:
 
   BaseActorValues GetBaseValues() const;
   BaseActorValues GetMaximumValues() const;
+  nlohmann::json ApplySrpOriginalStats();
   void ApplySrpActorStats(const nlohmann::json& input);
   void ReconcileSrpMaximums(const ActorValues& before);
   friend struct SrpActorModifiers;

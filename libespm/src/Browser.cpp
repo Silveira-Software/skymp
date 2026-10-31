@@ -51,6 +51,8 @@ struct Browser::Impl
   std::vector<const RecordHeader*> quests;
   std::vector<const RecordHeader*> worlds;
   std::vector<const RecordHeader*> cells;
+  std::vector<const RecordHeader*> actors;
+  std::vector<const RecordHeader*> gameSettings;
 
   GroupStack grStack;
   std::vector<std::unique_ptr<GroupStack>> grStackCopies;
@@ -141,8 +143,10 @@ const std::vector<const RecordHeader*>& Browser::GetRecordsByType(
   if (!std::strcmp(type, espm::CELL::kType)) {
     return pImpl->cells;
   }
+  if (!std::strcmp(type, "NPC_")) return pImpl->actors;
+  if (!std::strcmp(type, "GMST")) return pImpl->gameSettings;
   throw std::runtime_error("GetRecordsByType currently supports only REFR, "
-                           "COBJ, KYWD, LCTN, FACT, QUST, WRLD and CELL "
+                           "COBJ, KYWD, LCTN, FACT, QUST, WRLD, CELL, NPC_ and GMST "
                            "records");
 }
 
@@ -267,6 +271,8 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
     if (utils::Is<espm::COBJ>(t)) {
       pImpl->constructibleObjects.push_back(recHeader);
     }
+    if (t == "NPC_") pImpl->actors.push_back(recHeader);
+    if (t == "GMST") pImpl->gameSettings.push_back(recHeader);
 
     if (utils::Is<espm::KYWD>(t)) {
       pImpl->keywords.push_back(recHeader);

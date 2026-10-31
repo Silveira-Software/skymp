@@ -193,6 +193,26 @@ SrpActorModifiers::ConditionResult SrpActorModifiers::EvaluateConditions(
         }
         break;
       }
+      case 80: {
+        if (args.firstParameter) return Result::Unknown;
+        // Only a current server projection proves the player's level. NPC
+        // auto-calc/template levels and the client vanilla level are not inputs.
+        const auto fields = subject->GetDynamicFields().GetAsJson();
+        if (!fields.contains("srpProgression"))
+          return Result::Unknown;
+        try {
+          const auto canonical = SrpActorStats::FromProjection(fields.at("srpProgression"));
+          if (!canonical.revision || canonical.profileId != std::to_string(subject->GetProfileId()) ||
+            !fields.contains("srpActiveCharacterId") || fields.at("srpActiveCharacterId") != canonical.characterId)
+            return Result::Unknown;
+          // The canonical snapshot may be one revision AHEAD while the same
+          // native ApplySrpActorStats call is composing modifiers. Requiring
+          // equal projections here would deadlock a legitimate level update.
+          if (SrpActorStats::Read(*subject).revision > canonical.revision) return Result::Unknown;
+          value = canonical.level;
+        } catch (const std::exception&) { return Result::Unknown; }
+        break;
+      }
       case 46: {
         if(args.firstParameter)return Result::Unknown;value=subject->IsDead();break;
       }

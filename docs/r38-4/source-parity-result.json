@@ -1,0 +1,9 @@
+{
+  "status": "PASS",
+  "files": 566,
+  "mismatches": [],
+  "manifestSha256": "55fb4f6e368a18b8e9498494f318245b6d710076830f24c2648da2bf17f80127",
+  "nativeSha256": "aaf156a6ee7432c47dc9ec42f35fabf21c5f4867c3744df3e86f9989612676d5",
+  "windowsPlatformRebuilt": false,
+  "productionWritten": false
+}

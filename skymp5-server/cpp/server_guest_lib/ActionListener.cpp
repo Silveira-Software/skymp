@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "SrpOriginalLifecycle.h"
 #include "AnimationSystem.h"
 #include "ConditionsEvaluator.h"
 #include "ConsoleCommands.h"
@@ -76,6 +77,10 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
       return nullptr;
     }
 
+    if (!partOne.worldState.CanSrpNpcHost(*actor, *myActor)) {
+      partOne.SendHostStop(userId, *actor);
+      return nullptr;
+    }
     auto it = partOne.worldState.hosters.find(actor->GetFormId());
     if (it == partOne.worldState.hosters.end() ||
         it->second != myActor->GetFormId()) {
@@ -682,14 +687,27 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
     return;
   }
 
-  // Preserve vanilla reference loading; dynamic IDs are never loaded by this API.
-  const auto remoteForm = partOne.worldState.LookupFormById(remoteId);
+  // Cold NPCs cannot be materialized by a remote host request. Preserve the
+  // original lazy-loading behavior for non-actor objects used by other systems.
+  auto remoteForm = partOne.worldState.LookupFormByIdNoLoad(remoteId);
+  if (!remoteForm) {
+    const bool live = partOne.worldState.InspectSrpNpcAdmission().value("liveNpcUnloadEnabled", false);
+    if (!live) {
+      remoteForm = partOne.worldState.LookupFormById(remoteId);
+    } else if (remoteId < 0xff000000 && partOne.worldState.HasEspm()) {
+      const auto record = partOne.GetEspm().GetBrowser().LookupById(remoteId);
+      if (record.rec && record.rec->GetType() != "ACHR")
+        remoteForm = partOne.worldState.LookupFormById(remoteId);
+    }
+  }
   auto* remoteRef = remoteForm ? remoteForm->AsObjectReference() : nullptr;
   if (!remoteRef) {
     spdlog::warn("OnHostAttempt - Rejected missing or despawned reference");
     return;
   }
   auto& remote = *remoteRef;
+  if (!partOne.worldState.CanSrpNpcHost(remote, *me))
+    return;
 
   auto user = partOne.serverState.UserByActor(remote.AsActor());
   if (user != Networking::InvalidUserId) {
@@ -1063,22 +1081,29 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     aggressor = myActor;
     hitData.aggressor = aggressor->GetFormId();
   } else {
-    aggressor = &partOne.worldState.GetFormAt<MpActor>(hitData.aggressor);
     auto it = partOne.worldState.hosters.find(hitData.aggressor);
     if (it == partOne.worldState.hosters.end() ||
         it->second != myActor->GetFormId()) {
       spdlog::error("SendToNeighbours - No permission to send OnHit with "
                     "aggressor actor {:x}",
-                    aggressor->GetFormId());
+                    hitData.aggressor);
       return;
     }
+    // Hosting only exists for an already loaded actor. Resolving a client
+    // supplied aggressor through GetFormAt first can materialize a cold ACHR
+    // before the permission check. Neither admission nor identity is a hit.
+    const auto form=partOne.worldState.LookupFormByIdNoLoad(hitData.aggressor);
+    aggressor=form?form->AsActor():nullptr;
+    if(!aggressor)return;
   }
 
   if (hitData.target == 0x14) {
     hitData.target = myActor->GetFormId();
   }
 
-  MpForm* targetForm = partOne.worldState.LookupFormById(hitData.target).get();
+  const auto targetForm = partOne.worldState.IsSrpOriginalControlled(hitData.target)
+    ? partOne.worldState.LookupFormByIdNoLoad(hitData.target)
+    : partOne.worldState.LookupFormById(hitData.target);
   MpObjectReference* targetRef =
     targetForm ? targetForm->AsObjectReference() : nullptr;
   if (!targetRef) {
@@ -1087,6 +1112,11 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
                   hitData.target);
     return;
   }
+
+  if (SrpOriginalLifecycle::Managed(*aggressor) ||
+      (targetRef->AsActor() &&
+       SrpOriginalLifecycle::Managed(*targetRef->AsActor())))
+    return;
 
   const FormDesc& aggressorCellOrWorld = aggressor->GetCellOrWorld();
   const FormDesc& targetCellOrWorld = targetRef->GetCellOrWorld();
@@ -1199,6 +1229,13 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     spellCastData.target = myActor->GetFormId();
   }
 
+  const auto observedTarget =
+    partOne.worldState.LookupFormByIdNoLoad(spellCastData.target);
+  if (SrpOriginalLifecycle::Managed(*caster) ||
+      (observedTarget && observedTarget->AsActor() &&
+       SrpOriginalLifecycle::Managed(*observedTarget->AsActor())))
+    return;
+
   if (caster->IsDead()) {
     spdlog::info(fmt::format("{:x} actor is dead and can't spell cast. "
                              "requesting respawn in order to fix death state",
@@ -1256,6 +1293,10 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
                                 const HitData& hitData)
 {
+  if (SrpOriginalLifecycle::Managed(*aggressor) ||
+      (targetRef && targetRef->AsActor() &&
+       SrpOriginalLifecycle::Managed(*targetRef->AsActor())))
+    return;
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
 
   auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
@@ -1295,6 +1336,10 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
                                  MpObjectReference* targetRef, HitData hitData,
                                  [[maybe_unused]] bool isUnarmed)
 {
+  if (SrpOriginalLifecycle::Managed(*aggressor) ||
+      (targetRef && targetRef->AsActor() &&
+       SrpOriginalLifecycle::Managed(*targetRef->AsActor())))
+    return;
   const auto currentHitTime = std::chrono::steady_clock::now();
 
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
