@@ -2,6 +2,7 @@
 #include "SrpActorModifiers.h"
 #include "SrpOriginalReference.h"
 #include "SrpOriginalLifecycle.h"
+#include "SrpOriginalEncounter.h"
 
 #include "AtomicActorSpawnV16.h"
 #include "Bot.h"
@@ -131,6 +132,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("inspectSrpCast", &ScampServer::InspectSrpCast),
       InstanceMethod("adoptSrpOriginalActor", &ScampServer::AdoptSrpOriginalActor),
       InstanceMethod("inspectSrpOriginalActor", &ScampServer::InspectSrpOriginalActor),
+      InstanceMethod("captureSrpOriginalEncounter", &ScampServer::CaptureSrpOriginalEncounter),
       InstanceMethod("applySrpOriginalStats", &ScampServer::ApplySrpOriginalStats),
       InstanceMethod("runChangeFormTransaction", &ScampServer::RunChangeFormTransaction),
       InstanceMethod("getChangeFormGeneration",
@@ -1926,5 +1928,25 @@ Napi::Value ScampServer::ApplySrpOriginalStats(const Napi::CallbackInfo& info)
     return NapiHelper::ParseJson(env,actor->ApplySrpOriginalStats().dump());
   } catch(const std::exception& error) {
     Napi::Error::New(env,error.what()).ThrowAsJavaScriptException();return env.Undefined();
+  }
+}
+
+Napi::Value ScampServer::CaptureSrpOriginalEncounter(const Napi::CallbackInfo& info)
+{
+  const auto env=info.Env();
+  try{
+    if(info.Length()!=2)throw std::runtime_error("SRP_ENCOUNTER_NATIVE_INPUT_ONLY");
+    const auto id=NapiHelper::ExtractUInt32(info[0],"originalReference");
+    const auto entrantId=NapiHelper::ExtractUInt32(info[1],"entrantActor");
+    const auto form=partOne->worldState.LookupFormByIdNoLoad(id);
+    const auto pcForm=partOne->worldState.LookupFormByIdNoLoad(entrantId);
+    auto* actor=form?form->AsActor():nullptr;auto* entrant=pcForm?pcForm->AsActor():nullptr;
+    if(!actor||!entrant)throw std::runtime_error("SRP_ENCOUNTER_LOADED_ACTORS_REQUIRED");
+    if(partOne->serverState.UserByActor(actor)!=Networking::InvalidUserId ||
+      partOne->serverState.UserByActor(entrant)==Networking::InvalidUserId || entrant->GetProfileId()<=0)
+      throw std::runtime_error("SRP_ENCOUNTER_AUTHENTICATED_ENTRANT_REQUIRED");
+    return NapiHelper::ParseJson(env,SrpOriginalEncounter::Capture(*actor,*entrant).dump());
+  }catch(const std::exception& e){
+    Napi::Error::New(env,e.what()).ThrowAsJavaScriptException();return env.Undefined();
   }
 }

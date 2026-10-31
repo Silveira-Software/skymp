@@ -91,6 +91,9 @@ public:
   // none) and whether the database driver already stored that copy.
   uint64_t GetChangeFormGeneration(uint32_t formId) const;
   bool IsChangeFormSaved(uint32_t formId, uint64_t generation) const;
+  // Read existing original metadata, including cold database images, without
+  // loading an actor. ACK bookkeeping is reconstructed from persisted images.
+  std::vector<nlohmann::json> GetSrpOriginalEncounterImages();
   void RetainOriginalForUnload(MpObjectReference& actor);
   void ConfigureSrpNpcAdmission(const nlohmann::json& config);
   nlohmann::json InspectSrpNpcAdmission() const;

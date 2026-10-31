@@ -17,8 +17,9 @@ caches. Overflow is refused instead of reproducing wrapped negative resources.
 The pure base-NPC PC multiplier resolver reproduces AE float multiplication,
 truncation and ACBS min/max. That captured method reads the global player's NPC
 level, not an ECZN runtime level; its vectors do not prove final per-actor
-encounter resolution. It is not an encounter-level producer: Preview still refuses
-PC-level scaling until a persistent, canonical CELL/EZ context exists. There is
+encounter resolution. The separate producer in `R38-ORIGINAL-ENCOUNTER.md` now
+supplies a saved, canonical CELL/EZ context to Preview. PC scaling without it
+remains refused. There is
 no client/host-supplied context and no new RPC that can grant an arbitrary level.
 
 The method preserves absolute Health/Magicka/Stamina in the same ChangeForm
@@ -37,7 +38,7 @@ Candidate addon SHA-256:
 `f0c6227374ccc3ac898f2e68a5384176c7f2365bc760878413a4eeddbaf9cbf7`.
 
 This is not a gameplay release. Engine parity remains HUMAN_PENDING. Skills,
-the durable PC-level/encounter producer, authoritative impact, original
+per-instance engine parity, authoritative impact, original
 death rewards and CELL/EZ reset are incomplete. OnHit/OnWeaponHit Managed
 guards remain active. No public actor is activated. Readers predating the
 original-stat snapshot support in 433988f must not be used on these records:
@@ -97,8 +98,8 @@ New addon SHA-256:
 Unit executable SHA-256:
 `2309469b4a307a91a3e48efe3bb865dd71fa6421f1a72a983501a228cbc668d6`.
 
-Next blockers: Preview passes no PC context to ResolveLevel, so scaled actors
-still refuse SRP_ORIGINAL_STATS_ENCOUNTER_LEVEL_REQUIRED. ActionListener::OnHit
+The subsequent encounter producer closes the durable-context blocker offline;
+see `R38-ORIGINAL-ENCOUNTER.md`. Missing context still fails closed. ActionListener::OnHit
 and OnWeaponHit still return for SrpOriginalLifecycle::Managed: no trusted
 server collision/LOS scene or durable unique-impact producer exists here.
 Original death rewards and CELL/EZ/quest reset remain gated behind that proof.

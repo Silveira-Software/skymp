@@ -14,6 +14,7 @@
 #include "libespm/RecordHeaderAccess.h"
 #include "libespm/ReadUnaligned.h"
 #include "SrpOriginalLifecycle.h"
+#include "SrpOriginalEncounter.h"
 #include "gamemode_events/ChangeFormsSavedEvent.h"
 #include "libespm/GroupUtils.h"
 #include "papyrus-vm/Reader.h"
@@ -63,6 +64,7 @@ struct RelootTimeForTypesEntry
 
 struct WorldState::Impl
 {
+  std::map<uint32_t,std::pair<nlohmann::json,uint64_t>> encounterSaveGenerations;
   SrpNpcAdmission npcAdmission;
   bool liveUnloadEnabled = false;
   uint32_t liveUnloadGraceMs = 30000, maxNpcsPerHost = 64;
@@ -125,6 +127,7 @@ void WorldState::Clear()
   pImpl->suspendingNpcs.clear();
   pImpl->retiredNetworkIndices.clear();
   pImpl->networkSessions.clear();
+  pImpl->encounterSaveGenerations.clear();
   forms.clear();
   grids.clear();
   formIdxManager.reset();
@@ -1072,6 +1075,43 @@ uint64_t WorldState::GetChangeFormGeneration(uint32_t formId) const
   }
   auto refr = it->second->AsObjectReference();
   return refr ? pImpl->saveGenerations.GetRequested(refr->GetIdx()) : 0;
+}
+
+std::vector<nlohmann::json> WorldState::GetSrpOriginalEncounterImages()
+{
+  if(pImpl->npcInitializationFailed)throw std::runtime_error("SRP_NPC_INITIALIZATION_FAILED_RESTART_REQUIRED");
+  std::vector<nlohmann::json> result;
+  auto add=[&](uint32_t id,const DynamicFields& fields,const FormDesc& base,int32_t profile,bool durable){
+    const auto& f=fields.GetAsJson();if(!f.contains(SrpOriginalEncounter::kProperty))return;
+    if(id>=0xff000000 || profile>=0 || !f.contains("private.srpOriginalReferenceV1"))
+      throw std::runtime_error("SRP_ENCOUNTER_ORIGINAL_IMAGE_CORRUPT");
+    if(f.contains("srpActiveCharacterId") && !f.at("srpActiveCharacterId").is_null() && f.at("srpActiveCharacterId")!="")
+      throw std::runtime_error("SRP_ENCOUNTER_ORIGINAL_IMAGE_CORRUPT");
+    const auto& identity=f.at("private.srpOriginalReferenceV1");
+    if(identity.at("reference")!=FormDesc::FromFormId(id,espmFiles).ToString() || identity.at("base")!=base.ToString())
+      throw std::runtime_error("SRP_ENCOUNTER_ORIGINAL_IMAGE_CORRUPT");
+    result.push_back({{"reference",identity.at("reference")},{"identity",identity},
+      {"receipt",f.at(SrpOriginalEncounter::kProperty)},{"durable",durable}});
+  };
+  // These are database-loaded or explicitly save-confirmed unload images.
+  for(const auto& [id,image]:pImpl->changeFormsForDeferredLoad){
+    if(image.recType!=MpChangeForm::ACHR && image.dynamicFields.GetAsJson().contains(SrpOriginalEncounter::kProperty))
+      throw std::runtime_error("SRP_ENCOUNTER_ORIGINAL_IMAGE_CORRUPT");
+    add(id,image.dynamicFields,image.baseDesc,image.profileId,true);
+  }
+  for(const auto& [id,form]:forms){
+    const auto* actor=form?form->AsActor():nullptr;if(!actor)continue;
+    const auto& f=actor->GetDynamicFields().GetAsJson();
+    if(!f.contains(SrpOriginalEncounter::kProperty))continue;
+    const auto& receipt=f.at(SrpOriginalEncounter::kProperty);
+    const auto g=GetChangeFormGeneration(id);
+    auto [it,inserted]=pImpl->encounterSaveGenerations.try_emplace(id,std::make_pair(receipt,g));
+    if(it->second.first!=receipt || (!it->second.second && g))it->second={receipt,g};
+    bool durable=it->second.second && IsChangeFormSaved(id,it->second.second);
+    for(const auto& stored:result)if(stored.at("reference")==FormDesc::FromFormId(id,espmFiles).ToString() && stored.at("receipt")==receipt && stored.at("durable")==true){durable=true;break;}
+    add(id,actor->GetDynamicFields(),FormDesc::FromFormId(actor->GetBaseId(),espmFiles),actor->GetProfileId(),durable);
+  }
+  return result;
 }
 
 bool WorldState::IsChangeFormSaved(uint32_t formId, uint64_t generation) const

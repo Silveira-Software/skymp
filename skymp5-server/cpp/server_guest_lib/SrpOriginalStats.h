@@ -21,7 +21,7 @@ BaseActorValues Allocate(BaseActorValues base, uint16_t level,
 // Base-NPC GetLevel arithmetic only. AE uses its global player's NPC level in
 // this path; final per-actor CELL/EZ resolution is separate and not implied.
 // This pure function neither obtains authority from a client/host nor produces
-// a durable encounter context. Preview still refuses every PC-scaled actor.
+// a durable encounter context. Preview requires the separately saved producer.
 uint16_t ResolveLevel(const espm::NPC_::Data& npc,
                       std::optional<uint16_t> pcLevel);
 // Read and validate an existing receipt before checking this compatibility.

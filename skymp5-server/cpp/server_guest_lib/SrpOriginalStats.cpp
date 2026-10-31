@@ -2,6 +2,7 @@
 #include "EvaluateTemplate.h"
 #include "MpActor.h"
 #include "SrpOriginalLifecycle.h"
+#include "SrpOriginalEncounter.h"
 #include "libespm/RecordHeaderAccess.h"
 #include "libespm/ReadUnaligned.h"
 #include <algorithm>
@@ -149,9 +150,19 @@ nlohmann::json SrpOriginalStats::Preview(const MpActor& actor)
     [](const auto& record,const auto& data){return std::make_pair(record,data);});
   const auto& data = stats.second;
   Require(data.hasStatsConfiguration, "SRP_ORIGINAL_STATS_ACBS_TRUNCATED");
-  // Choosing an observer's level here would make scaling change after host
-  // handoff. PC-multiplier NPCs need the persisted CELL/EZ encounter producer.
-  const auto level=ResolveLevel(data,std::nullopt);
+  // Frozen authoritative context, not the current host/observer's level.
+  const auto encounter=data.pcLevelMult?SrpOriginalEncounter::Read(actor,true):std::nullopt;
+  Require(!data.pcLevelMult || encounter.has_value(),"SRP_ORIGINAL_STATS_ENCOUNTER_LEVEL_REQUIRED");
+  const auto level=encounter?encounter->at("finalLevel").get<uint16_t>():ResolveLevel(data,std::nullopt);
+  if(encounter){
+    const auto& stored=encounter->at("stats");
+    nlohmann::json chain=nlohmann::json::array();
+    for(const auto& desc:actor.GetChangeForm().templateChain)chain.push_back(desc.ToString());
+    Require(stored.at("source")==FormDesc::FromFormId(stats.first.ToGlobalId(stats.first.rec->GetId()),world->espmFiles).ToString() &&
+      stored.at("pcLevelMult")==data.pcLevelMult && stored.at("value")==data.level &&
+      stored.at("minimum")==data.calcMinLevel && stored.at("maximum")==data.calcMaxLevel && stored.at("templates")==chain,
+      "SRP_ORIGINAL_STATS_ENCOUNTER_CONFIG_CHANGED");
+  }
   const auto raceId=EvaluateTemplate<espm::NPC_::UseTraits>(world,actor.GetBaseId(),
     actor.GetChangeForm().templateChain,
     [](const auto& record,const auto& npc){return record.ToGlobalId(npc.race);});
@@ -201,6 +212,7 @@ nlohmann::json SrpOriginalStats::Preview(const MpActor& actor)
     snapshot["resourceLevelUp"]=resourceLevelUp;
     snapshot["resourceLevelUpSource"]=resourceLevelUpSource;
   }
+  if(encounter)snapshot["encounterContextChecksum"]=encounter->at("checksum");
   snapshot["checksum"]=Digest(snapshot);
   return snapshot;
 }
@@ -216,6 +228,11 @@ std::optional<BaseActorValues> SrpOriginalStats::Read(const MpActor& actor)
     snapshot.at("identity")==life.at("identity") && snapshot.value("gameplayEnabled",true)==false &&
     snapshot.at("race")==FormDesc::FromFormId(actor.GetRaceId(),actor.GetParent()->espmFiles).ToString() &&
     snapshot.at("maximums").is_object(),"SRP_ORIGINAL_STATS_SNAPSHOT_CORRUPT");
+  if(snapshot.contains("encounterContextChecksum")){
+    const auto context=SrpOriginalEncounter::Read(actor);
+    Require(context && context->at("checksum")==snapshot.at("encounterContextChecksum") &&
+      context->at("finalLevel")==snapshot.at("level"),"SRP_ORIGINAL_STATS_ENCOUNTER_RECEIPT_MISMATCH");
+  }
   auto value=GetBaseActorValues(actor.GetParent(),actor.GetBaseId(),actor.GetRaceId(),actor.GetChangeForm().templateChain);
   value.health=snapshot.at("maximums").at("health").get<float>();
   value.magicka=snapshot.at("maximums").at("magicka").get<float>();
