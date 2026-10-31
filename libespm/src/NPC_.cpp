@@ -33,7 +33,7 @@ NPC_::Data NPC_::GetData(
         result.isProtected = !!(flags & 0x800);
         result.autoCalcStats = !!(flags & 0x10);
         result.pcLevelMult = !!(flags & 0x80);
-        result.level = ReadFieldScalar<int16_t>(data, dataSize, 8);
+        result.level = ReadFieldScalar<uint16_t>(data, dataSize, 8);
         result.calcMinLevel = ReadFieldScalar<uint16_t>(data, dataSize, 10);
         result.calcMaxLevel = ReadFieldScalar<uint16_t>(data, dataSize, 12);
         result.magickaOffset = ReadFieldScalar<int16_t>(data, dataSize, 4);

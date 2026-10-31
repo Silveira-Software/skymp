@@ -1741,8 +1741,11 @@ nlohmann::json MpActor::ApplySrpOriginalStats()
   const auto proposed=SrpOriginalStats::Preview(*this);
   const auto& fields=GetDynamicFields().GetAsJson();
   const bool duplicate=fields.contains(SrpOriginalStats::kProperty);
-  if (duplicate && fields.at(SrpOriginalStats::kProperty)!=proposed)
-    throw std::runtime_error("SRP_ORIGINAL_STATS_MIGRATION_REQUIRED");
+  if (duplicate) {
+    SrpOriginalStats::Read(*this); // Never normalize or bless a corrupt receipt.
+    if (!SrpOriginalStats::SameSnapshot(fields.at(SrpOriginalStats::kProperty),proposed))
+      throw std::runtime_error("SRP_ORIGINAL_STATS_MIGRATION_REQUIRED");
+  }
   if (!duplicate) {
     const auto before=GetMaximumValues();auto values=GetActorValues();
     const auto& m=proposed.at("maximums");
@@ -1768,7 +1771,7 @@ nlohmann::json MpActor::ApplySrpOriginalStats()
     NetSendChangeValues(values,std::nullopt);
   }
   const auto generation=GetParent()->GetChangeFormGeneration(GetFormId());
-  return {{"snapshot",proposed},{"duplicate",duplicate},{"generation",generation},
+  return {{"snapshot",duplicate?fields.at(SrpOriginalStats::kProperty):proposed},{"duplicate",duplicate},{"generation",generation},
     {"saved",generation>0&&GetParent()->IsChangeFormSaved(GetFormId(),generation)}};
 }
 
