@@ -39,9 +39,9 @@ Candidate addon SHA-256:
 This is not a gameplay release. Engine parity remains HUMAN_PENDING. Skills,
 the durable PC-level/encounter producer, authoritative impact, original
 death rewards and CELL/EZ reset are incomplete. OnHit/OnWeaponHit Managed
-guards remain active. No public actor is activated. Old native readers must
-not be used on newly composed candidate records: they ignore the resource
-snapshot. Keep the forward-compatible candidate reader and pending records
+guards remain active. No public actor is activated. Readers predating the
+original-stat snapshot support in 433988f must not be used on these records:
+they ignore that snapshot. Keep a compatible snapshot reader and pending records
 when rolling back gamemode; PUBLIC has no records produced by this method.
 
 ## AE evidence and compatible receipt evolution (30 October)
@@ -66,8 +66,10 @@ Portable reproducer: `misc/srp-original-stats-engine-oracle.py` (Python +
 Unicorn; pass --text, --catalog, --header and --report). It verifies the three
 captured code ranges before executing. No Bethesda code is distributed here.
 
-New V1 snapshots add resourceLevelUp and resourceLevelUpSource; existing V1
-readers ignore these additive fields and retain the frozen resource maxima.
+New V1 snapshots add resourceLevelUp and resourceLevelUpSource; existing original-
+stat V1 readers (433988f) ignore these additive fields and retain the frozen
+resource maxima. Their old composer need not accept a new receipt as equivalent;
+do not use an old composer to recalculate or overwrite it during rollback.
 A retry with an old V1 receipt must validate its checksum and identity first.
 Only a ten-point current GMST and otherwise identical complete snapshot permit
 an equivalent retry; the old receipt is returned unchanged, without a save or
