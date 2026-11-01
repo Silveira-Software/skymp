@@ -115,6 +115,10 @@ def collision_triangles(data):
     for offset, size in blocks:
         shape = nif.decode_compressed_mesh_shape_data(data[offset:offset + size])
         triangles.extend(shape.triangles)
+    # Doors and other simple props collide through a box shape instead. That box
+    # is the physical shape the engine uses, so its triangles are the collision.
+    for offset, size in doc.blocks_of_type('bhkBoxShape'):
+        triangles.extend(nif.decode_box_shape(data[offset:offset + size]))
     others = [name for name, _, _ in doc.blocks if name.startswith('bhk')]
     has_other = any(name not in ('bhkCompressedMeshShapeData', 'bhkCompressedMeshShape',
                                  'bhkCollisionObject', 'bhkRigidBody', 'bhkMoppBvTreeShape')

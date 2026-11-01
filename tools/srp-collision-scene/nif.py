@@ -185,6 +185,44 @@ class CompressedMeshShape:
         self.small_verts = small_verts
 
 
+def box_triangles(hx, hy, hz):
+    """Twelve triangles for an axis-aligned box centred on the origin."""
+    corners = [
+        (-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
+        (-hx, -hy, hz), (hx, -hy, hz), (hx, hy, hz), (-hx, hy, hz),
+    ]
+    faces = [
+        (0, 1, 2), (0, 2, 3),  # -z
+        (4, 6, 5), (4, 7, 6),  # +z
+        (0, 4, 5), (0, 5, 1),  # -y
+        (3, 2, 6), (3, 6, 7),  # +y
+        (0, 3, 7), (0, 7, 4),  # -x
+        (1, 5, 6), (1, 6, 2),  # +x
+    ]
+    return [(corners[a], corners[b], corners[c]) for a, b, c in faces]
+
+
+def decode_box_shape(block):
+    """bhkBoxShape: material, radius, padding (u64), dimensions, radius2.
+
+    The dimensions are the box half-extents, so the twelve triangles below are
+    the shape the engine collides with, not an approximation of it.
+    """
+    c = Cursor(block)
+    c.u32()     # material
+    c.f32()     # radius (convex margin)
+    c.u32()     # padding low
+    c.u32()     # padding high
+    dimensions = c.f32s(3)
+    c.f32()     # radius2
+    if c.o != len(block):
+        raise NifError('box shape did not consume its block (%d of %d)' % (c.o, len(block)))
+    hx, hy, hz = (abs(v) for v in dimensions)
+    if not (0.0 < hx < 1e5 and 0.0 < hy < 1e5 and 0.0 < hz < 1e5):
+        raise NifError('implausible box half-extents')
+    return box_triangles(hx, hy, hz)
+
+
 def decode_compressed_mesh_shape_data(block):
     c = Cursor(block)
     bits_per_index = c.u32()
