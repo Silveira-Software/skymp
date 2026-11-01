@@ -102,8 +102,14 @@ from the target receipt, and rate limiting.
 - Lethal damage is refused (`SRP_IMPACT_LETHAL_INTEGRATION_PENDING`); death,
   loot and XP are untouched, and the managed protections remain.
 - PUBLIC 7777, Mongo, CDN and the launcher were not modified.
-- Requested scenarios still missing as explicit cases: door open vs closed (the
-  audit refuses instead of modelling door swing). A target in another cell is
+- Door open vs closed is still missing, and the reason is now measured rather than
+  assumed: the four DOOR references in WhiterunBreezehome carry no
+  bhkCompressedMeshShapeData at all, so the producer emits no leaf geometry for
+  them. They end up in unresolved and in the dynamic blocker list, which is why
+  any cell with doors refuses melee. Modelling the swing needs two things that do
+  not exist yet: decoding bhkConvexVerticesShape (convex hull of vertices plus
+  planes, which the exporter can emit as a conservative box) and a hinge pivot
+  assumption validated against real doors before any pose is trusted. A target in another cell is
   now covered and refuses with SRP_IMPACT_SERVER_FRAME_UNAVAILABLE.
 - Two attackers on one target is NOT covered yet, but writing it found and fixed
   a real defect. Begin asserted that its own durable write bumps the attacker save
