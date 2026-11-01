@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bsa  # noqa: E402
 import esm  # noqa: E402
 import nif  # noqa: E402
+import actor_shapes  # noqa: E402
 
 MESH_ARCHIVES = ('Skyrim - Meshes0.bsa', 'Skyrim - Meshes1.bsa')
 SCHEMA_VERSION = 1
@@ -141,6 +142,8 @@ def main():
     parser.add_argument('--out', required=True)
     parser.add_argument('--audit', required=True)
     parser.add_argument('--assets', required=True, help='directory to write referenced NIFs')
+    parser.add_argument('--actor-manifest', default=None,
+                        help='operator manifest JSON of NPC_/RACE actor proxies to pin')
     args = parser.parse_args()
 
     order = esm.LoadOrder(args.data_dir, args.plugins)
@@ -260,6 +263,16 @@ def main():
         audit_refs.append(entry)
         imported += 1
 
+    # Actor collision proxies are fail-closed: only NPC_/RACE-linked NIFs whose
+    # pinned hash matches and whose Havok collision decodes completely become
+    # actorShapes. The operator manifest is required; nothing is invented, and
+    # unsupported shapes are a hard rejection (no arbitrary hitboxes).
+    actor_shapes_list, actor_asset_bindings, actor_audit_entries = \
+        actor_shapes.produce_actor_shapes(getattr(args, 'actor_manifest', None),
+                                          order, assets, args.assets,
+                                          collision_triangles)
+    used_assets.update(actor_asset_bindings)
+
     if not geometry:
         raise SystemExit('no collision geometry imported for %s' % args.cell)
 
@@ -288,11 +301,12 @@ def main():
             'blockers': sorted(dynamic_blockers),
         },
         'producerSha256': producer_sha,
-        'references': audit_refs,
+        'references': audit_refs + actor_audit_entries,
         'summary': {
             'references': len(audit_refs),
             'imported': imported,
             'unresolved': len(audit_refs) - imported,
+            'actorShapes': len(actor_shapes_list),
         },
     }
     with open(args.audit, 'w', encoding='utf8') as f:
@@ -311,6 +325,7 @@ def main():
         },
         'geometry': geometry,
         'coverage': coverage,
+        'actorShapes': actor_shapes_list,
         'unresolved': [{'worldOrCell': cell_id, 'min': p, 'max': [p[0] + 1.0, p[1] + 1.0, p[2] + 1.0]}
                        for p in unresolved],
     }
