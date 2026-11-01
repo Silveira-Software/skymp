@@ -1,5 +1,7 @@
 #include "ActionListener.h"
 #include "SrpOriginalLifecycle.h"
+#include "gamemode_events/SrpOriginalImpactRequestEvent.h"
+#include <atomic>
 #include "AnimationSystem.h"
 #include "ConditionsEvaluator.h"
 #include "ConsoleCommands.h"
@@ -1113,10 +1115,24 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     return;
   }
 
-  if (SrpOriginalLifecycle::Managed(*aggressor) ||
-      (targetRef->AsActor() &&
-       SrpOriginalLifecycle::Managed(*targetRef->AsActor())))
+  const bool managedAggressor = SrpOriginalLifecycle::Managed(*aggressor);
+  const bool managedTarget =
+    targetRef->AsActor() && SrpOriginalLifecycle::Managed(*targetRef->AsActor());
+  if (managedAggressor || managedTarget) {
+    // Managed actors stay quarantined from the legacy damage pipeline. A player
+    // attacking a managed original is routed to the authoritative impact service
+    // through a dedicated event; the packet only signals intention, never proves
+    // contact, damage or death. NPC-to-player authority is a separate producer.
+    if (!managedAggressor && managedTarget) {
+      static std::atomic<uint64_t> requestCounter{ 0 };
+      const auto requestId = "hit-" + std::to_string(hitData.aggressor) + "-" +
+        std::to_string(hitData.target) + "-" + std::to_string(++requestCounter);
+      SrpOriginalImpactRequestEvent event(rawMsgData.userId, hitData.target,
+                                          requestId);
+      event.Fire(&partOne.worldState);
+    }
     return;
+  }
 
   const FormDesc& aggressorCellOrWorld = aggressor->GetCellOrWorld();
   const FormDesc& targetCellOrWorld = targetRef->GetCellOrWorld();
