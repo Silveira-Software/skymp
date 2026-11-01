@@ -61,6 +61,22 @@ void Isolate(PartOne& w, MpActor& cow, MpActor& player)
   WaitForSaved(w, player);
 }
 
+// A dynamic snapshot is only complete once the installed audit enumerates the
+// cell's dynamic blockers and none of them is live. These cases exercise that
+// gate explicitly instead of assuming an empty world.
+nlohmann::json AuditConfig(uint32_t cellId, bool complete,
+                           std::initializer_list<uint32_t> blockers = {})
+{
+  nlohmann::json listed = nlohmann::json::array();
+  for (auto id : blockers)
+    listed.push_back(id);
+  return {{"schemaVersion", 1},
+          {"dynamicAudit", {{"schemaVersion", 1},
+                            {"worldOrCell", cellId},
+                            {"complete", complete},
+                            {"blockers", listed}}}};
+}
+
 std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
   uint32_t cellId, const std::string& baseDesc, const std::string& raceDesc,
   const NiPoint3& center)
@@ -167,7 +183,7 @@ TEST_CASE("Impact verifies complete collision scene, rate limit, single hit, and
   const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
 
   auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos());
-  w.worldState.InstallSrpCollisionScene(scene);
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
 
   // 1. Begin valid attack
   auto beginResult = SrpOriginalImpact::Begin(w, testUserId, cowId, "req-valid-1");
@@ -225,7 +241,7 @@ TEST_CASE("Impact fails closed when target has no collision shape proxy", "[srp-
   const uint32_t cellId = cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
   // Install scene with a different base shape so target lookup returns empty
   auto scene = CreateSyntheticScene(cellId, "OtherBase:Skyrim.esm", "OtherRace:Skyrim.esm", cow.GetPos());
-  w.worldState.InstallSrpCollisionScene(scene);
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
 
   REQUIRE_THROWS_WITH(
     SrpOriginalImpact::Begin(w, testUserId, cowId, "req-no-shape-1"),
@@ -245,7 +261,7 @@ TEST_CASE("Impact fails closed when attacker is turned away or out of melee reac
   const auto baseDesc = FormDesc::FromFormId(cow.GetBaseId(), w.worldState.espmFiles).ToString();
   const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
   auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos());
-  w.worldState.InstallSrpCollisionScene(scene);
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
 
   // Turn attacker 180 degrees away from target (facing south instead of north)
   player.SetAngle({0, 0, 180.0f});
@@ -257,5 +273,48 @@ TEST_CASE("Impact fails closed when attacker is turned away or out of melee reac
   REQUIRE_THROWS_WITH(
     SrpOriginalImpact::Begin(w, testUserId, cowId, "req-miss-1"),
     "SRP_IMPACT_SERVER_SEGMENT_MISSES_TARGET"
+  );
+}
+
+TEST_CASE("Impact refuses a dynamic snapshot the audit does not cover", "[srp-original-impact]")
+{
+  auto& w = GetPartOne();
+  AttachStorage(w);
+  auto& cow = SetupCow(w);
+  auto& player = SetupPlayer(w, cow);
+  Isolate(w, cow, player);
+
+  const uint32_t cellId = cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
+  const auto baseDesc = FormDesc::FromFormId(cow.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
+  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos());
+
+  // 1. No audit at all: the server must not claim an empty dynamic snapshot.
+  w.worldState.InstallSrpCollisionScene(scene);
+  REQUIRE_THROWS_WITH(
+    SrpOriginalImpact::Begin(w, testUserId, cowId, "req-no-audit-1"),
+    "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE"
+  );
+
+  // 2. An audit for a different cell does not cover this one.
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId + 1, true));
+  REQUIRE_THROWS_WITH(
+    SrpOriginalImpact::Begin(w, testUserId, cowId, "req-wrong-cell-1"),
+    "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE"
+  );
+
+  // 3. An audit that does not claim completeness is not enough either.
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, false));
+  REQUIRE_THROWS_WITH(
+    SrpOriginalImpact::Begin(w, testUserId, cowId, "req-incomplete-1"),
+    "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE"
+  );
+
+  // 4. A listed blocker that is live can open or move, so the audited baseline
+  //    no longer describes the current state.
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true, {cowId}));
+  REQUIRE_THROWS_WITH(
+    SrpOriginalImpact::Begin(w, testUserId, cowId, "req-live-blocker-1"),
+    "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE"
   );
 }

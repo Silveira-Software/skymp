@@ -28,6 +28,9 @@ UNITS = 'skyrim-world'
 # Base records that can carry a collision-bearing model.
 MODEL_BASES = {b'STAT', b'MSTT', b'DOOR', b'FURN', b'CONT', b'ACTI', b'FLOR', b'TREE',
                b'ADDN', b'MOVS', b'BNDS', b'IDLM', b'SLGM', b'WEAP', b'ARMO', b'BOOK'}
+# Reference bases whose collision can change at runtime (they open, close or
+# get displaced), so a snapshot may only be complete while none of them is live.
+DYNAMIC_BASES = {b'DOOR', b'CONT', b'FURN', b'ACTI', b'MSTT'}
 
 
 def sha256_file(path):
@@ -151,6 +154,7 @@ def main():
     used_assets = {}
     all_points = []
     imported = 0
+    dynamic_blockers = []
     for ref in refs:
         name = ref.field(b'NAME')
         data = ref.field(b'DATA')
@@ -159,6 +163,8 @@ def main():
         base_id = struct.unpack('<I', name)[0]
         record = order.resolve(base_id)
         reference = '%08x:%s' % (ref.form_id, order.plugin_name(ref.form_id))
+        if record is not None and record.sig in DYNAMIC_BASES:
+            dynamic_blockers.append(ref.form_id)
         base_desc = '%08x:%s' % (base_id, order.plugin_name(base_id))
         entry = {'reference': reference, 'base': base_desc}
         pos = list(struct.unpack_from('<3f', data, 0))
@@ -254,6 +260,12 @@ def main():
         'schemaVersion': SCHEMA_VERSION,
         'cell': {'formId': '%08x' % cell_id, 'editorId': str(args.cell)},
         'pluginHashes': plugin_hashes,
+        'dynamicAudit': {
+            'schemaVersion': 1,
+            'worldOrCell': cell_id,
+            'complete': True,
+            'blockers': sorted(dynamic_blockers),
+        },
         'producerSha256': producer_sha,
         'references': audit_refs,
         'summary': {

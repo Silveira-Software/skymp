@@ -564,6 +564,41 @@ std::shared_ptr<const SrpCollision::Scene> WorldState::GetSrpCollisionScene() co
   return pImpl->srpCollisionScene;
 }
 
+namespace {
+// The server cannot derive door or movable collision from plugin bytes, so a
+// dynamic snapshot may only be called complete when the installed scene audit
+// enumerates this cell's dynamic blockers and none of them is live. Anything
+// less must refuse the impact instead of silently assuming empty space.
+bool SrpDynamicSnapshotComplete(
+  const nlohmann::json& config,
+  const std::unordered_map<uint32_t, std::shared_ptr<MpForm>>& forms,
+  uint32_t worldOrCell)
+{
+  if (!config.is_object() || !config.contains("dynamicAudit"))
+    return false;
+  const auto& audit = config.at("dynamicAudit");
+  if (!audit.is_object() || audit.value("schemaVersion", 0) != 1)
+    return false;
+  if (!audit.value("complete", false))
+    return false;
+  if (audit.value("worldOrCell", 0u) != worldOrCell)
+    return false;
+  if (!audit.contains("blockers") || !audit.at("blockers").is_array())
+    return false;
+  for (const auto& blocker : audit.at("blockers")) {
+    if (!blocker.is_number_unsigned() && !blocker.is_number_integer())
+      return false;
+    const auto id = blocker.get<int64_t>();
+    if (id <= 0 || id > std::numeric_limits<uint32_t>::max())
+      return false;
+    // A live blocker can be opened, closed or displaced, so the audited
+    // baseline no longer describes the current state.
+    if (forms.find(static_cast<uint32_t>(id)) != forms.end())
+      return false;
+  }
+  return true;
+}
+}
 std::optional<SrpOriginalImpact::Frame> WorldState::CaptureSrpOriginalImpactFrame(
   const MpActor& attacker, const MpActor& target)
 {
@@ -605,6 +640,11 @@ std::optional<SrpOriginalImpact::Frame> WorldState::CaptureSrpOriginalImpactFram
 
   auto targetTrianglesOpt = pImpl->srpCollisionScene->ActorTriangles(baseDesc, raceDesc, serverPose);
   if (!targetTrianglesOpt.has_value() || targetTrianglesOpt->empty())
+    return std::nullopt;
+
+  // Refuse before claiming an empty dynamic snapshot: see
+  // SrpDynamicSnapshotComplete for what must be enumerated to justify it.
+  if (!SrpDynamicSnapshotComplete(pImpl->srpCollisionConfig, forms, worldOrCell))
     return std::nullopt;
 
   SrpCollision::DynamicSnapshot dynamics;

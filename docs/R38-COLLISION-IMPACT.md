@@ -20,6 +20,7 @@ single hit, replay receipts) are new. `WorldState`, `ServerState` and
 | r38-collision-build-20261031 | 14 | 33/42 | FAIL, 9 cases |
 | r38-collision-build-20261101 (first) | 14 | 79/80 | FAIL, 1 case |
 | r38-collision-build-20261101 (final) | 14 | 96/96 | **PASS** |
+| r38-collision-build-20261101 (dynamics gate) | 15 | 105/105 | **PASS** |
 
 Final evidence: `/opt/skymp/candidates/r38-collision-impact-20261101/build-1793551056120724002`.
 Toolchain image `sha256:3bbc25fdca033c192d2dc66c661ddf998036109127c039de69c41acb0b93d9db`.
@@ -67,13 +68,19 @@ from the target receipt, and rate limiting.
 
 ## Remaining blocks
 
-- No real Skyrim collision scene exists yet. Every fixture is synthetic and
-  `Scene::Load`'s contract (`base`, `referenceTransform`, `coverageAuditSha256`)
-  has no in-repo producer, so an audited production scene still has to be
-  generated, hashed and pinned. A focused PASS is not world coverage.
-- `WorldState` sets `dynamics.complete = true` without enumerating live blockers
-  (doors, movable bodies, spawned references). "No dynamic blocker" is currently
-  a policy claim, not a verified enumeration.
+- A real scene producer now exists (`tools/srp-collision-scene`), built on the
+  shipped BSA/NIF data rather than fixtures, and it produced WhiterunBreezehome
+  (139 imported references, 9014 triangles, 75 assets). The server still cannot
+  load it: `sceneSha256` is pinned from `Scene::Digest`, which hashes the
+  document as nlohmann re-serialises it, so a native helper must compute that pin
+  before deployment. A produced scene is still not world coverage.
+- `WorldState` no longer claims `dynamics.complete = true` on its own. A dynamic
+  snapshot is only complete when the installed `dynamicAudit` matches the cell,
+  declares completeness and lists its blockers, and none of those blockers is
+  live; otherwise the impact is refused (`SRP_IMPACT_SERVER_FRAME_UNAVAILABLE`).
+  Door swing and movable-body geometry are still not modelled, so a cell with
+  live doors refuses melee rather than guessing, and other actors are not
+  treated as blockers.
 - Contact uses a fixed 64-unit grip height and a horizontal segment;
   `enginePoseParity` is false and no animation packet proves a swing.
 - Lethal damage is refused (`SRP_IMPACT_LETHAL_INTEGRATION_PENDING`); death,
