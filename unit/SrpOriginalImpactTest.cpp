@@ -526,8 +526,25 @@ TEST_CASE("Lethal impact records exactly one authoritative death", "[srp-origina
   REQUIRE(after.at("lifecycle").at("epoch").get<int>() == 0);
   REQUIRE(cow.IsDead());
 
-  // A second swing from the same attacker is refused while the killing swing is
-  // still pending in its outbox; the corpse itself can never be hit again.
+  // A second swing is refused while the killing swing is still pending in the
+  // attacker outbox, even though the target is already dead.
   REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w, testUserId, cowId, "req-lethal-2"),
                       "SRP_IMPACT_PENDING_SWING_EXISTS");
+
+  // Reconcile against the durable corpse: the operation must close as APPLIED and
+  // release the pending slot, not stay issued forever.
+  WaitForSaved(w, cow);
+  const auto reconciled = SrpOriginalImpact::Apply(w, testUserId, opId);
+  REQUIRE(reconciled.at("state").get<std::string>() == "APPLIED");
+  REQUIRE(reconciled.at("duplicate").get<bool>() == true);
+  // Reconciling twice is still the same durable death.
+  const auto reconciledAgain = SrpOriginalImpact::Apply(w, testUserId, opId);
+  REQUIRE(reconciledAgain.at("state").get<std::string>() == "APPLIED");
+  const auto closed = SrpOriginalLifecycle::Inspect(cow);
+  REQUIRE(closed.at("lifecycle").at("death").at("operationId").get<std::string>() == opId);
+  REQUIRE(closed.at("lifecycle").at("epoch").get<int>() == 0);
+
+  // With the outbox closed the refusal is the target's own state: it is dead.
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w, testUserId, cowId, "req-lethal-3"),
+                      "SRP_IMPACT_ACTOR_INACTIVE");
 }
