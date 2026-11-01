@@ -24,6 +24,9 @@ single hit, replay receipts) are new. `WorldState`, `ServerState` and
 | r38-collision-build-20261101 (attacker proxy grip) | 16 | 111/111 | **PASS** |
 | r38-collision-build-20261101 (real scene through the loader) | 17 | 121/121 | **PASS** |
 
+Full C++ suite on the same binary, inside the build runner with `/src` mounted:
+**514540 assertions in 422 test cases, 0 failures.**
+
 Final evidence: `/opt/skymp/candidates/r38-collision-impact-20261101/build-1793551056120724002`.
 Toolchain image `sha256:3bbc25fdca033c192d2dc66c661ddf998036109127c039de69c41acb0b93d9db`.
 `scam_native.node` sha256 `946b8990abfedec25a35f331d4b8904bdc6a9747b892a113a4316bd3227c93a7`,
@@ -96,5 +99,7 @@ from the target receipt, and rate limiting.
   animation packet proves a swing.
 - Lethal damage is refused (`SRP_IMPACT_LETHAL_INTEGRATION_PENDING`); death,
   loot and XP are untouched, and the managed protections remain.
-- Only the three focused tags were run. The full unit suite was not re-run, and
-  PUBLIC 7777, Mongo, CDN and the launcher were not modified.
+- PUBLIC 7777, Mongo, CDN and the launcher were not modified.
+- Requested scenarios still missing as explicit cases: door open vs closed (the
+  audit refuses instead of modelling door swing), two attackers on one target,
+  and a target in a different cell.
