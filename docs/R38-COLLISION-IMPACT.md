@@ -139,3 +139,16 @@ The base record's OBND was also measured (six int16: -17, -71, -76, 34, 56,
 101) and rejected on the same grounds - authored object bounds are a bounding
 box, not physical collision - even though it would have been a cheap way to give
 every unresolved reference geometry.
+
+Correction to the door section above: the `bhkBoxShape` layout is settled. Per
+nifly `bhk.hpp` the block is `material(u32) + radius(f32) + padding(u64) +
+dimensions(Vector3 half-extents) + radius2(f32)` = 32 bytes, which matches the
+observed bytes exactly - the two "negative floats" were the padding. The producer
+now triangulates that box, so Breezehome's doors decode to a 0.054 x 1.776 x
+2.482 leaf: the shape the engine itself collides with, not a stand-in.
+
+Door swing (open versus closed) is still not modelled, so those references stay
+in the dynamic blocker list and a cell with live doors still refuses melee. That
+is the remaining step: the leaf now exists in object space, the hinge pivot must
+be validated, and the arc needs discretising so intermediate angles cannot slip
+through.
