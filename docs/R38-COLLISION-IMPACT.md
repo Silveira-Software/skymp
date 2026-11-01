@@ -103,9 +103,12 @@ from the target receipt, and rate limiting.
 - Requested scenarios still missing as explicit cases: door open vs closed (the
   audit refuses instead of modelling door swing). A target in another cell is
   now covered and refuses with SRP_IMPACT_SERVER_FRAME_UNAVAILABLE.
-- Two attackers on one target is NOT covered. Writing that case surfaced a real
-  signal: Begin asserts that its own durable transaction bumps the attacker save
-  generation by exactly one, and that invariant did not hold for an actor created
-  mid-test (SRP_IMPACT_UNEXPECTED_SAVE_GENERATION). Either the invariant is too
-  strict for newly created actors or the test set the actor up in a way that
-  coalesces writes; it needs investigation before the scenario can be asserted.
+- Two attackers on one target is NOT covered yet, but writing it found and fixed
+  a real defect. Begin asserted that its own durable write bumps the attacker save
+  generation by exactly one, while SaveGenerationTracker hands out generations
+  from one global counter: a form only lands on before+1 when it was the most
+  recent requester, so any other form saving in between made a legitimate Begin
+  fail with SRP_IMPACT_UNEXPECTED_SAVE_GENERATION. Begin now requires a monotonic
+  increase instead. With that fixed the second attacker is admitted, and the case
+  now fails later, in its own assertion flow around the stale-generation Apply;
+  that assertion needs to be corrected before the scenario can be claimed.

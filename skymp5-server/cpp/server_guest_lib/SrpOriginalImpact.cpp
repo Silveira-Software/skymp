@@ -358,8 +358,12 @@ Json Begin(PartOne& server,Networking::UserId userId,uint32_t targetId,const std
     if(!hasIdentity)attacker.SetPropertyValueDump(kIdentityProperty,identity.dump(),false,false);
     Write(attacker,ledger);return true;
   });
-  Require(server.worldState.GetChangeFormGeneration(attacker.GetFormId())==before+1,
-    "SRP_IMPACT_UNEXPECTED_SAVE_GENERATION");
+  // Save generations come from one global monotonic counter, so this form's
+  // next generation is not necessarily before+1: any other form that requested
+  // a save in between consumes a number. What must hold is that this write was
+  // accepted and advanced past the generation we captured.
+  const auto after=server.worldState.GetChangeFormGeneration(attacker.GetFormId());
+  Require(after>before,"SRP_IMPACT_UNEXPECTED_SAVE_GENERATION");
   return Response(attacker,entry,false);
 }
 
