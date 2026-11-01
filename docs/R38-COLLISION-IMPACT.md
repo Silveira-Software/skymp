@@ -124,3 +124,18 @@ from the target receipt, and rate limiting.
   throws SRP_IMPACT_GENERATION_CHANGED from a call that is not the one wrapped in
   the assertion, so the scenario stays unclaimed until the flow is instrumented
   (print each generation per step) rather than guessed at.
+
+## Door collision: measured, not yet emitted
+
+Probing Architecture/WhiteRun/WRShackDoor01.nif (used by the four DOOR
+references in WhiterunBreezehome) shows the door collision is a **32-byte
+hkBoxShape**, not the textbook 52-byte form. The bytes read as two floats
+(-20, -64) followed by a four-float group (0.027, 0.888, 1.241, 0.027), which is
+ambiguous between radius/unknown/scale and dimensions. That layout has to be
+settled against the BSHavok reference before any box is emitted: a guessed box
+is exactly the stand-in geometry this work forbids.
+
+The base record's OBND was also measured (six int16: -17, -71, -76, 34, 56,
+101) and rejected on the same grounds - authored object bounds are a bounding
+box, not physical collision - even though it would have been a cheap way to give
+every unresolved reference geometry.
