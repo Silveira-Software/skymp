@@ -22,6 +22,7 @@ single hit, replay receipts) are new. `WorldState`, `ServerState` and
 | r38-collision-build-20261101 (final) | 14 | 96/96 | **PASS** |
 | r38-collision-build-20261101 (dynamics gate) | 15 | 105/105 | **PASS** |
 | r38-collision-build-20261101 (attacker proxy grip) | 16 | 111/111 | **PASS** |
+| r38-collision-build-20261101 (real scene through the loader) | 17 | 121/121 | **PASS** |
 
 Final evidence: `/opt/skymp/candidates/r38-collision-impact-20261101/build-1793551056120724002`.
 Toolchain image `sha256:3bbc25fdca033c192d2dc66c661ddf998036109127c039de69c41acb0b93d9db`.
@@ -71,10 +72,15 @@ from the target receipt, and rate limiting.
 
 - A real scene producer now exists (`tools/srp-collision-scene`), built on the
   shipped BSA/NIF data rather than fixtures, and it produced WhiterunBreezehome
-  (139 imported references, 9014 triangles, 75 assets). The server still cannot
-  load it: `sceneSha256` is pinned from `Scene::Digest`, which hashes the
-  document as nlohmann re-serialises it, so a native helper must compute that pin
-  before deployment. A produced scene is still not world coverage.
+  (139 imported references, 9014 triangles, 75 assets). That scene now loads
+  through `SrpCollision::LoadServerScene` on the server with full provenance
+  validation, and a ray against one of its real triangles comes back `Blocked`
+  while a ray outside its audited coverage comes back `Unknown`. The pin is the
+  `Scene::Digest` of the document as nlohmann re-serialises it, computed on the
+  native side. One cell is not world coverage.
+- Asset paths are portable: the producer emits forward slashes and the loader
+  normalises backslashes, because a scene produced on Windows is consumed on
+  Linux where a backslash is a filename character.
 - `WorldState` no longer claims `dynamics.complete = true` on its own. A dynamic
   snapshot is only complete when the installed `dynamicAudit` matches the cell,
   declares completeness and lists its blockers, and none of those blockers is

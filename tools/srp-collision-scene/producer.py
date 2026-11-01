@@ -211,8 +211,11 @@ def main():
         world = [apply_matrix(matrix, v) for tri in triangles for v in tri]
         lo, hi = bounds_of(world)
         all_points.extend(world)
-        asset_name = model.replace('/', '\\')
-        target = os.path.join(args.assets, *asset_name.lower().split('\\'))
+        # Portable paths: the scene is produced on Windows but consumed by a
+        # Linux server, where a backslash is a filename character, not a
+        # separator. Case is preserved because Linux resolution is exact.
+        asset_name = model.replace('\\', '/')
+        target = os.path.join(args.assets, *asset_name.split('/'))
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if not os.path.exists(target):
             with open(target, 'wb') as f:

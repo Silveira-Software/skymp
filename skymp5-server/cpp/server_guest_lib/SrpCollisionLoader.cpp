@@ -1,4 +1,5 @@
 #include "SrpCollisionLoader.h"
+#include <algorithm>
 #include <fstream>
 #include <sodium.h>
 #include <stdexcept>
@@ -41,7 +42,13 @@ SrpCollision::InstalledScene SrpCollision::LoadServerScene(const nlohmann::json&
   for(const auto& path:actualPluginPaths)
     bindings["loadOrder"].push_back({{"name",path.filename().string()},{"sha256",HashFile(path)}});
   for(const auto& row:declared.at("assets")){
-    const auto name=row.at("path").get<std::string>();const std::filesystem::path relative=name;
+    const auto name=row.at("path").get<std::string>();
+    // A producer that runs on Windows may emit backslashes, but this loader runs
+    // on Linux where a backslash is a filename character, not a separator.
+    // Normalise for filesystem resolution while keeping the declared string in
+    // the bindings so provenance stays byte-exact.
+    std::string portable=name;std::replace(portable.begin(),portable.end(),'\\','/');
+    const std::filesystem::path relative=portable;
     Require(!relative.empty() && !relative.is_absolute() && !relative.has_root_name(),
       "SRP_COLLISION_ASSET_PATH_INVALID");
     for(const auto& part:relative)Require(part!="..","SRP_COLLISION_ASSET_PATH_INVALID");
