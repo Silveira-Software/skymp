@@ -388,3 +388,86 @@ TEST_CASE("Impact refuses a target in another cell", "[srp-original-impact]")
     "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE"
   );
 }
+namespace {
+constexpr uint32_t secondPlayerId = 0xff000092;
+constexpr Networking::UserId secondUserId = 8;
+
+MpActor& SetupSecondPlayer(PartOne& w, const MpActor& target)
+{
+  w.serverState.Connect(secondUserId, "test-guid-2");
+  NiPoint3 pos = target.GetPos();
+  pos.y += 50.0f;
+  const uint32_t cellId = target.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
+  w.CreateActor(secondPlayerId, pos, 180.0f, cellId, 9192);
+  auto& player = w.worldState.GetFormAt<MpActor>(secondPlayerId);
+  w.serverState.actorsMap.Set(secondUserId, &player);
+  player.SetPropertyValueDump("srpActiveCharacterId", "\"combat-PC2\"", false, false);
+  nlohmann::json proj = {
+    {"schemaVersion", 2}, {"rulesVersion", "SRP-PROGRESSION-A1"}, {"revision", 1},
+    {"profileId", "9192"}, {"characterId", "combat-PC2"}, {"level", 10},
+    {"attributes", {{"vigor", 0}, {"strength", 5}, {"dexterity", 0}, {"intelligence", 0}, {"willpower", 0}, {"constitution", 5}}}
+  };
+  player.SetPropertyValueDump("srpProgression", proj.dump(), false, false);
+  player.ApplySrpActorStats(proj);
+  WaitForSaved(w, player);
+  return player;
+}
+}
+
+TEST_CASE("Impact serialises two attackers without double damage", "[srp-original-impact]")
+{
+  auto& w = GetPartOne();
+  AttachStorage(w);
+  auto& cow = SetupCow(w);
+  auto& player = SetupPlayer(w, cow);
+  Isolate(w, cow, player);
+  auto& second = SetupSecondPlayer(w, cow);
+  ClearImpactState(second);
+  WaitForSaved(w, second);
+
+  const auto gen1 = [&] { return w.worldState.GetChangeFormGeneration(player.GetFormId()); };
+  const auto gen2 = [&] { return w.worldState.GetChangeFormGeneration(second.GetFormId()); };
+  const auto genT = [&] { return w.worldState.GetChangeFormGeneration(cowId); };
+
+  const uint32_t cellId = cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
+  const auto baseDesc = FormDesc::FromFormId(cow.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
+  const auto playerBase = FormDesc::FromFormId(player.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto playerRace = FormDesc::FromFormId(player.GetRaceId(), w.worldState.espmFiles).ToString();
+  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos(),
+                                    playerBase, playerRace);
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
+
+  WARN("STEP 0 gens a1=" << gen1() << " a2=" << gen2() << " target=" << genT());
+  const auto first = SrpOriginalImpact::Begin(w, testUserId, cowId, "req-two-a");
+  WARN("STEP 1 after beginA gens a1=" << gen1() << " a2=" << gen2() << " target=" << genT());
+  const auto other = SrpOriginalImpact::Begin(w, secondUserId, cowId, "req-two-b");
+  WARN("STEP 2 after beginB gens a1=" << gen1() << " a2=" << gen2() << " target=" << genT());
+  REQUIRE(first.at("state").get<std::string>() == "ISSUED");
+  REQUIRE(other.at("state").get<std::string>() == "ISSUED");
+  const std::string opA = first.at("operationId").get<std::string>();
+  const std::string opB = other.at("operationId").get<std::string>();
+  REQUIRE(opA != opB);
+
+  // Both intents must be durable before either can be applied: Apply refuses
+  // an attacker whose intent write is still pending.
+  WaitForSaved(w, player);
+  WaitForSaved(w, second);
+
+  const float before = cow.GetActorValues().healthPercentage;
+  const auto appliedA = SrpOriginalImpact::Apply(w, testUserId, opA);
+  WARN("STEP 3 after applyA gens a1=" << gen1() << " a2=" << gen2() << " target=" << genT());
+  REQUIRE(appliedA.at("state").get<std::string>() == "TARGET_SAVE_PENDING");
+  WaitForSaved(w, cow);
+  const float afterA = cow.GetActorValues().healthPercentage;
+  WARN("STEP 4 after save gens a1=" << gen1() << " a2=" << gen2() << " target=" << genT());
+  REQUIRE(afterA < before);
+
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(w, secondUserId, opB),
+                      "SRP_IMPACT_GENERATION_CHANGED");
+  REQUIRE(cow.GetActorValues().healthPercentage == afterA);
+
+  const auto cancelled = SrpOriginalImpact::Cancel(w, secondUserId, opB);
+  REQUIRE(cancelled.at("state").get<std::string>() == "CANCELLED");
+  REQUIRE(cow.GetActorValues().healthPercentage == afterA);
+}
