@@ -173,3 +173,10 @@ offset is present in the collision data. Even with a hinge, the union of the
 closed and open poses does not cover intermediate angles, so the arc would have
 to be discretised as well. Until then a cell with live doors keeps refusing melee
 through the dynamic blocker list, which is the safe direction.
+
+Measured effect of the box-shape support on WhiterunBreezehome, same cell and
+same producer switch: imported references 139 -> 166, unresolved 326 -> 299,
+triangles 9014 -> 9410, assets 75 -> 92. The 27 recovered references are doors
+and simple props that collide through a box in the engine; they now contribute
+their real shape instead of an unresolved gap. The focused suite stayed green
+(149 assertions, 19 cases) with the regenerated scene.
