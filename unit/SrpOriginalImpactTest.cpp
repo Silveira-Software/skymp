@@ -77,9 +77,22 @@ nlohmann::json AuditConfig(uint32_t cellId, bool complete,
                             {"blockers", listed}}}};
 }
 
+nlohmann::json ActorShape(const std::string& baseDesc, const std::string& raceDesc)
+{
+  return {{"baseDesc", baseDesc},
+          {"raceDesc", raceDesc},
+          {"policy", "SERVER_MESH_PROXY_V1"},
+          {"representation", "havok-triangles"},
+          {"asset", "cow-proxy.nif"},
+          {"localTransform", {1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0}},
+          {"vertices", {{-40, -40, 0}, {40, -40, 0}, {40, 40, 128}, {-40, 40, 128}}},
+          {"triangles", {{0, 1, 2}, {0, 2, 3}}}};
+}
+
 std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
   uint32_t cellId, const std::string& baseDesc, const std::string& raceDesc,
-  const NiPoint3& center)
+  const NiPoint3& center, const std::string& attackerBase,
+  const std::string& attackerRace)
 {
   const std::string dummyHash(64, 'a');
   // The audited coverage box must actually contain the real fixture position.
@@ -87,6 +100,8 @@ std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
   // never prove the attack segment clear) whenever the fixture sits far from
   // the origin, so the box is anchored on the target instead.
   const double x = center.x, y = center.y, z = center.z;
+  nlohmann::json shapes = nlohmann::json::array(
+    {ActorShape(baseDesc, raceDesc), ActorShape(attackerBase, attackerRace)});
   nlohmann::json doc = {
     {"schemaVersion", 1},
     {"units", "skyrim-world"},
@@ -104,18 +119,7 @@ std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
       {"complete", true}
     }})},
     {"unresolved", nlohmann::json::array()},
-    {"actorShapes", nlohmann::json::array({{
-      {"baseDesc", baseDesc},
-      {"raceDesc", raceDesc},
-      {"policy", "SERVER_MESH_PROXY_V1"},
-      {"representation", "havok-triangles"},
-      {"asset", "cow-proxy.nif"},
-      {"localTransform", {1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0}},
-      {"vertices", {
-        {-40, -40, 0}, {40, -40, 0}, {40, 40, 128}, {-40, 40, 128}
-      }},
-      {"triangles", {{0, 1, 2}, {0, 2, 3}}}
-    }})}
+    {"actorShapes", shapes}
   };
   return SrpCollision::Scene::Load(doc, doc.at("bindings"), SrpCollision::Scene::Digest(doc));
 }
@@ -182,7 +186,10 @@ TEST_CASE("Impact verifies complete collision scene, rate limit, single hit, and
   const auto baseDesc = FormDesc::FromFormId(cow.GetBaseId(), w.worldState.espmFiles).ToString();
   const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
 
-  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos());
+  const auto playerBase = FormDesc::FromFormId(player.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto playerRace = FormDesc::FromFormId(player.GetRaceId(), w.worldState.espmFiles).ToString();
+  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos(),
+                                    playerBase, playerRace);
   w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
 
   // 1. Begin valid attack
@@ -240,7 +247,10 @@ TEST_CASE("Impact fails closed when target has no collision shape proxy", "[srp-
 
   const uint32_t cellId = cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
   // Install scene with a different base shape so target lookup returns empty
-  auto scene = CreateSyntheticScene(cellId, "OtherBase:Skyrim.esm", "OtherRace:Skyrim.esm", cow.GetPos());
+  const auto playerBase = FormDesc::FromFormId(player.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto playerRace = FormDesc::FromFormId(player.GetRaceId(), w.worldState.espmFiles).ToString();
+  auto scene = CreateSyntheticScene(cellId, "OtherBase:Skyrim.esm", "OtherRace:Skyrim.esm",
+                                    cow.GetPos(), playerBase, playerRace);
   w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
 
   REQUIRE_THROWS_WITH(
@@ -260,7 +270,10 @@ TEST_CASE("Impact fails closed when attacker is turned away or out of melee reac
   const uint32_t cellId = cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
   const auto baseDesc = FormDesc::FromFormId(cow.GetBaseId(), w.worldState.espmFiles).ToString();
   const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
-  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos());
+  const auto playerBase = FormDesc::FromFormId(player.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto playerRace = FormDesc::FromFormId(player.GetRaceId(), w.worldState.espmFiles).ToString();
+  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos(),
+                                    playerBase, playerRace);
   w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
 
   // Turn attacker 180 degrees away from target (facing south instead of north)
@@ -287,7 +300,10 @@ TEST_CASE("Impact refuses a dynamic snapshot the audit does not cover", "[srp-or
   const uint32_t cellId = cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
   const auto baseDesc = FormDesc::FromFormId(cow.GetBaseId(), w.worldState.espmFiles).ToString();
   const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
-  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos());
+  const auto playerBase = FormDesc::FromFormId(player.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto playerRace = FormDesc::FromFormId(player.GetRaceId(), w.worldState.espmFiles).ToString();
+  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos(),
+                                    playerBase, playerRace);
 
   // 1. No audit at all: the server must not claim an empty dynamic snapshot.
   w.worldState.InstallSrpCollisionScene(scene);
@@ -316,5 +332,29 @@ TEST_CASE("Impact refuses a dynamic snapshot the audit does not cover", "[srp-or
   REQUIRE_THROWS_WITH(
     SrpOriginalImpact::Begin(w, testUserId, cowId, "req-live-blocker-1"),
     "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE"
+  );
+}
+
+TEST_CASE("Impact refuses an attacker whose collision proxy is unknown", "[srp-original-impact]")
+{
+  auto& w = GetPartOne();
+  AttachStorage(w);
+  auto& cow = SetupCow(w);
+  auto& player = SetupPlayer(w, cow);
+  Isolate(w, cow, player);
+
+  const uint32_t cellId = cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
+  const auto baseDesc = FormDesc::FromFormId(cow.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
+  const auto playerRace = FormDesc::FromFormId(player.GetRaceId(), w.worldState.espmFiles).ToString();
+  // The scene knows the target but has no proxy for this attacker, so the grip
+  // height cannot be derived from anything real. Admission must refuse instead
+  // of falling back to an invented offset.
+  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos(),
+                                    "AbsentBase:Skyrim.esm", playerRace);
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
+  REQUIRE_THROWS_WITH(
+    SrpOriginalImpact::Begin(w, testUserId, cowId, "req-no-attacker-proxy-1"),
+    "SRP_IMPACT_ATTACKER_PROXY_REQUIRED"
   );
 }

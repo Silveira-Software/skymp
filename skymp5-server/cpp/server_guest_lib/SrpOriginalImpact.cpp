@@ -207,7 +207,7 @@ bool Intersection(const SrpCollision::Triangle& t,Vec from,Vec to,double& fracti
 }
 Json Vector(const NiPoint3& v){return Json::array({v.x,v.y,v.z});}
 Json Vector(Vec v){return Json::array({v.x,v.y,v.z});}
-Json FrameIdentity(const Frame& frame)
+Json FrameIdentity(const Frame& frame,double gripHeight)
 {
   Require(frame.scene && frame.revision && frame.worldOrCell &&
     frame.movementPolicy=="SERVER_BOUNDED_MOVEMENT_V1" &&
@@ -222,16 +222,44 @@ Json FrameIdentity(const Frame& frame)
     {"movementPolicy",frame.movementPolicy},{"hitRepresentation",frame.hitRepresentation},
     {"attackerPosition",Vector(frame.attackerPosition)},{"attackerAngle",Vector(frame.attackerAngle)},
     {"targetPosition",Vector(frame.targetPosition)},{"targetAngle",Vector(frame.targetAngle)},
-    {"targetMeshDigest",Digest(mesh)}};
+    {"targetMeshDigest",Digest(mesh)},{"gripHeight",gripHeight}};
 }
-Json Contact(const Frame& frame,const Weapon& weapon)
+// The grip height is read from the attacker's own collision proxy instead of a
+// fixed offset. A missing or incoherent proxy refuses the attack: the server
+// must never invent a reach origin for an actor it cannot place.
+std::optional<double> AttackerGripHeight(const Frame& frame,const MpActor& attacker)
 {
-  const auto identity=FrameIdentity(frame);
-  // Fixed server attack segment, with native weapon reach. Neither origin,
-  // direction nor hit point is supplied by an impact report. The 64-unit grip
-  // height is an explicit proxy policy, never inferred engine animation parity.
+  auto* world=attacker.GetParent();
+  if(!world)return {};
+  const auto baseDesc=FormDesc::FromFormId(attacker.GetBaseId(),world->espmFiles).ToString();
+  const auto raceDesc=FormDesc::FromFormId(attacker.GetRaceId(),world->espmFiles).ToString();
+  const auto pos=attacker.GetPos(),angle=attacker.GetAngle();
+  if(!Finite(Vec{pos.x,pos.y,pos.z})||!std::isfinite(angle.z))return {};
+  const double yaw=angle.z*std::acos(-1.0)/180.0,c=std::cos(yaw),s=std::sin(yaw);
+  std::array<double,12> pose={c,-s,0.0,pos.x, s,c,0.0,pos.y, 0.0,0.0,1.0,pos.z};
+  const auto mesh=frame.scene->ActorTriangles(baseDesc,raceDesc,pose);
+  if(!mesh||mesh->empty())return {};
+  double minZ=1e300,maxZ=-1e300,sumX=0,sumY=0;size_t count=0;
+  for(const auto& triangle:*mesh)for(const auto& v:{triangle.a,triangle.b,triangle.c}){
+    minZ=std::min(minZ,v.z);maxZ=std::max(maxZ,v.z);sumX+=v.x;sumY+=v.y;++count;
+  }
+  if(!count)return {};
+  const double height=maxZ-minZ;
+  // A proxy thinner than a hand or taller than a giant cannot describe an
+  // attacker, and a proxy centred far from the accepted position is desynced.
+  if(!(height>=16.0&&height<=512.0))return {};
+  if(std::hypot(sumX/count-pos.x,sumY/count-pos.y)>256.0)return {};
+  const double grip=minZ+height*0.55;
+  return std::isfinite(grip)?std::optional<double>(grip):std::nullopt;
+}
+Json Contact(const Frame& frame,const Weapon& weapon,double gripHeight)
+{
+  const auto identity=FrameIdentity(frame,gripHeight);
+  // The segment starts at the attacker proxy's grip height and runs along the
+  // accepted facing. Neither origin, direction nor hit point is supplied by an
+  // impact report, and no engine animation pose is claimed.
   const double yaw=frame.attackerAngle.z*std::acos(-1.0)/180.0;
-  Vec from{frame.attackerPosition.x,frame.attackerPosition.y,frame.attackerPosition.z+64.0};
+  Vec from{frame.attackerPosition.x,frame.attackerPosition.y,gripHeight};
   Vec to{from.x+std::sin(yaw)*weapon.reach,from.y+std::cos(yaw)*weapon.reach,from.z};
   Require(Finite(from)&&Finite(to),"SRP_IMPACT_ATTACK_TRANSFORM_INVALID");
   double nearest=2;
@@ -309,7 +337,9 @@ Json Begin(PartOne& server,Networking::UserId userId,uint32_t targetId,const std
     Require(now>=issued && now-issued>=interval,"SRP_IMPACT_ATTACK_RATE_LIMIT");
   }
   const auto frame=Capture(server.worldState,attacker,target);
-  const auto proof=Contact(frame,weapon),host=Host(server,target);
+  const auto grip=AttackerGripHeight(frame,attacker);
+  Require(grip.has_value(),"SRP_IMPACT_ATTACKER_PROXY_REQUIRED");
+  const auto proof=Contact(frame,weapon,*grip),host=Host(server,target);
   // Identity is created only after all admission checks, in the same durable
   // outbox transaction. A denied request cannot mint a combat incarnation.
   if(!hasIdentity){identity["incarnation"]=NewId();identity=Seal(identity);ledger["owner"]=identity;}
@@ -363,7 +393,9 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
   const auto weapon=NativeWeapon(attacker);
   Require(WeaponJson(weapon,attacker)==intent.at("weapon"),"SRP_IMPACT_WEAPON_CHANGED");
   const auto frame=Capture(server.worldState,attacker,target);
-  const auto proof=Contact(frame,weapon);
+  const auto grip=AttackerGripHeight(frame,attacker);
+  Require(grip.has_value(),"SRP_IMPACT_ATTACKER_PROXY_REQUIRED");
+  const auto proof=Contact(frame,weapon,*grip);
   Require(proof==intent.at("proof"),"SRP_IMPACT_FRAME_CHANGED");
   Require(SrpActorStats::Read(attacker).enabled && SrpOriginalStats::Read(target).has_value(),
     "SRP_IMPACT_STATS_REQUIRED");

@@ -21,6 +21,7 @@ single hit, replay receipts) are new. `WorldState`, `ServerState` and
 | r38-collision-build-20261101 (first) | 14 | 79/80 | FAIL, 1 case |
 | r38-collision-build-20261101 (final) | 14 | 96/96 | **PASS** |
 | r38-collision-build-20261101 (dynamics gate) | 15 | 105/105 | **PASS** |
+| r38-collision-build-20261101 (attacker proxy grip) | 16 | 111/111 | **PASS** |
 
 Final evidence: `/opt/skymp/candidates/r38-collision-impact-20261101/build-1793551056120724002`.
 Toolchain image `sha256:3bbc25fdca033c192d2dc66c661ddf998036109127c039de69c41acb0b93d9db`.
@@ -81,8 +82,12 @@ from the target receipt, and rate limiting.
   Door swing and movable-body geometry are still not modelled, so a cell with
   live doors refuses melee rather than guessing, and other actors are not
   treated as blockers.
-- Contact uses a fixed 64-unit grip height and a horizontal segment;
-  `enginePoseParity` is false and no animation packet proves a swing.
+- The contact origin is no longer a fixed 64-unit offset: it is read from the
+  attacker's own collision proxy (55% of its height, bounds-checked and refused
+  when the proxy is missing, degenerate or desynced from the accepted position).
+  The segment still runs horizontally along the accepted facing, so a target far
+  above or below the grip is not reachable; `enginePoseParity` stays false and no
+  animation packet proves a swing.
 - Lethal damage is refused (`SRP_IMPACT_LETHAL_INTEGRATION_PENDING`); death,
   loot and XP are untouched, and the managed protections remain.
 - Only the three focused tags were run. The full unit suite was not re-run, and
