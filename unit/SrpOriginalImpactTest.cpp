@@ -358,3 +358,33 @@ TEST_CASE("Impact refuses an attacker whose collision proxy is unknown", "[srp-o
     "SRP_IMPACT_ATTACKER_PROXY_REQUIRED"
   );
 }
+TEST_CASE("Impact refuses a target in another cell", "[srp-original-impact]")
+{
+  auto& w = GetPartOne();
+  AttachStorage(w);
+  auto& cow = SetupCow(w);
+  auto& player = SetupPlayer(w, cow);
+  Isolate(w, cow, player);
+
+  const uint32_t cellId = cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
+  const auto baseDesc = FormDesc::FromFormId(cow.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
+  const auto playerBase = FormDesc::FromFormId(player.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto playerRace = FormDesc::FromFormId(player.GetRaceId(), w.worldState.espmFiles).ToString();
+  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos(),
+                                    playerBase, playerRace);
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
+
+  // WhiterunDragonsreach: a real interior, so the form id resolves, but a
+  // different space from the target's. A snapshot describes one cell only.
+  const uint32_t otherCell = 0x000165a3;
+  REQUIRE(otherCell != cellId);
+  player.SetCellOrWorld(FormDesc::FromFormId(otherCell, w.worldState.espmFiles));
+  WaitForSaved(w, player);
+  REQUIRE(player.GetCellOrWorld().ToFormId(w.worldState.espmFiles) == otherCell);
+
+  REQUIRE_THROWS_WITH(
+    SrpOriginalImpact::Begin(w, testUserId, cowId, "req-other-cell-1"),
+    "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE"
+  );
+}

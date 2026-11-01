@@ -101,5 +101,11 @@ from the target receipt, and rate limiting.
   loot and XP are untouched, and the managed protections remain.
 - PUBLIC 7777, Mongo, CDN and the launcher were not modified.
 - Requested scenarios still missing as explicit cases: door open vs closed (the
-  audit refuses instead of modelling door swing), two attackers on one target,
-  and a target in a different cell.
+  audit refuses instead of modelling door swing). A target in another cell is
+  now covered and refuses with SRP_IMPACT_SERVER_FRAME_UNAVAILABLE.
+- Two attackers on one target is NOT covered. Writing that case surfaced a real
+  signal: Begin asserts that its own durable transaction bumps the attacker save
+  generation by exactly one, and that invariant did not hold for an actor created
+  mid-test (SRP_IMPACT_UNEXPECTED_SAVE_GENERATION). Either the invariant is too
+  strict for newly created actors or the test set the actor up in a way that
+  coalesces writes; it needs investigation before the scenario can be asserted.
