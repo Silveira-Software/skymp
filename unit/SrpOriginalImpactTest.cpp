@@ -3,6 +3,7 @@
 #include "SrpActorStats.h"
 #include "SrpOriginalReference.h"
 #include "SrpOriginalStats.h"
+#include "SrpOriginalLifecycle.h"
 #include "MpActor.h"
 #include "PartOne.h"
 #include "DynamicFields.h"
@@ -470,4 +471,63 @@ TEST_CASE("Impact serialises two attackers without double damage", "[srp-origina
   const auto cancelled = SrpOriginalImpact::Cancel(w, secondUserId, opB);
   REQUIRE(cancelled.at("state").get<std::string>() == "CANCELLED");
   REQUIRE(cow.GetActorValues().healthPercentage == afterA);
+}
+TEST_CASE("Lethal impact records exactly one authoritative death", "[srp-original-impact]")
+{
+  auto& w = GetPartOne();
+  AttachStorage(w);
+  auto& cow = SetupCow(w);
+  auto& player = SetupPlayer(w, cow);
+  Isolate(w, cow, player);
+
+  const uint32_t cellId = cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
+  const auto baseDesc = FormDesc::FromFormId(cow.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto raceDesc = FormDesc::FromFormId(cow.GetRaceId(), w.worldState.espmFiles).ToString();
+  const auto playerBase = FormDesc::FromFormId(player.GetBaseId(), w.worldState.espmFiles).ToString();
+  const auto playerRace = FormDesc::FromFormId(player.GetRaceId(), w.worldState.espmFiles).ToString();
+  auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos(),
+                                    playerBase, playerRace);
+  w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
+
+  // Leave a sliver so one authorised hit is lethal, without going through
+  // SetPercentages(0) (that path calls Kill internally).
+  auto health = cow.GetActorValues();
+  health.healthPercentage = 0.02f;
+  cow.SetPercentages(health, nullptr);
+  WaitForSaved(w, cow);
+
+  const auto begun = SrpOriginalImpact::Begin(w, testUserId, cowId, "req-lethal-1");
+  REQUIRE(begun.at("state").get<std::string>() == "ISSUED");
+  const std::string opId = begun.at("operationId").get<std::string>();
+  WaitForSaved(w, player);
+
+  const auto applied = SrpOriginalImpact::Apply(w, testUserId, opId);
+  REQUIRE(applied.at("lethal").get<bool>() == true);
+  REQUIRE(cow.IsDead());
+
+  const auto death = SrpOriginalLifecycle::Inspect(cow);
+  REQUIRE(death.at("state").get<std::string>() == "DEAD");
+  const auto& life = death.at("lifecycle");
+  REQUIRE(life.at("schemaVersion").get<int>() == 2);
+  REQUIRE(life.at("state").get<std::string>() == "DEAD");
+  REQUIRE(life.at("death").at("operationId").get<std::string>() == opId);
+  REQUIRE(life.at("death").at("source").get<std::string>() == "SRP_ORIGINAL_IMPACT");
+  // Rewards stay off until their own transaction exists.
+  REQUIRE(life.at("lootEnabled").get<bool>() == false);
+  REQUIRE(life.at("xpEnabled").get<bool>() == false);
+  REQUIRE(life.at("respawnEnabled").get<bool>() == false);
+  REQUIRE(life.at("rewards").at("loot").get<std::string>() == "PENDING");
+
+  // Replay of the same operation acknowledges, never kills twice.
+  const auto replay = SrpOriginalImpact::Apply(w, testUserId, opId);
+  REQUIRE(replay.at("duplicate").get<bool>() == true);
+  const auto after = SrpOriginalLifecycle::Inspect(cow);
+  REQUIRE(after.at("lifecycle").at("death").at("operationId").get<std::string>() == opId);
+  REQUIRE(after.at("lifecycle").at("epoch").get<int>() == 0);
+  REQUIRE(cow.IsDead());
+
+  // A second swing from the same attacker is refused while the killing swing is
+  // still pending in its outbox; the corpse itself can never be hit again.
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w, testUserId, cowId, "req-lethal-2"),
+                      "SRP_IMPACT_PENDING_SWING_EXISTS");
 }

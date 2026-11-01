@@ -382,8 +382,16 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
   auto targetLedger=Ledger(target,"TARGET_RECEIPTS",targetIdentity);
   // A durable target-side receipt always wins over replay/reconnect/stale
   // snapshots. Reconciliation can acknowledge it but cannot damage again.
-  if(targetLedger.at("operations").contains(operationId))
+  if(targetLedger.at("operations").contains(operationId)){
+    // A previous attempt may have left the death request durable while the corpse
+    // transaction never ran. Finish it before acknowledging, so a replay cannot
+    // return APPLIED over an unfinished death.
+    if(SrpOriginalLifecycle::AwaitingCorpse(target)){
+      target.Kill(&attacker,false);
+      Require(!SrpOriginalLifecycle::AwaitingCorpse(target),"SRP_IMPACT_DEATH_INCOMPLETE");
+    }
     return Reconcile(attacker,target,ledger,entry,targetLedger.at("operations").at(operationId));
+  }
   Active(attacker);Active(target);
   Require(intent.at("session")==server.serverState.SessionIncarnation(userId) && intent.at("userId")==userId,
     "SRP_IMPACT_SESSION_CHANGED");
@@ -431,21 +439,28 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
     {"afterHealth",values.healthPercentage},{"lethal",lethal},{"appliedAtMs",now},
     {"enginePoseParity",false},{"lootEnabled",false},{"xpEnabled",false}});
   targetLedger["operations"][operationId]=receipt;
-  target.RunChangeFormTransaction([&]{
-    target.SetPercentages(values,nullptr);Write(target,targetLedger);return true;
-  });
   if(lethal){
-    // Kill writes the client-visible corpse state, the corpse drops and the
-    // lifecycle receipt in one record; promotion to authoritative v2 follows so
-    // a replay of this operation returns the same death instead of a new one.
+    // Lethal cannot write health through SetPercentages: a zero percentage calls
+    // Kill, and Kill opens its own ChangeForm transaction. The durable unit is
+    // therefore the receipt plus the death request; the corpse transaction then
+    // finalises that same request. If the process dies in between, the request
+    // stays DYING and the next Apply resumes it instead of repeating the death.
+    target.RunChangeFormTransaction([&]{
+      Write(target,targetLedger);
+      SrpOriginalLifecycle::BeginAuthoritativeDeath(target,attacker,operationId,damage);
+      return true;
+    });
     target.Kill(&attacker,false);
-    const auto death=SrpOriginalLifecycle::RecordAuthoritativeDeath(
-      target,attacker,operationId,damage,true);
+    Require(!SrpOriginalLifecycle::AwaitingCorpse(target),"SRP_IMPACT_DEATH_INCOMPLETE");
+    const auto death=SrpOriginalLifecycle::Inspect(target);
     auto response=Response(attacker,entry,false);
     response["state"]="TARGET_SAVE_PENDING";response["lethal"]=true;
     response["death"]=death;response["targetReceipt"]=receipt;
     response["saved"]=false;return response;
   }
+  target.RunChangeFormTransaction([&]{
+    target.SetPercentages(values,nullptr);Write(target,targetLedger);return true;
+  });
   auto response=Response(attacker,entry,false);response["state"]="TARGET_SAVE_PENDING";
   response["targetReceipt"]=receipt;response["saved"]=false;return response;
 }
