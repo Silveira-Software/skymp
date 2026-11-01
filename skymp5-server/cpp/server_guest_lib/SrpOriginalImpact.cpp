@@ -421,18 +421,31 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
     "SRP_IMPACT_RESOURCE_INVALID");
   const float beforeHealth=values.healthPercentage;
   values.healthPercentage=beforeHealth-damage/maximum;
-  // Death/loot/XP require their separate native impact/death transaction.
-  Require(std::isfinite(values.healthPercentage)&&values.healthPercentage>0,
-    "SRP_IMPACT_LETHAL_INTEGRATION_PENDING");
+  // Lethal damage is completed here, not deferred: the health write, the engine
+  // death state with the corpse drops, and the authoritative life receipt.
+  const bool lethal=!(std::isfinite(values.healthPercentage)&&values.healthPercentage>0);
+  if(lethal)values.healthPercentage=0.0f;
   const auto receipt=Seal({{"schemaVersion",1},{"operationId",operationId},{"state","APPLIED"},
     {"attacker",identity},{"target",targetIdentity},{"intent",intent},{"proof",proof},
     {"damage",damage},{"maximumHealth",maximum},{"beforeHealth",beforeHealth},
-    {"afterHealth",values.healthPercentage},{"appliedAtMs",now},{"enginePoseParity",false},
-    {"lootEnabled",false},{"xpEnabled",false}});
+    {"afterHealth",values.healthPercentage},{"lethal",lethal},{"appliedAtMs",now},
+    {"enginePoseParity",false},{"lootEnabled",false},{"xpEnabled",false}});
   targetLedger["operations"][operationId]=receipt;
   target.RunChangeFormTransaction([&]{
     target.SetPercentages(values,nullptr);Write(target,targetLedger);return true;
   });
+  if(lethal){
+    // Kill writes the client-visible corpse state, the corpse drops and the
+    // lifecycle receipt in one record; promotion to authoritative v2 follows so
+    // a replay of this operation returns the same death instead of a new one.
+    target.Kill(&attacker,false);
+    const auto death=SrpOriginalLifecycle::RecordAuthoritativeDeath(
+      target,attacker,operationId,damage,true);
+    auto response=Response(attacker,entry,false);
+    response["state"]="TARGET_SAVE_PENDING";response["lethal"]=true;
+    response["death"]=death;response["targetReceipt"]=receipt;
+    response["saved"]=false;return response;
+  }
   auto response=Response(attacker,entry,false);response["state"]="TARGET_SAVE_PENDING";
   response["targetReceipt"]=receipt;response["saved"]=false;return response;
 }
