@@ -76,6 +76,10 @@ public:
   Napi::Value InspectSrpOriginalActor(const Napi::CallbackInfo& info);
   Napi::Value ApplySrpOriginalStats(const Napi::CallbackInfo& info);
   Napi::Value CaptureSrpOriginalEncounter(const Napi::CallbackInfo& info);
+  Napi::Value BeginSrpOriginalImpact(const Napi::CallbackInfo& info);
+  Napi::Value ApplySrpOriginalImpact(const Napi::CallbackInfo& info);
+  Napi::Value CancelSrpOriginalImpact(const Napi::CallbackInfo& info);
+  Napi::Value InspectSrpOriginalImpact(const Napi::CallbackInfo& info);
   Napi::Value RunChangeFormTransaction(const Napi::CallbackInfo& info);
   Napi::Value GetChangeFormGeneration(const Napi::CallbackInfo& info);
   Napi::Value IsChangeFormSaved(const Napi::CallbackInfo& info);

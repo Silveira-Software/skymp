@@ -3,6 +3,8 @@
 #include "SrpOriginalReference.h"
 #include "SrpOriginalLifecycle.h"
 #include "SrpOriginalEncounter.h"
+#include "SrpCollisionLoader.h"
+#include "SrpOriginalImpact.h"
 
 #include "AtomicActorSpawnV16.h"
 #include "Bot.h"
@@ -134,6 +136,10 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("inspectSrpOriginalActor", &ScampServer::InspectSrpOriginalActor),
       InstanceMethod("captureSrpOriginalEncounter", &ScampServer::CaptureSrpOriginalEncounter),
       InstanceMethod("applySrpOriginalStats", &ScampServer::ApplySrpOriginalStats),
+      InstanceMethod("beginSrpOriginalImpact", &ScampServer::BeginSrpOriginalImpact),
+      InstanceMethod("applySrpOriginalImpact", &ScampServer::ApplySrpOriginalImpact),
+      InstanceMethod("cancelSrpOriginalImpact", &ScampServer::CancelSrpOriginalImpact),
+      InstanceMethod("inspectSrpOriginalImpact", &ScampServer::InspectSrpOriginalImpact),
       InstanceMethod("runChangeFormTransaction", &ScampServer::RunChangeFormTransaction),
       InstanceMethod("getChangeFormGeneration",
                      &ScampServer::GetChangeFormGeneration),
@@ -414,6 +420,11 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.ConfigureSrpNpcAdmission(serverSettings.at("srpNpcAdmissionV1"));
     if (serverSettings.contains("srpNpcLiveUnloadV1"))
       partOne->worldState.ConfigureSrpNpcLiveUnload(serverSettings.at("srpNpcLiveUnloadV1"));
+    if (serverSettings.contains("srpCollisionV1") && serverSettings.at("srpCollisionV1").value("enabled", false)) {
+      partOne->worldState.InstallSrpCollisionScene(
+        SrpCollision::LoadServerScene(serverSettings.at("srpCollisionV1"), pluginPaths).scene,
+        serverSettings.at("srpCollisionV1"));
+    }
     partOne->animationSystem.Init(&partOne->worldState);
 
     if (conditionsEvaluatorSettings.is_object()) {
@@ -1948,5 +1959,60 @@ Napi::Value ScampServer::CaptureSrpOriginalEncounter(const Napi::CallbackInfo& i
     return NapiHelper::ParseJson(env,SrpOriginalEncounter::Capture(*actor,*entrant).dump());
   }catch(const std::exception& e){
     Napi::Error::New(env,e.what()).ThrowAsJavaScriptException();return env.Undefined();
+  }
+}
+
+Napi::Value ScampServer::BeginSrpOriginalImpact(const Napi::CallbackInfo& info)
+{
+  const auto env = info.Env();
+  try {
+    if (info.Length() != 3) throw std::runtime_error("SRP_IMPACT_NATIVE_INPUT_ONLY");
+    const auto userId = NapiHelper::ExtractUInt32(info[0], "userId");
+    const auto targetId = NapiHelper::ExtractUInt32(info[1], "target");
+    const auto requestId = NapiHelper::ExtractString(info[2], "requestId");
+    return NapiHelper::ParseJson(env, SrpOriginalImpact::Begin(*partOne, userId, targetId, requestId).dump());
+  } catch (const std::exception& e) {
+    Napi::Error::New(env, e.what()).ThrowAsJavaScriptException(); return env.Undefined();
+  }
+}
+
+Napi::Value ScampServer::ApplySrpOriginalImpact(const Napi::CallbackInfo& info)
+{
+  const auto env = info.Env();
+  try {
+    if (info.Length() != 2) throw std::runtime_error("SRP_IMPACT_NATIVE_INPUT_ONLY");
+    const auto userId = NapiHelper::ExtractUInt32(info[0], "userId");
+    const auto operationId = NapiHelper::ExtractString(info[1], "operationId");
+    return NapiHelper::ParseJson(env, SrpOriginalImpact::Apply(*partOne, userId, operationId).dump());
+  } catch (const std::exception& e) {
+    Napi::Error::New(env, e.what()).ThrowAsJavaScriptException(); return env.Undefined();
+  }
+}
+
+Napi::Value ScampServer::CancelSrpOriginalImpact(const Napi::CallbackInfo& info)
+{
+  const auto env = info.Env();
+  try {
+    if (info.Length() != 2) throw std::runtime_error("SRP_IMPACT_NATIVE_INPUT_ONLY");
+    const auto userId = NapiHelper::ExtractUInt32(info[0], "userId");
+    const auto operationId = NapiHelper::ExtractString(info[1], "operationId");
+    return NapiHelper::ParseJson(env, SrpOriginalImpact::Cancel(*partOne, userId, operationId).dump());
+  } catch (const std::exception& e) {
+    Napi::Error::New(env, e.what()).ThrowAsJavaScriptException(); return env.Undefined();
+  }
+}
+
+Napi::Value ScampServer::InspectSrpOriginalImpact(const Napi::CallbackInfo& info)
+{
+  const auto env = info.Env();
+  try {
+    if (info.Length() != 1) throw std::runtime_error("SRP_IMPACT_NATIVE_INPUT_ONLY");
+    const auto actorId = NapiHelper::ExtractUInt32(info[0], "actor");
+    const auto form = partOne->worldState.LookupFormByIdNoLoad(actorId);
+    auto* actor = form ? form->AsActor() : nullptr;
+    if (!actor) throw std::runtime_error("SRP_IMPACT_ACTOR_NOT_LOADED");
+    return NapiHelper::ParseJson(env, SrpOriginalImpact::Inspect(*actor).dump());
+  } catch (const std::exception& e) {
+    Napi::Error::New(env, e.what()).ThrowAsJavaScriptException(); return env.Undefined();
   }
 }

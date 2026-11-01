@@ -7,6 +7,8 @@
 #include "MpForm.h"
 #include "MpObjectReference.h"
 #include "NiPoint3.h"
+#include "SrpCollision.h"
+#include "SrpOriginalImpact.h"
 #include "PartOneListener.h"
 #include "condition_functions/ConditionFunctionMap.h"
 #include "libespm/Loader.h"
@@ -109,6 +111,11 @@ public:
   bool CanSrpNpcHost(const MpObjectReference& remote, const MpActor& host) const;
   bool IsSrpNpcSuspending(uint32_t formId) const;
   void NotifySrpNpcConnection(uint32_t userId, bool connected);
+  void InstallSrpCollisionScene(std::shared_ptr<const SrpCollision::Scene> scene,
+                                const nlohmann::json& config = {});
+  std::shared_ptr<const SrpCollision::Scene> GetSrpCollisionScene() const;
+  std::optional<SrpOriginalImpact::Frame> CaptureSrpOriginalImpactFrame(
+    const MpActor& attacker, const MpActor& target);
 
   bool HasEspmFile(std::string_view filename) const noexcept;
 

@@ -78,6 +78,8 @@ struct WorldState::Impl
   std::set<uint32_t> questPinnedForms;
   uint64_t connectionSerial = 0;
   std::map<uint32_t, uint64_t> networkSessions, retiredNetworkIndices;
+  std::shared_ptr<const SrpCollision::Scene> srpCollisionScene;
+  nlohmann::json srpCollisionConfig;
 
   bool npcAdmissionDeferred = false;
   bool npcInitializationFailed = false;
@@ -548,6 +550,82 @@ void WorldState::NotifySrpNpcConnection(uint32_t userId, bool connected)
       ++it;
     }
   }
+}
+
+void WorldState::InstallSrpCollisionScene(std::shared_ptr<const SrpCollision::Scene> scene,
+                                          const nlohmann::json& config)
+{
+  pImpl->srpCollisionScene = std::move(scene);
+  pImpl->srpCollisionConfig = config;
+}
+
+std::shared_ptr<const SrpCollision::Scene> WorldState::GetSrpCollisionScene() const
+{
+  return pImpl->srpCollisionScene;
+}
+
+std::optional<SrpOriginalImpact::Frame> WorldState::CaptureSrpOriginalImpactFrame(
+  const MpActor& attacker, const MpActor& target)
+{
+  if (!pImpl->srpCollisionScene)
+    return std::nullopt;
+
+  if (attacker.GetCellOrWorld() != target.GetCellOrWorld())
+    return std::nullopt;
+
+  const uint32_t worldOrCell = attacker.GetCellOrWorld().ToFormId(espmFiles);
+  if (!worldOrCell)
+    return std::nullopt;
+
+  const auto targetPos = target.GetPos();
+  const auto targetAngle = target.GetAngle();
+
+  // Pin the snapshot to the target's durable state revision instead of a
+  // per-capture counter. The proxy pose below is derived from the target's
+  // accepted position/angle, so re-capturing an unchanged target must reproduce
+  // an identical frame or Begin/Apply could never agree on the same proof.
+  // Begin and Apply both reject a changed target generation before comparing
+  // proofs, so any target save still invalidates a stale frame.
+  const uint64_t targetGeneration = GetChangeFormGeneration(target.GetFormId());
+  if (!targetGeneration)
+    return std::nullopt;
+
+  const double yawRad = targetAngle.z * (std::acos(-1.0) / 180.0);
+  const double cosYaw = std::cos(yawRad);
+  const double sinYaw = std::sin(yawRad);
+
+  std::array<double, 12> serverPose = {
+    cosYaw, -sinYaw, 0.0, targetPos.x,
+    sinYaw,  cosYaw, 0.0, targetPos.y,
+    0.0,     0.0,    1.0, targetPos.z
+  };
+
+  const auto baseDesc = FormDesc::FromFormId(target.GetBaseId(), espmFiles).ToString();
+  const auto raceDesc = FormDesc::FromFormId(target.GetRaceId(), espmFiles).ToString();
+
+  auto targetTrianglesOpt = pImpl->srpCollisionScene->ActorTriangles(baseDesc, raceDesc, serverPose);
+  if (!targetTrianglesOpt.has_value() || targetTrianglesOpt->empty())
+    return std::nullopt;
+
+  SrpCollision::DynamicSnapshot dynamics;
+  dynamics.worldOrCell = worldOrCell;
+  dynamics.revision = targetGeneration;
+  dynamics.complete = true;
+
+  SrpOriginalImpact::Frame frame;
+  frame.revision = targetGeneration;
+  frame.movementPolicy = "SERVER_BOUNDED_MOVEMENT_V1";
+  frame.hitRepresentation = "SERVER_MESH_PROXY_V1";
+  frame.worldOrCell = worldOrCell;
+  frame.attackerPosition = attacker.GetPos();
+  frame.attackerAngle = attacker.GetAngle();
+  frame.targetPosition = targetPos;
+  frame.targetAngle = targetAngle;
+  frame.scene = pImpl->srpCollisionScene;
+  frame.dynamics = std::move(dynamics);
+  frame.targetTriangles = std::move(*targetTrianglesOpt);
+
+  return frame;
 }
 
 bool WorldState::ReleaseSrpNpcIndex(uint32_t idx)
