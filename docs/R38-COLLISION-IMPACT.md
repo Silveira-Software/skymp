@@ -24,6 +24,7 @@ single hit, replay receipts) are new. `WorldState`, `ServerState` and
 | r38-collision-build-20261101 (attacker proxy grip) | 16 | 111/111 | **PASS** |
 | r38-collision-build-20261101 (real scene through the loader) | 17 | 121/121 | **PASS** |
 | r38-collision-build-20261101 (after both save-generation fixes) | 18 | 130/130 | **PASS** |
+| r38-collision-build-20261101 (two attackers on one target) | 19 | 149/149 | **PASS** |
 
 Full C++ suite on the same binary, inside the build runner with `/src` mounted:
 **514540 assertions in 422 test cases, 0 failures.**
