@@ -144,11 +144,25 @@ def main():
     args = parser.parse_args()
 
     order = esm.LoadOrder(args.data_dir, args.plugins)
-    master = order.load(0)
-    cell_id = master.find_cell(args.cell)
+    # A cell can be defined or extended by any plugin in the load order, and a
+    # later plugin can add or override REFR records inside an existing cell.
+    # Resolve the cell and gather the winning record for each REFR across every
+    # plugin, instead of reading only the first plugin (which silently dropped
+    # overrides and all records added by later plugins).
+    cell_id = None
+    for idx in range(len(order.names)):
+        candidate = order.load(idx).find_cell(args.cell)
+        if candidate is not None:
+            cell_id = candidate
+            break
     if cell_id is None:
         raise SystemExit('cell not found: %s' % args.cell)
-    refs = master.references(cell_id)
+    refs_by_id = {}
+    for idx in range(len(order.names)):
+        for ref in order.load(idx).references(cell_id):
+            # Same form id = an override; the later plugin in the load order wins.
+            refs_by_id[ref.form_id] = ref
+    refs = list(refs_by_id.values())
     assets = AssetCache(args.data_dir)
     os.makedirs(args.assets, exist_ok=True)
 
