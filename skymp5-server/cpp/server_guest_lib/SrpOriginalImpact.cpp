@@ -388,8 +388,15 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
   Require(intent.at("session")==server.serverState.SessionIncarnation(userId) && intent.at("userId")==userId,
     "SRP_IMPACT_SESSION_CHANGED");
   Require(Host(server,target)==intent.at("host"),"SRP_IMPACT_TARGET_HOST_CHANGED");
-  Require(server.worldState.GetChangeFormGeneration(attacker.GetFormId())==intent.at("attackerGeneration") &&
-    server.worldState.GetChangeFormGeneration(target.GetFormId())==intent.at("targetGeneration"),
+  // Save generations come from one global counter, so the attacker's own intent
+  // write lands at or past the number its intent recorded (never below it). The
+  // target is pinned exactly: any target write between admission and application
+  // invalidates the frame the proof was built from.
+  const auto attackerGeneration=server.worldState.GetChangeFormGeneration(attacker.GetFormId());
+  const auto targetGeneration=server.worldState.GetChangeFormGeneration(target.GetFormId());
+  Require(attackerGeneration>=intent.at("attackerGeneration").get<uint64_t>(),
+    "SRP_IMPACT_GENERATION_CHANGED");
+  Require(targetGeneration==intent.at("targetGeneration").get<uint64_t>(),
     "SRP_IMPACT_GENERATION_CHANGED");
   Require(Saved(attacker)&&Saved(target),"SRP_IMPACT_INTENT_SAVE_PENDING");
   const auto now=Now();Require(now>=intent.at("issuedAtMs").get<int64_t>() &&

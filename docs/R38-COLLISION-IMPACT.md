@@ -110,5 +110,9 @@ from the target receipt, and rate limiting.
   recent requester, so any other form saving in between made a legitimate Begin
   fail with SRP_IMPACT_UNEXPECTED_SAVE_GENERATION. Begin now requires a monotonic
   increase instead. With that fixed the second attacker is admitted, and the case
-  now fails later, in its own assertion flow around the stale-generation Apply;
-  that assertion needs to be corrected before the scenario can be claimed.
+  still does not pass. Apply also compared the attacker generation for exact
+  equality against the before+1 the intent recorded, which the same global
+  counter makes impossible; that check now requires at-or-past. The case still
+  throws SRP_IMPACT_GENERATION_CHANGED from a call that is not the one wrapped in
+  the assertion, so the scenario stays unclaimed until the flow is instrumented
+  (print each generation per step) rather than guessed at.
