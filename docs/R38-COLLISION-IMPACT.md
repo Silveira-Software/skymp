@@ -180,3 +180,13 @@ triangles 9014 -> 9410, assets 75 -> 92. The 27 recovered references are doors
 and simple props that collide through a box in the engine; they now contribute
 their real shape instead of an unresolved gap. The focused suite stayed green
 (149 assertions, 19 cases) with the regenerated scene.
+
+### Second cell: the producer is not specialised to Breezehome
+
+WhiterunDragonsreach (0x000165a3), same producer and same loader path: 1431
+references, 863 imported, 568 unresolved, 36694 triangles, 183 assets, 3.7 MB
+scene. It loads through SrpCollision::LoadServerScene on the server and the
+focused suite passes with it (149 assertions in 19 cases), including the case
+that traces a ray at one of its real triangles and the case that leaves the
+audited coverage. Two independent interiors now validate the pipeline, so the
+producer is not tuned to a single cell.
