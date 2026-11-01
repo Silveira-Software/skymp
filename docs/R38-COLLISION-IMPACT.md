@@ -152,3 +152,24 @@ in the dynamic blocker list and a cell with live doors still refuses melee. That
 is the remaining step: the leaf now exists in object space, the hinge pivot must
 be validated, and the arc needs discretising so intermediate angles cannot slip
 through.
+
+### Door pivot: measured absent, so the swing is not modelled
+
+The door leaf now exists (the box shape above), but its collision box is
+**centred on the NIF origin** - dimensions `(0.027, 0.888, 1.241)` about
+`(0,0,0)` - which means the box carries no hinge offset at all. Rotating it about
+the origin would swing the leaf through the wall rather than about its edge, and
+rotating about any chosen edge would be a guess about which edge the engine
+hinges on.
+
+The `bhkRigidBodyT` transform that might carry the pivot could not be read: a
+first pass at `bhkRigidBody`'s field offsets produced `NaN` and `FLT_MAX`, so this
+body's layout differs from the one assumed and must be settled from the reference
+before it is used. Nothing was emitted from it.
+
+That leaves door open-versus-closed genuinely blocked on missing data, not on
+effort: the leaf geometry is real, but neither the hinge axis nor the hinge
+offset is present in the collision data. Even with a hinge, the union of the
+closed and open poses does not cover intermediate angles, so the arc would have
+to be discretised as well. Until then a cell with live doors keeps refusing melee
+through the dynamic blocker list, which is the safe direction.
