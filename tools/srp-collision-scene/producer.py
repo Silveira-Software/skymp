@@ -2,7 +2,7 @@
 
 Usage:
     python producer.py --data-dir "<Skyrim Data>" --cell WhiterunBreezehome \
-        --out scene.json --audit audit.json --assets assets
+        --out scene.json --audit audit.json --assets assets [--actor-manifest manifest.json]
 
 Every triangle comes from the shipped NIF's bhkCompressedMeshShapeData. A
 reference whose collision cannot be decoded is recorded in `unresolved` (never
@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bsa  # noqa: E402
 import esm  # noqa: E402
 import nif  # noqa: E402
+import actor_shapes  # noqa: E402
 
 MESH_ARCHIVES = ('Skyrim - Meshes0.bsa', 'Skyrim - Meshes1.bsa')
 SCHEMA_VERSION = 1
@@ -73,38 +74,25 @@ def apply_matrix(m, v):
 
 
 class AssetCache:
-    """Resolves a meshes path from loose files first, then the BSA archives."""
-
     def __init__(self, data_dir):
         self.data_dir = data_dir
-        self.archives = []
+        self.bsas = []
         for name in MESH_ARCHIVES:
             path = os.path.join(data_dir, name)
             if os.path.exists(path):
-                self.archives.append(bsa.BsaArchive(path))
-        self.cache = {}
+                self.bsas.append(bsa.Bsa(path))
 
-    def read(self, model_path):
-        # Plugin model paths are relative to Data\\Meshes, while archive entries
-        # carry the meshes\\ prefix.
-        key = model_path.replace('/', '\\').lower().lstrip('\\')
-        if not key.startswith('meshes\\'):
-            key = 'meshes\\' + key
-        if key in self.cache:
-            return self.cache[key]
-        loose = os.path.join(self.data_dir, *key.split('\\'))
-        data = None
-        if os.path.exists(loose):
+    def read(self, relative_path):
+        # Loose files override BSA.
+        loose = os.path.join(self.data_dir, relative_path)
+        if os.path.isfile(loose):
             with open(loose, 'rb') as f:
-                data = f.read()
-        else:
-            for archive in self.archives:
-                entry = archive.find(key)
-                if entry is not None:
-                    data = archive.read_entry(entry)
-                    break
-        self.cache[key] = data
-        return data
+                return f.read()
+        for b in self.bsas:
+            data = b.read(relative_path)
+            if data is not None:
+                return data
+        return None
 
 
 def collision_triangles(data):
@@ -141,6 +129,7 @@ def main():
     parser.add_argument('--out', required=True)
     parser.add_argument('--audit', required=True)
     parser.add_argument('--assets', required=True, help='directory to write referenced NIFs')
+    parser.add_argument('--actor-manifest', default=None, help='JSON manifest of pinned actor collision proxies')
     args = parser.parse_args()
 
     order = esm.LoadOrder(args.data_dir, args.plugins)
@@ -228,25 +217,17 @@ def main():
         matrix = transform_matrix(pos, rot, scale)
         world = [apply_matrix(matrix, v) for tri in triangles for v in tri]
         lo, hi = bounds_of(world)
-        all_points.extend(world)
-        # Portable paths: the scene is produced on Windows but consumed by a
-        # Linux server, where a backslash is a filename character, not a
-        # separator. Case is preserved because Linux resolution is exact.
-        asset_name = model.replace('\\', '/')
-        target = os.path.join(args.assets, *asset_name.split('/'))
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        if not os.path.exists(target):
-            with open(target, 'wb') as f:
+        all_points.extend((lo, hi))
+        canonical = model.replace('\\', '/').lstrip('/')
+        used_assets[canonical] = hashlib.sha256(payload).hexdigest()
+        dest = os.path.join(args.assets, *canonical.split('/'))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if not os.path.isfile(dest):
+            with open(dest, 'wb') as f:
                 f.write(payload)
-        digest = hashlib.sha256(payload).hexdigest()
-        used_assets[asset_name] = digest
         geometry.append({
-            'worldOrCell': cell_id,
-            'reference': reference,
-            'base': base_desc,
-            'asset': asset_name,
-            'representation': 'havok-triangles',
-            'worldTransform': matrix,
+            'sourceAsset': canonical,
+            'sourceReference': reference,
             'referenceTransform': matrix,
             'vertices': [[round(c, 4) for c in v] for v in
                          [tri[0] for tri in triangles] + [tri[1] for tri in triangles]
@@ -262,6 +243,12 @@ def main():
 
     if not geometry:
         raise SystemExit('no collision geometry imported for %s' % args.cell)
+
+    # Actor shapes processing via actor_shapes module
+    actor_shapes_list, used_actor_assets, actor_audit = actor_shapes.produce_actor_shapes(
+        args.actor_manifest, order, assets, args.assets, collision_triangles
+    )
+    used_assets.update(used_actor_assets)
 
     # Coverage is only claimed where every reference was enumerated and the
     # space is a fully modelled interior volume.
@@ -295,6 +282,10 @@ def main():
             'unresolved': len(audit_refs) - imported,
         },
     }
+    if actor_audit:
+        audit['actorProxies'] = actor_audit
+        audit['summary']['actorProxies'] = len(actor_audit)
+
     with open(args.audit, 'w', encoding='utf8') as f:
         json.dump(audit, f, indent=1, sort_keys=True)
     audit_sha = sha256_file(args.audit)
@@ -314,11 +305,16 @@ def main():
         'unresolved': [{'worldOrCell': cell_id, 'min': p, 'max': [p[0] + 1.0, p[1] + 1.0, p[2] + 1.0]}
                        for p in unresolved],
     }
+    if actor_shapes_list:
+        scene['actorShapes'] = actor_shapes_list
+
     with open(args.out, 'w', encoding='utf8') as f:
         json.dump(scene, f, sort_keys=True)
     print('cell %s: %d references, %d imported, %d unresolved, %d triangles, %d assets' % (
         args.cell, len(audit_refs), imported, len(audit_refs) - imported,
         sum(len(g['triangles']) for g in geometry), len(used_assets)))
+    if actor_shapes_list:
+        print('actorShapes: %d actor collision proxies imported' % len(actor_shapes_list))
     print('scene: %s (%.1f MB)' % (args.out, os.path.getsize(args.out) / 1e6))
     return 0
 
