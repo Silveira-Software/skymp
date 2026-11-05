@@ -66,6 +66,7 @@ struct WorldState::Impl
 {
   std::map<uint32_t,std::pair<nlohmann::json,uint64_t>> encounterSaveGenerations;
   SrpNpcAdmission npcAdmission;
+  std::unordered_map<uint32_t, CreatureBalance> creatureBalance;
   bool liveUnloadEnabled = false;
   uint32_t liveUnloadGraceMs = 30000, maxNpcsPerHost = 64;
   struct Suspension {
@@ -319,6 +320,64 @@ std::string WorldState::SrpNpcSource(uint32_t formId, uint32_t baseId) const
   }
   return controlled;
 }
+void WorldState::ConfigureSrpCreatureBalance(const nlohmann::json& config)
+{
+  if (!config.is_object() || config.at("schemaVersion") != 1 ||
+      !config.at("profiles").is_array() || config.at("profiles").size() > 4096)
+    throw std::runtime_error("SRP_CREATURE_BALANCE_INVALID_CONFIG");
+
+  std::unordered_map<uint32_t, CreatureBalance> next;
+  for (const auto& row : config.at("profiles")) {
+    const auto desc = row.at("base").get<std::string>();
+    const auto base = FormDesc::FromString(desc).ToFormId(espmFiles);
+    const auto lookup = GetEspm().GetBrowser().LookupById(base);
+    if (base <= 7 || !lookup.rec || lookup.rec->GetType() != "NPC_" ||
+        FormDesc::FromFormId(base, espmFiles).ToString() != desc)
+      throw std::runtime_error("SRP_CREATURE_BALANCE_INVALID_BASE");
+
+    const auto level = row.at("level");
+    const auto cap = [&](const char* key, float minimum, float maximum) {
+      const float value = row.at(key).get<float>();
+      if (!std::isfinite(value) || value < minimum || value > maximum)
+        throw std::runtime_error("SRP_CREATURE_BALANCE_INVALID_CAP");
+      return value;
+    };
+    if (!level.is_number_integer() || level < 1 || level > 200)
+      throw std::runtime_error("SRP_CREATURE_BALANCE_INVALID_LEVEL");
+    const CreatureBalance profile{level.get<uint16_t>(), cap("healthCap", 1, 10000),
+      cap("physicalHitCap", 1, 1000), cap("magicHitCap", 1, 1000)};
+    if (!next.emplace(base, profile).second)
+      throw std::runtime_error("SRP_CREATURE_BALANCE_DUPLICATE_BASE");
+  }
+  pImpl->creatureBalance = std::move(next);
+}
+
+const WorldState::CreatureBalance* WorldState::GetSrpCreatureBalance(
+  const MpActor& actor) const
+{
+  const auto entry = pImpl->creatureBalance.find(actor.GetBaseId());
+  if (entry == pImpl->creatureBalance.end() || actor.GetParent() != this ||
+      actor.GetFormId() < 0xff000000 ||
+      actor.IsCreatedAsPlayer() || actor.GetProfileId() >= 0 ||
+      actor.GetTemplateChain().empty())
+    return nullptr;
+
+  const auto& fields = actor.GetDynamicFields().GetAsJson();
+  if (fields.contains("srpMountOwner") || fields.contains("srpActiveCharacterId") ||
+      fields.contains("private.srpOriginalReferenceV1"))
+    return nullptr;
+  const auto source = fields.find("srpSpawnSource");
+  if (source != fields.end() && *source != "FAUNA" && *source != "HUNTING_NATIVE")
+    return nullptr;
+
+  const auto protectedActor = EvaluateTemplateNoThrow<espm::NPC_::UseBaseData>(
+    actor.GetParent(), actor.GetBaseId(), actor.GetTemplateChain(),
+    [](const auto&, const auto& data) {
+      return data.isEssential || data.isProtected || data.isUnique;
+    }, nullptr);
+  return protectedActor.value_or(true) ? nullptr : &entry->second;
+}
+
 void WorldState::ConfigureSrpNpcAdmission(const nlohmann::json& config)
 {
   if (!forms.empty())

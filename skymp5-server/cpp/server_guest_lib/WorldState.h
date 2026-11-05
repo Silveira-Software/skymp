@@ -98,6 +98,15 @@ public:
   std::vector<nlohmann::json> GetSrpOriginalEncounterImages();
   void RetainOriginalForUnload(MpObjectReference& actor);
   void ConfigureSrpNpcAdmission(const nlohmann::json& config);
+  struct CreatureBalance
+  {
+    uint16_t level;
+    float healthCap;
+    float physicalHitCap;
+    float magicHitCap;
+  };
+  void ConfigureSrpCreatureBalance(const nlohmann::json& config);
+  const CreatureBalance* GetSrpCreatureBalance(const MpActor& actor) const;
   nlohmann::json InspectSrpNpcAdmission() const;
   bool IsSrpOriginalControlled(uint32_t formId);
   void CheckSrpNpcMovement(uint32_t formId,const FormDesc& location,const NiPoint3& pos);

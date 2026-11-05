@@ -651,6 +651,12 @@ MpChangeForm MpActor::GetChangeForm() const
 {
   auto res = MpObjectReference::GetChangeForm();
   res.recType = MpChangeForm::ACHR;
+  if (GetParent() && GetParent()->GetSrpCreatureBalance(*this)) {
+    const auto health = GetBaseValues().health;
+    res.actorValues.health = health;
+    res.dynamicFields.SetValueDump("private.srpCreatureBalanceV1",
+      nlohmann::json({{"schemaVersion", 1}, {"health", health}}).dump());
+  }
   // In-memory recovery/character handoff must carry the same resource snapshot
   // as serialized world records. Otherwise ApplyChangeForm treats a current
   // R37 copy as legacy R36 and rescales its percentages a second time.
@@ -713,13 +719,36 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
           changeForm.actorValues.healthPercentage = std::clamp(persistedValues.healthPercentage*persistedValues.health/std::max(maximum.health,1.f),0.f,1.f);
           changeForm.actorValues.magickaPercentage = std::clamp(persistedValues.magickaPercentage*persistedValues.magicka/std::max(maximum.magicka,1.f),0.f,1.f);
           changeForm.actorValues.staminaPercentage = std::clamp(persistedValues.staminaPercentage*persistedValues.stamina/std::max(maximum.stamina,1.f),0.f,1.f);
-        } else if (!IsCreatedAsPlayer() && changeForm.profileId < 0 &&
-                   GetParent()->InspectSrpNpcAdmission().value("enabled", false)) {
+        } else if (GetParent()->GetSrpCreatureBalance(*this) ||
+                   (!IsCreatedAsPlayer() && changeForm.profileId < 0 &&
+                    GetParent()->InspectSrpNpcAdmission().value("enabled", false))) {
           // Residency is not healing. Reuse the same template/base maximums
           // while retaining the durable NPC fractions across cold/restart load.
           changeForm.actorValues.healthPercentage = persistedValues.healthPercentage;
           changeForm.actorValues.magickaPercentage = persistedValues.magickaPercentage;
           changeForm.actorValues.staminaPercentage = persistedValues.staminaPercentage;
+          changeForm.actorValues.health = GetBaseValues().health;
+        }
+        const auto& fields = changeForm.dynamicFields.GetAsJson();
+        const auto balanceImage = fields.find("private.srpCreatureBalanceV1");
+        const bool priorBalance = balanceImage != fields.end() && !balanceImage->is_null();
+        const auto* balance = GetParent()->GetSrpCreatureBalance(*this);
+        if (balance || priorBalance) {
+          const auto unbalanced = GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
+          float oldMaximum = unbalanced.health;
+          if (priorBalance) {
+            if (!balanceImage->is_object() || balanceImage->at("schemaVersion") != 1)
+              throw std::runtime_error("SRP_CREATURE_BALANCE_SNAPSHOT_INVALID");
+            oldMaximum = balanceImage->at("health").get<float>();
+            if (!std::isfinite(oldMaximum) || oldMaximum <= 0 || oldMaximum > 100000)
+              throw std::runtime_error("SRP_CREATURE_BALANCE_SNAPSHOT_INVALID");
+          }
+          const float newMaximum = GetBaseValues().health;
+          changeForm.actorValues.health = newMaximum;
+          changeForm.actorValues.healthPercentage = std::clamp(
+            persistedValues.healthPercentage * oldMaximum / newMaximum, 0.f, 1.f);
+          changeForm.dynamicFields.SetValueDump("private.srpCreatureBalanceV1",
+            balance ? nlohmann::json({{"schemaVersion", 1}, {"health", newMaximum}}).dump() : "null");
         }
       }
     },
@@ -1732,8 +1761,11 @@ BaseActorValues MpActor::GetBaseValues() const
 {
   if (!GetParent() || !GetParent()->HasEspm()) return {};
   if (const auto original = SrpOriginalStats::Read(*this)) return *original;
-  return GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
-                            ChangeForm().templateChain);
+  auto base = GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
+                                 ChangeForm().templateChain);
+  if (const auto* balance = GetParent()->GetSrpCreatureBalance(*this))
+    base.health = std::min(base.health, balance->healthCap);
+  return base;
 }
 
 nlohmann::json MpActor::ApplySrpOriginalStats()

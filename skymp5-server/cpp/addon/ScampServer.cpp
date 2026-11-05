@@ -416,6 +416,8 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       ScriptStorageFactory::Create(serverSettings));
 
     partOne->AttachEspm(espm);
+    if (serverSettings.contains("srpCreatureBalanceV1"))
+      partOne->worldState.ConfigureSrpCreatureBalance(serverSettings.at("srpCreatureBalanceV1"));
     if(serverSettings.contains("srpNpcAdmissionV1"))
       partOne->worldState.ConfigureSrpNpcAdmission(serverSettings.at("srpNpcAdmissionV1"));
     if (serverSettings.contains("srpNpcLiveUnloadV1"))
