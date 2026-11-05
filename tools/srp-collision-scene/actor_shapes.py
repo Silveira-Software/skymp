@@ -24,10 +24,10 @@ def _record(order, descriptor, signature):
     name = match.group(2).lower()
     if names.count(name) != 1:
         raise ValueError('actor proxy plugin not in unique load order: ' + descriptor)
-    plugin = order.load(names.index(name))
-    record = plugin.record((len(plugin.masters) << 24) | local)
+    source_index, record = order.resolve_with_source((names.index(name) << 24) | local)
     if record is None or record.sig != signature:
         raise ValueError('actor proxy record absent or wrong type: ' + descriptor)
+    plugin = order.load(source_index)
     return plugin, record
 
 

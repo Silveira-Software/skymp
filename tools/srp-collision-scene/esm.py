@@ -208,7 +208,48 @@ class LoadOrder:
         return self.plugins[index]
 
     def resolve(self, form_id):
-        return self.load((form_id >> 24) & 0xFF).record(form_id)
+        _, record = self.resolve_with_source(form_id)
+        return record
+
+    def to_global(self, plugin_index, local_id):
+        if not local_id:
+            return 0
+        plugin = self.load(plugin_index)
+        names = plugin.masters + [plugin.name]
+        slot = local_id >> 24
+        if slot >= len(names) or names[slot] not in self.names:
+            raise EsmError('unresolved local FormID %08x in %s' % (local_id, plugin.name))
+        return (self.names.index(names[slot]) << 24) | (local_id & 0xFFFFFF)
+
+    def to_local(self, plugin_index, global_id):
+        owner = self.plugin_name(global_id)
+        plugin = self.load(plugin_index)
+        names = plugin.masters + [plugin.name]
+        if owner not in names:
+            return None
+        return (names.index(owner) << 24) | (global_id & 0xFFFFFF)
+
+    def resolve_with_source(self, form_id):
+        # Overrides encode the original owner's slot in the overriding file's
+        # master list. That slot is independent of the server's load order.
+        for index in reversed(range(len(self.names))):
+            local = self.to_local(index, form_id)
+            if local is not None:
+                record = self.load(index).record(local)
+                if record is not None:
+                    return index, record
+        return None, None
+
+    def cell_references(self, cell_id):
+        winners = {}
+        for index in range(len(self.names)):
+            local = self.to_local(index, cell_id)
+            if local is None:
+                continue
+            for record in self.load(index).references(local):
+                winners[self.to_global(index, record.form_id)] = (index, record)
+        return [(form_id, index, record) for form_id, (index, record) in winners.items()
+                if not record.flags & 0x20 and not record.flags & 0x800]
 
     def plugin_name(self, form_id):
         return self.names[(form_id >> 24) & 0xFF]

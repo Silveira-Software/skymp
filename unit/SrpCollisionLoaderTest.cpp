@@ -57,3 +57,18 @@ TEST_CASE("Collision startup never escapes asset root or accepts relative config
   f.config["assetsRoot"]=f.root.string();f.config["enabled"]=false;
   REQUIRE_THROWS_WITH(f.Load(),"SRP_COLLISION_STARTUP_CONFIG_INVALID");
 }
+
+TEST_CASE("Collision coverage cannot certify an unenumerated cell with an empty audit", "[srp-collision-loader]")
+{
+  Fixture f;
+  f.scene["coverage"] = nlohmann::json::array({{{"worldOrCell", 60},
+    {"min", {-250000, -250000, -50000}}, {"max", {250000, 250000, 50000}}, {"complete", true}}});
+  const nlohmann::json audit = {{"schemaVersion", 1}, {"cell", {{"formId", "3c"}}},
+    {"pluginHashes", f.scene["bindings"]["loadOrder"]},
+    {"producerSha256", f.scene["bindings"]["producerSha256"]},
+    {"references", nlohmann::json::array()}, {"summary", {{"imported", 0}}}};
+  std::ofstream(f.root / "audit.json") << audit.dump();
+  f.scene["bindings"]["coverageAuditSha256"] = SrpCollision::Scene::Digest(audit);
+  f.Save();
+  REQUIRE_THROWS_WITH(f.Load(), "SRP_COLLISION_COVERAGE_AUDIT_GEOMETRY_MISMATCH");
+}

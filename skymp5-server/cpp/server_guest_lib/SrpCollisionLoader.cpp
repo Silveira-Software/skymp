@@ -24,6 +24,52 @@ std::filesystem::path Absolute(const nlohmann::json& config,const char* key)
   Require(path.is_absolute(),"SRP_COLLISION_ABSOLUTE_PATH_REQUIRED");
   return std::filesystem::canonical(path);
 }
+void ValidateCoverageAudit(const nlohmann::json& document,
+                           const std::filesystem::path& path)
+{
+  // Empty synthetic scenes make no gameplay claim. A claimed region must be
+  // backed by the producer's actual reference audit, not a blanket rectangle.
+  if (document.at("coverage").empty() && document.at("geometry").empty()) return;
+  std::ifstream input(path);
+  nlohmann::json audit;
+  input >> audit;
+  Require(audit.is_object() && audit.value("schemaVersion", 0) == 1 &&
+    audit.contains("references") && audit.at("references").is_array() &&
+    audit.contains("summary") && audit.at("summary").is_object() &&
+    audit.contains("cell") && audit.at("cell").is_object(),
+    "SRP_COLLISION_COVERAGE_AUDIT_REQUIRED");
+  Require(audit.at("pluginHashes") == document.at("bindings").at("loadOrder") &&
+    audit.at("producerSha256") == document.at("bindings").at("producerSha256"),
+    "SRP_COLLISION_COVERAGE_AUDIT_SOURCE_MISMATCH");
+  const auto cellText = audit.at("cell").at("formId").get<std::string>();
+  size_t parsed = 0;
+  const auto cell = std::stoul(cellText, &parsed, 16);
+  Require(parsed == cellText.size() && cell > 0 && cell <= UINT32_MAX,
+    "SRP_COLLISION_COVERAGE_AUDIT_CELL_INVALID");
+  std::map<std::string, const nlohmann::json*> imported;
+  for (const auto& row : audit.at("references")) {
+    if (row.value("decision", std::string()) != "imported") continue;
+    const auto ref = row.at("reference").get<std::string>();
+    Require(imported.emplace(ref, &row).second,
+      "SRP_COLLISION_COVERAGE_AUDIT_DUPLICATE_REF");
+  }
+  Require(!imported.empty() && imported.size() == document.at("geometry").size() &&
+    audit.at("summary").at("imported") == imported.size(),
+    "SRP_COLLISION_COVERAGE_AUDIT_GEOMETRY_MISMATCH");
+  for (const auto& geometry : document.at("geometry")) {
+    const auto ref = geometry.at("reference").get<std::string>();
+    const auto found = imported.find(ref);
+    Require(found != imported.end() && geometry.at("worldOrCell") == cell,
+      "SRP_COLLISION_COVERAGE_AUDIT_REF_MISMATCH");
+    const auto& row = *found->second;
+    Require(row.at("base") == geometry.at("base") &&
+      row.at("triangles") == geometry.at("triangles").size(),
+      "SRP_COLLISION_COVERAGE_AUDIT_GEOMETRY_MISMATCH");
+  }
+  for (const auto& region : document.at("coverage"))
+    Require(region.at("worldOrCell") == cell,
+      "SRP_COLLISION_COVERAGE_AUDIT_REGION_MISMATCH");
+}
 }
 SrpCollision::InstalledScene SrpCollision::LoadServerScene(const nlohmann::json& config,
   const std::vector<std::filesystem::path>& actualPluginPaths)
@@ -57,5 +103,6 @@ SrpCollision::InstalledScene SrpCollision::LoadServerScene(const nlohmann::json&
     bindings["assets"].push_back({{"path",name},{"sha256",HashFile(path)}});
   }
   auto scene = Scene::Load(document,bindings,config.at("sceneSha256").get<std::string>());
+  ValidateCoverageAudit(document, Absolute(config, "coverageAuditPath"));
   return {std::move(scene),std::move(document)};
 }

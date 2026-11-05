@@ -28,10 +28,12 @@ SCHEMA_VERSION = 1
 UNITS = 'skyrim-world'
 # Base records that can carry a collision-bearing model.
 MODEL_BASES = {b'STAT', b'MSTT', b'DOOR', b'FURN', b'CONT', b'ACTI', b'FLOR', b'TREE',
-               b'ADDN', b'MOVS', b'BNDS', b'IDLM', b'SLGM', b'WEAP', b'ARMO', b'BOOK'}
+               b'ADDN', b'MOVS', b'BNDS', b'IDLM', b'SLGM', b'WEAP', b'ARMO', b'BOOK',
+               b'MISC', b'KEYM', b'INGR', b'ALCH', b'AMMO'}
 # Reference bases whose collision can change at runtime (they open, close or
 # get displaced), so a snapshot may only be complete while none of them is live.
-DYNAMIC_BASES = {b'DOOR', b'CONT', b'FURN', b'ACTI', b'MSTT'}
+DYNAMIC_BASES = {b'DOOR', b'CONT', b'FURN', b'ACTI', b'MSTT', b'MISC', b'KEYM', b'INGR',
+                 b'ALCH', b'AMMO', b'WEAP', b'ARMO', b'BOOK', b'SLGM'}
 
 
 def sha256_file(path):
@@ -134,6 +136,21 @@ def bounds_of(points):
     return [min(xs), min(ys), min(zs)], [max(xs), max(ys), max(zs)]
 
 
+def unresolved_bounds(record, matrix):
+    """OBND may deny a trace through unknown geometry, never prove a hit."""
+    raw = record.field(b'OBND') if record is not None else None
+    if raw is None or len(raw) != 12:
+        return None
+    values = struct.unpack('<6h', raw)
+    if any(values[index] >= values[index + 3] for index in range(3)):
+        return None
+    corners = [apply_matrix(matrix, [x, y, z])
+               for x in (values[0], values[3])
+               for y in (values[1], values[4])
+               for z in (values[2], values[5])]
+    return bounds_of(corners)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dir', required=True)
@@ -156,16 +173,11 @@ def main():
     for idx in range(len(order.names)):
         candidate = order.load(idx).find_cell(args.cell)
         if candidate is not None:
-            cell_id = candidate
+            cell_id = order.to_global(idx, candidate)
             break
     if cell_id is None:
         raise SystemExit('cell not found: %s' % args.cell)
-    refs_by_id = {}
-    for idx in range(len(order.names)):
-        for ref in order.load(idx).references(cell_id):
-            # Same form id = an override; the later plugin in the load order wins.
-            refs_by_id[ref.form_id] = ref
-    refs = list(refs_by_id.values())
+    refs = order.cell_references(cell_id)
     assets = AssetCache(args.data_dir)
     os.makedirs(args.assets, exist_ok=True)
 
@@ -176,23 +188,30 @@ def main():
     all_points = []
     imported = 0
     dynamic_blockers = []
-    for ref in refs:
+    for reference_id, source_index, ref in refs:
         name = ref.field(b'NAME')
         data = ref.field(b'DATA')
         if not name or not data or len(data) < 24:
             continue
-        base_id = struct.unpack('<I', name)[0]
+        base_id = order.to_global(source_index, struct.unpack('<I', name)[0])
         record = order.resolve(base_id)
-        reference = '%08x:%s' % (ref.form_id, order.plugin_name(ref.form_id))
+        reference = '%x:%s' % (reference_id & 0xFFFFFF, order.plugin_name(reference_id))
         if record is not None and record.sig in DYNAMIC_BASES:
-            dynamic_blockers.append(ref.form_id)
-        base_desc = '%08x:%s' % (base_id, order.plugin_name(base_id))
+            dynamic_blockers.append(reference_id)
+        base_desc = '%x:%s' % (base_id & 0xFFFFFF, order.plugin_name(base_id))
         entry = {'reference': reference, 'base': base_desc}
         pos = list(struct.unpack_from('<3f', data, 0))
         rot = list(struct.unpack_from('<3f', data, 12))
         scale_raw = ref.field(b'XSCL')
         scale = struct.unpack('<f', scale_raw)[0] if scale_raw and len(scale_raw) == 4 else 1.0
         entry.update({'position': [round(v, 3) for v in pos]})
+        matrix = transform_matrix(pos, rot, scale)
+        if record is not None and (record.sig in {b'SOUN', b'ASPC'} or
+                                   record.sig == b'STAT' and not record.zstring(b'MODL')):
+            entry['decision'] = 'non-colliding-record'
+            entry['reason'] = 'sound-or-model-free-static-record'
+            audit_refs.append(entry)
+            continue
         if record is None or record.sig not in MODEL_BASES:
             entry['decision'] = 'unresolved'
             entry['reason'] = 'base-signature' if record is not None else 'base-missing'
@@ -223,12 +242,16 @@ def main():
             audit_refs.append(entry)
             continue
         if not triangles:
+            if not any(name.startswith('bhk') for name, _, _ in doc.blocks):
+                entry['decision'] = 'non-colliding-model'
+                entry['reason'] = 'parsed-nif-has-no-havok-body'
+                audit_refs.append(entry)
+                continue
             entry['decision'] = 'unresolved'
             entry['reason'] = 'no-compressed-mesh' + (' (other shapes present)' if has_other else '')
             unresolved.append([round(v, 3) for v in pos])
             audit_refs.append(entry)
             continue
-        matrix = transform_matrix(pos, rot, scale)
         world = [apply_matrix(matrix, v) for tri in triangles for v in tri]
         lo, hi = bounds_of(world)
         all_points.extend(world)
@@ -287,6 +310,30 @@ def main():
         'complete': True,
     }]
 
+    # An undecoded body is not a point at the reference origin. OBND is useful
+    # diagnostic metadata, but does not prove the Havok body is contained in it.
+    # Until every physical shape is decoded, the cell cannot prove clear LOS.
+    unknown_volumes = []
+    ref_sources = {('%x:%s' % (reference_id & 0xFFFFFF, order.plugin_name(reference_id))):
+                   (source_index, ref) for reference_id, source_index, ref in refs}
+    for entry in audit_refs:
+        if entry.get('decision') != 'unresolved':
+            continue
+        source_index, ref = ref_sources[entry['reference']]
+        raw = ref.field(b'NAME')
+        base = order.resolve(order.to_global(source_index, struct.unpack('<I', raw)[0])) if raw else None
+        data = ref.field(b'DATA')
+        scale_raw = ref.field(b'XSCL')
+        scale = struct.unpack('<f', scale_raw)[0] if scale_raw and len(scale_raw) == 4 else 1.0
+        matrix = transform_matrix(struct.unpack_from('<3f', data), struct.unpack_from('<3f', data, 12), scale)
+        source_bounds = unresolved_bounds(base, matrix)
+        if source_bounds is not None:
+            entry['sourceObjectBounds'] = source_bounds
+        bounds = (coverage[0]['min'], coverage[0]['max'])
+        entry['unknownScope'] = 'ENTIRE_CELL_UNDECODED_PHYSICAL_SHAPE'
+        entry['unknownBounds'] = bounds
+        unknown_volumes.append({'worldOrCell': cell_id, 'min': bounds[0], 'max': bounds[1]})
+
     plugin_hashes = [{'name': name, 'sha256': sha256_file(os.path.join(args.data_dir, name))}
                      for name in args.plugins]
     producer_sha = sha256_file(os.path.abspath(__file__))
@@ -305,7 +352,7 @@ def main():
         'summary': {
             'references': len(audit_refs),
             'imported': imported,
-            'unresolved': len(audit_refs) - imported,
+            'unresolved': len(unknown_volumes),
             'actorShapes': len(actor_shapes_list),
         },
     }
@@ -326,13 +373,12 @@ def main():
         'geometry': geometry,
         'coverage': coverage,
         'actorShapes': actor_shapes_list,
-        'unresolved': [{'worldOrCell': cell_id, 'min': p, 'max': [p[0] + 1.0, p[1] + 1.0, p[2] + 1.0]}
-                       for p in unresolved],
+        'unresolved': unknown_volumes,
     }
     with open(args.out, 'w', encoding='utf8') as f:
         json.dump(scene, f, sort_keys=True)
     print('cell %s: %d references, %d imported, %d unresolved, %d triangles, %d assets' % (
-        args.cell, len(audit_refs), imported, len(audit_refs) - imported,
+        args.cell, len(audit_refs), imported, len(unknown_volumes),
         sum(len(g['triangles']) for g in geometry), len(used_assets)))
     print('scene: %s (%.1f MB)' % (args.out, os.path.getsize(args.out) / 1e6))
     return 0
