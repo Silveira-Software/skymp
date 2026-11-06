@@ -74,6 +74,13 @@ private:
     uint32_t worldOrCell;
     Aabb bounds;
     std::vector<Triangle> triangles;
+    double margin = 0;
+    struct Volume {
+      std::vector<std::array<double,4>> planes;
+      Vec3 center;
+      double radius = 0;
+    };
+    std::vector<Volume> volumes;
   };
   struct Region {
     uint32_t worldOrCell;

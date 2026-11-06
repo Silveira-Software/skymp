@@ -629,6 +629,7 @@ namespace {
 // enumerates this cell's dynamic blockers and none of them is live. Anything
 // less must refuse the impact instead of silently assuming empty space.
 bool SrpDynamicSnapshotComplete(
+  WorldState& world, const SrpCollision::Scene& scene,
   const nlohmann::json& config,
   const std::unordered_map<uint32_t, std::shared_ptr<MpForm>>& forms,
   uint32_t worldOrCell)
@@ -644,6 +645,10 @@ bool SrpDynamicSnapshotComplete(
     return false;
   if (!audit.contains("blockers") || !audit.at("blockers").is_array())
     return false;
+  if (config.value("physicalBaselineVerified", false) &&
+      (!audit.contains("untrackedPhysics") || !audit.at("untrackedPhysics").is_array() ||
+       !audit.at("untrackedPhysics").empty()))
+    return false;
   for (const auto& blocker : audit.at("blockers")) {
     if (!blocker.is_number_unsigned() && !blocker.is_number_integer())
       return false;
@@ -652,8 +657,32 @@ bool SrpDynamicSnapshotComplete(
       return false;
     // A live blocker can be opened, closed or displaced, so the audited
     // baseline no longer describes the current state.
-    if (forms.find(static_cast<uint32_t>(id)) != forms.end())
-      return false;
+    const auto found=forms.find(static_cast<uint32_t>(id));
+    if(found!=forms.end()){
+      // Physical-v2 encloses every animation pose. A loaded reference is safe
+      // only while its server transform still equals its original plugin pose.
+      // Changed/moved objects and legacy point/triangle scenes remain unknown.
+      if(!config.value("physicalBaselineVerified",false))return false;
+      const auto* ref=found->second->AsObjectReference();
+      if(!ref||ref->AsActor()||ref->GetCellOrWorld().ToFormId(world.espmFiles)!=worldOrCell)return false;
+      const auto desc=FormDesc::FromFormId(static_cast<uint32_t>(id),world.espmFiles).ToString();
+      const auto row=std::find_if(scene.References().begin(),scene.References().end(),[&](const auto& r){return r.reference==desc&&r.worldOrCell==worldOrCell;});
+      if(row==scene.References().end()||row->base!=FormDesc::FromFormId(ref->GetBaseId(),world.espmFiles).ToString())return false;
+      const auto lookup=world.GetEspm().GetBrowser().LookupById(static_cast<uint32_t>(id));
+      if(!lookup.rec||lookup.rec->GetType()!="REFR")return false;
+      const auto data=reinterpret_cast<const espm::REFR*>(lookup.rec)->GetData(world.GetEspmCache());
+      if(!data.loc)return false;
+      const auto originalPos=LocationalDataUtils::GetPos(data.loc),originalRot=LocationalDataUtils::GetRot(data.loc);
+      for(size_t axis=0;axis<3;++axis)
+        if(std::abs(ref->GetPos()[axis]-originalPos[axis])>.001f||std::abs(ref->GetAngle()[axis]-originalRot[axis])>.0001f)return false;
+    }
+  }
+  // Newly dropped/spawned non-actor bodies are absent from the plugin audit.
+  // Refuse clear LOS instead of silently ignoring their physical geometry.
+  for(const auto& [id,form]:forms){
+    const auto* ref=form?form->AsObjectReference():nullptr;
+    if(id>=0xff000000&&ref&&!ref->AsActor()&&!ref->IsDeleted()&&!ref->IsDisabled()&&
+       ref->GetCellOrWorld().ToFormId(world.espmFiles)==worldOrCell)return false;
   }
   return true;
 }
@@ -703,7 +732,7 @@ std::optional<SrpOriginalImpact::Frame> WorldState::CaptureSrpOriginalImpactFram
 
   // Refuse before claiming an empty dynamic snapshot: see
   // SrpDynamicSnapshotComplete for what must be enumerated to justify it.
-  if (!SrpDynamicSnapshotComplete(pImpl->srpCollisionConfig, forms, worldOrCell))
+  if (!SrpDynamicSnapshotComplete(*this,*pImpl->srpCollisionScene,pImpl->srpCollisionConfig, forms, worldOrCell))
     return std::nullopt;
 
   SrpCollision::DynamicSnapshot dynamics;

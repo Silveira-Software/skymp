@@ -106,6 +106,7 @@ class Nif:
             raise NifError('block sizes do not tile the payload (%d + %d + %d != %d)' %
                            (data_start, sum(sizes), 4 + 4 * num_roots, len(d)))
         self.num_roots = num_roots
+        self.roots = list(struct.unpack_from('<%dI' % num_roots, d, blocks_end + 4))
         offset = data_start
         for i, size in enumerate(sizes):
             if indices[i] >= len(self.types):
@@ -300,8 +301,8 @@ def decode_compressed_mesh_shape_data(block):
             z = comps[i + 2] / 1000.0 + translation[2]
             if 0 <= transform_index < len(transforms):
                 t, q = transforms[transform_index]
-                x += t[0]; y += t[1]; z += t[2]
                 x, y, z = _quat_rotate(q, (x, y, z))
+                x += t[0]; y += t[1]; z += t[2]
             verts.append((x, y, z))
         if not verts:
             continue

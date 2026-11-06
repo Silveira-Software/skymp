@@ -58,6 +58,18 @@ TEST_CASE("Collision startup never escapes asset root or accepts relative config
   REQUIRE_THROWS_WITH(f.Load(),"SRP_COLLISION_STARTUP_CONFIG_INVALID");
 }
 
+TEST_CASE("Collision startup verifies the pinned physical parser", "[srp-collision-loader]")
+{
+  Fixture f;
+  std::ofstream(f.root / "havok.py") << "abc";
+  f.scene["bindings"]["producerSources"] = nlohmann::json::array(
+    {{{"path", "havok.py"}, {"sha256", f.scene["bindings"]["producerSha256"]}}});
+  f.Save();
+  REQUIRE(f.Load().document == f.scene);
+  std::ofstream(f.root / "havok.py") << "different";
+  REQUIRE_THROWS_WITH(f.Load(), "SRP_COLLISION_PROVENANCE_MISMATCH");
+}
+
 TEST_CASE("Collision coverage cannot certify an unenumerated cell with an empty audit", "[srp-collision-loader]")
 {
   Fixture f;

@@ -28,6 +28,49 @@ Vec3 Cross(Vec3 a, Vec3 b)
   return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};
 }
 double Dot(Vec3 a, Vec3 b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
+Vec3 Add(Vec3 a, Vec3 b) { return {a.x+b.x,a.y+b.y,a.z+b.z}; }
+Vec3 Mul(Vec3 a, double b) { return {a.x*b,a.y*b,a.z*b}; }
+double Distance2(Vec3 a, Vec3 b) { return Dot(Sub(a,b),Sub(a,b)); }
+double PointTriangle2(Vec3 p, const Triangle& t)
+{
+  const auto ab=Sub(t.b,t.a),ac=Sub(t.c,t.a),ap=Sub(p,t.a);
+  const auto d1=Dot(ab,ap),d2=Dot(ac,ap);
+  if(d1<=0&&d2<=0)return Distance2(p,t.a);
+  const auto bp=Sub(p,t.b);const auto d3=Dot(ab,bp),d4=Dot(ac,bp);
+  if(d3>=0&&d4<=d3)return Distance2(p,t.b);
+  const auto vc=d1*d4-d3*d2;
+  if(vc<=0&&d1>=0&&d3<=0)return Distance2(p,Add(t.a,Mul(ab,d1/(d1-d3))));
+  const auto cp=Sub(p,t.c);const auto d5=Dot(ab,cp),d6=Dot(ac,cp);
+  if(d6>=0&&d5<=d6)return Distance2(p,t.c);
+  const auto vb=d5*d2-d1*d6;
+  if(vb<=0&&d2>=0&&d6<=0)return Distance2(p,Add(t.a,Mul(ac,d2/(d2-d6))));
+  const auto va=d3*d6-d5*d4;
+  if(va<=0&&(d4-d3)>=0&&(d5-d6)>=0)
+    return Distance2(p,Add(t.b,Mul(Sub(t.c,t.b),(d4-d3)/((d4-d3)+(d5-d6)))));
+  const auto sum=va+vb+vc;
+  if(sum<=0)return 0; // ill-conditioned geometry cannot prove clear
+  return Distance2(p,Add(t.a,Add(Mul(ab,vb/sum),Mul(ac,vc/sum))));
+}
+double Segments2(Vec3 p,Vec3 q,Vec3 r,Vec3 s)
+{
+  const auto d1=Sub(q,p),d2=Sub(s,r),v=Sub(p,r);
+  const double a=Dot(d1,d1),e=Dot(d2,d2),f=Dot(d2,v);
+  double x=0,y=0;
+  if(a<=epsilon&&e<=epsilon)return Distance2(p,r);
+  if(a<=epsilon)y=std::clamp(f/e,0.,1.);
+  else {
+    const double c=Dot(d1,v);
+    if(e<=epsilon)x=std::clamp(-c/a,0.,1.);
+    else {
+      const double b=Dot(d1,d2),denom=a*e-b*b;
+      if(denom>epsilon)x=std::clamp((b*f-c*e)/denom,0.,1.);
+      y=(b*x+f)/e;
+      if(y<0){y=0;x=std::clamp(-c/a,0.,1.);}
+      else if(y>1){y=1;x=std::clamp((b-c)/a,0.,1.);}
+    }
+  }
+  return Distance2(Add(p,Mul(d1,x)),Add(r,Mul(d2,y)));
+}
 double Axis(Vec3 a, size_t i) { return i==0?a.x:(i==1?a.y:a.z); }
 bool Valid(const Aabb& b)
 {
@@ -165,7 +208,7 @@ Vec3 Transform(const std::array<double,12>& matrix,Vec3 v)
     matrix[8]*v.x+matrix[9]*v.y+matrix[10]*v.z+matrix[11]};
 }
 std::vector<Triangle> ReadMesh(const nlohmann::json& geometry,
-  const std::array<double,12>& matrix,size_t& count)
+  const std::array<double,12>& matrix,size_t& count,bool allowEmpty=false)
 {
   Require(geometry.at("vertices").is_array() && geometry.at("triangles").is_array(),
     "SRP_COLLISION_GEOMETRY_INVALID");
@@ -189,7 +232,7 @@ std::vector<Triangle> ReadMesh(const nlohmann::json& geometry,
     Triangle triangle{vertices[index[0]],vertices[index[1]],vertices[index[2]]};
     Require(Valid(triangle),"SRP_COLLISION_TRIANGLE_INVALID");triangles.push_back(triangle);
   }
-  Require(!triangles.empty(),"SRP_COLLISION_GEOMETRY_EMPTY");return triangles;
+  Require(allowEmpty||!triangles.empty(),"SRP_COLLISION_GEOMETRY_EMPTY");return triangles;
 }
 }
 
@@ -237,7 +280,7 @@ std::shared_ptr<const Scene> Scene::Load(const nlohmann::json& document,
     Require(!reference.empty() && !base.empty() &&
       parts.emplace(location,reference,geometry.value("part",std::string())).second &&
       assetNames.count(geometry.at("asset").get<std::string>()) &&
-      geometry.at("representation")=="havok-triangles" &&
+      (geometry.at("representation")=="havok-triangles" || geometry.at("representation")=="havok-physical-v2") &&
       geometry.at("vertices").is_array() && geometry.at("triangles").is_array(),
       "SRP_COLLISION_GEOMETRY_INVALID");
     const auto matrix=ReadTransform(geometry.at("worldTransform"));
@@ -250,9 +293,64 @@ std::shared_ptr<const Scene> Scene::Load(const nlohmann::json& document,
       "SRP_COLLISION_REFERENCE_MISMATCH");
     Batch batch;batch.worldOrCell=location;
     batch.bounds={{coordinateLimit,coordinateLimit,coordinateLimit},{-coordinateLimit,-coordinateLimit,-coordinateLimit}};
-    batch.triangles=ReadMesh(geometry,matrix,count);
+    const bool physical=geometry.at("representation")=="havok-physical-v2";
+    batch.triangles=ReadMesh(geometry,matrix,count,physical);
     for(const auto& triangle:batch.triangles) {
       Include(batch.bounds,triangle.a);Include(batch.bounds,triangle.b);Include(batch.bounds,triangle.c);
+    }
+    if(physical){
+      const Vec3 columns[3]={{matrix[0],matrix[4],matrix[8]},
+        {matrix[1],matrix[5],matrix[9]},{matrix[2],matrix[6],matrix[10]}};
+      const double scale=std::sqrt(Dot(columns[0],columns[0]));
+      for(int i=0;i<3;++i){
+        Require(std::abs(Dot(columns[i],columns[i])-scale*scale)<1e-4*scale*scale,
+          "SRP_COLLISION_PHYSICAL_TRANSFORM_INVALID");
+        for(int j=0;j<i;++j)Require(std::abs(Dot(columns[i],columns[j]))<1e-4*scale*scale,
+          "SRP_COLLISION_PHYSICAL_TRANSFORM_INVALID");
+      }
+      const double margin=geometry.at("margin").get<double>();
+      Require(std::isfinite(margin)&&margin>=0&&margin<=1000,"SRP_COLLISION_MARGIN_INVALID");
+      batch.margin=margin*scale;
+      if(!batch.triangles.empty()){
+        const Vec3 d{batch.margin,batch.margin,batch.margin};
+        batch.bounds.min=Sub(batch.bounds.min,d);batch.bounds.max=Add(batch.bounds.max,d);
+      }
+      Require(geometry.at("volumes").is_array()&&geometry.at("volumes").size()<=4096,
+        "SRP_COLLISION_VOLUME_INVALID");
+      for(const auto& volume:geometry.at("volumes")){
+        Batch::Volume v;
+        if(volume.at("kind")=="sphere"){
+          v.center=Transform(matrix,ReadVec(volume.at("center")));
+          v.radius=volume.at("radius").get<double>()*scale;
+          Require(Finite(v.center)&&std::isfinite(v.radius)&&v.radius>0&&v.radius<1e6,
+            "SRP_COLLISION_VOLUME_INVALID");
+          Include(batch.bounds,Sub(v.center,{v.radius,v.radius,v.radius}));
+          Include(batch.bounds,Add(v.center,{v.radius,v.radius,v.radius}));
+        }else{
+          Require(volume.at("kind")=="convex-envelope"&&volume.at("planes").is_array()&&
+            volume.at("planes").size()>=4&&volume.at("planes").size()<=4096,
+            "SRP_COLLISION_VOLUME_INVALID");
+          for(const auto& plane:volume.at("planes")){
+            Require(plane.is_array()&&plane.size()==4,"SRP_COLLISION_VOLUME_INVALID");
+            const Vec3 n{plane.at(0).get<double>(),plane.at(1).get<double>(),plane.at(2).get<double>()};
+            const double d=plane.at(3).get<double>();
+            Require(Finite(n)&&std::abs(Dot(n,n)-1)<.001&&std::isfinite(d)&&std::abs(d)<coordinateLimit,
+              "SRP_COLLISION_VOLUME_INVALID");
+            const auto normal=Mul(Transform(matrix,n),1./scale);
+            const Vec3 wn{normal.x-matrix[3]/scale,normal.y-matrix[7]/scale,normal.z-matrix[11]/scale};
+            v.planes.push_back({wn.x,wn.y,wn.z,d*scale-wn.x*matrix[3]-wn.y*matrix[7]-wn.z*matrix[11]});
+          }
+          const double pad=volume.at("boundingMargin").get<double>()*scale;
+          Require(std::isfinite(pad)&&pad>=0&&pad<=1e6&&volume.at("vertices").is_array()&&
+            volume.at("vertices").size()>=4&&volume.at("vertices").size()<=4096,"SRP_COLLISION_VOLUME_INVALID");
+          for(const auto& vertex:volume.at("vertices")){
+            const auto p=Transform(matrix,ReadVec(vertex));Require(Finite(p),"SRP_COLLISION_VOLUME_INVALID");
+            Include(batch.bounds,Sub(p,{pad,pad,pad}));Include(batch.bounds,Add(p,{pad,pad,pad}));
+          }
+        }
+        batch.volumes.push_back(std::move(v));
+      }
+      Require(!batch.triangles.empty()||!batch.volumes.empty(),"SRP_COLLISION_GEOMETRY_EMPTY");
     }
     out->batches.push_back(std::move(batch));
   }
@@ -322,8 +420,36 @@ Result Scene::Trace(const Query& query) const
   };
   for(const auto& batch:batches) {
     double lo,hi;
-    if(batch.worldOrCell==query.worldOrCell && Interval(batch.bounds,query.from,query.to,lo,hi))
-      for(const auto& triangle:batch.triangles)hit(triangle);
+    if(batch.worldOrCell!=query.worldOrCell || !Interval(batch.bounds,query.from,query.to,lo,hi))continue;
+    for(const auto& triangle:batch.triangles){
+      hit(triangle);
+      if(batch.margin>0){
+        const double distance=std::min({PointTriangle2(query.from,triangle),PointTriangle2(query.to,triangle),
+          Segments2(query.from,query.to,triangle.a,triangle.b),Segments2(query.from,query.to,triangle.b,triangle.c),
+          Segments2(query.from,query.to,triangle.c,triangle.a)});
+        if(distance<=batch.margin*batch.margin+epsilon)result.verdict=Verdict::Blocked;
+      }
+    }
+    for(const auto& volume:batch.volumes){
+      bool intersects=false;
+      if(volume.radius>0){
+        const auto direction=Sub(query.to,query.from);
+        const double t=std::clamp(Dot(Sub(volume.center,query.from),direction)/Dot(direction,direction),0.,1.);
+        intersects=Distance2(Add(query.from,Mul(direction,t)),volume.center)<=volume.radius*volume.radius+epsilon;
+      }else{
+        double enter=0,leave=1;
+        intersects=true;
+        for(const auto& plane:volume.planes){
+          const Vec3 n{plane[0],plane[1],plane[2]};
+          const double a=Dot(n,query.from)+plane[3],delta=Dot(n,Sub(query.to,query.from));
+          if(std::abs(delta)<epsilon){if(a>epsilon){intersects=false;break;}continue;}
+          const double crossing=-a/delta;
+          if(delta>0)leave=std::min(leave,crossing);else enter=std::max(enter,crossing);
+          if(enter>leave+epsilon){intersects=false;break;}
+        }
+      }
+      if(intersects)result.verdict=Verdict::Blocked;
+    }
   }
   if(result.verdict==Verdict::Blocked) { result.reason="SRP_COLLISION_STATIC_BLOCKED";return result; }
   if(query.dynamics.worldOrCell!=query.worldOrCell || !query.dynamics.revision) {

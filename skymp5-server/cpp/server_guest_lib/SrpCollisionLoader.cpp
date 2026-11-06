@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sodium.h>
+#include <set>
 #include <stdexcept>
 
 namespace {
@@ -24,12 +25,12 @@ std::filesystem::path Absolute(const nlohmann::json& config,const char* key)
   Require(path.is_absolute(),"SRP_COLLISION_ABSOLUTE_PATH_REQUIRED");
   return std::filesystem::canonical(path);
 }
-void ValidateCoverageAudit(const nlohmann::json& document,
+nlohmann::json ValidateCoverageAudit(const nlohmann::json& document,
                            const std::filesystem::path& path)
 {
   // Empty synthetic scenes make no gameplay claim. A claimed region must be
   // backed by the producer's actual reference audit, not a blanket rectangle.
-  if (document.at("coverage").empty() && document.at("geometry").empty()) return;
+  if (document.at("coverage").empty() && document.at("geometry").empty()) return nullptr;
   std::ifstream input(path);
   nlohmann::json audit;
   input >> audit;
@@ -41,6 +42,9 @@ void ValidateCoverageAudit(const nlohmann::json& document,
   Require(audit.at("pluginHashes") == document.at("bindings").at("loadOrder") &&
     audit.at("producerSha256") == document.at("bindings").at("producerSha256"),
     "SRP_COLLISION_COVERAGE_AUDIT_SOURCE_MISMATCH");
+  if(document.at("bindings").contains("producerSources"))
+    Require(audit.at("producerSources")==document.at("bindings").at("producerSources"),
+      "SRP_COLLISION_COVERAGE_AUDIT_SOURCE_MISMATCH");
   const auto cellText = audit.at("cell").at("formId").get<std::string>();
   size_t parsed = 0;
   const auto cell = std::stoul(cellText, &parsed, 16);
@@ -65,10 +69,14 @@ void ValidateCoverageAudit(const nlohmann::json& document,
     Require(row.at("base") == geometry.at("base") &&
       row.at("triangles") == geometry.at("triangles").size(),
       "SRP_COLLISION_COVERAGE_AUDIT_GEOMETRY_MISMATCH");
+    if(geometry.at("representation")=="havok-physical-v2")
+      Require(row.at("volumes")==geometry.at("volumes").size(),
+        "SRP_COLLISION_COVERAGE_AUDIT_GEOMETRY_MISMATCH");
   }
   for (const auto& region : document.at("coverage"))
     Require(region.at("worldOrCell") == cell,
       "SRP_COLLISION_COVERAGE_AUDIT_REGION_MISMATCH");
+  return audit.value("dynamicAudit",nlohmann::json());
 }
 }
 SrpCollision::InstalledScene SrpCollision::LoadServerScene(const nlohmann::json& config,
@@ -87,6 +95,25 @@ SrpCollision::InstalledScene SrpCollision::LoadServerScene(const nlohmann::json&
     {"coverageAuditSha256",HashFile(Absolute(config,"coverageAuditPath"))}};
   for(const auto& path:actualPluginPaths)
     bindings["loadOrder"].push_back({{"name",path.filename().string()},{"sha256",HashFile(path)}});
+  if(declared.contains("producerSources")){
+    const auto sourceRoot=Absolute(config,"producerPath").parent_path();
+    const auto& sources=declared.at("producerSources");
+    Require(sources.is_array()&&!sources.empty()&&sources.size()<=32,"SRP_COLLISION_PRODUCER_SOURCES_INVALID");
+    bindings["producerSources"]=nlohmann::json::array();
+    std::set<std::string> names;
+    for(const auto& source:sources){
+      const auto name=source.at("path").get<std::string>();
+      Require(!name.empty()&&std::filesystem::path(name).filename()==name&&
+        name.find_first_of("/\\:")==std::string::npos&&names.insert(name).second,
+        "SRP_COLLISION_PRODUCER_SOURCES_INVALID");
+      const auto target=std::filesystem::canonical(sourceRoot/name);
+      Require(target.parent_path()==sourceRoot,"SRP_COLLISION_PRODUCER_SOURCES_INVALID");
+      bindings["producerSources"].push_back({{"path",name},{"sha256",HashFile(target)}});
+    }
+  }
+  for(const auto& geometry:document.at("geometry"))
+    if(geometry.at("representation")=="havok-physical-v2")
+      Require(declared.contains("producerSources"),"SRP_COLLISION_PRODUCER_SOURCES_REQUIRED");
   for(const auto& row:declared.at("assets")){
     const auto name=row.at("path").get<std::string>();
     // A producer that runs on Windows may emit backslashes, but this loader runs
@@ -103,6 +130,6 @@ SrpCollision::InstalledScene SrpCollision::LoadServerScene(const nlohmann::json&
     bindings["assets"].push_back({{"path",name},{"sha256",HashFile(path)}});
   }
   auto scene = Scene::Load(document,bindings,config.at("sceneSha256").get<std::string>());
-  ValidateCoverageAudit(document, Absolute(config, "coverageAuditPath"));
-  return {std::move(scene),std::move(document)};
+  auto dynamics=ValidateCoverageAudit(document, Absolute(config, "coverageAuditPath"));
+  return {std::move(scene),std::move(document),std::move(dynamics)};
 }

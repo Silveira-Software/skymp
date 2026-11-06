@@ -34,6 +34,45 @@ Query Ray(Vec3 from={0,0,0},Vec3 to={10,0,0})
   Query q;q.worldOrCell=60;q.from=from;q.to=to;
   q.dynamics.worldOrCell=60;q.dynamics.revision=7;q.dynamics.complete=true;return q;
 }
+
+TEST_CASE("Native physical volumes block interiors and transformed Havok envelopes", "[srp-collision]")
+{
+  auto doc=Fixture();auto& g=doc["geometry"][0];
+  g["representation"]="havok-physical-v2";g["margin"]=0;
+  g["vertices"]=nlohmann::json::array();g["triangles"]=nlohmann::json::array();
+  g["volumes"]=nlohmann::json::array({{{"kind","sphere"},{"center",{5,0,0}},{"radius",2}}});
+  auto scene=Load(doc);
+  REQUIRE(scene->Trace(Ray()).verdict==Verdict::Blocked);
+  REQUIRE(scene->Trace(Ray({5,0,0},{5.1,0,0})).verdict==Verdict::Blocked);
+  REQUIRE(scene->Trace(Ray({0,2,0},{10,2,0})).verdict==Verdict::Blocked);
+  REQUIRE(scene->Trace(Ray({0,2.01,0},{10,2.01,0})).verdict==Verdict::Clear);
+  g["worldTransform"]={0,-2,0,2,2,0,0,0,0,0,2,0};
+  REQUIRE(Load(doc)->Trace(Ray({2,5,0},{2,15,0})).verdict==Verdict::Blocked);
+  g["worldTransform"]={1,0,0,0,0,1,0,0,0,0,1,0};
+  g["volumes"]=nlohmann::json::array({{{"kind","convex-envelope"},
+    {"planes",{{1,0,0,-6},{-1,0,0,4},{0,1,0,-1},{0,-1,0,-1},{0,0,1,-1},{0,0,-1,-1}}},
+    {"vertices",{{4,-1,-1},{6,1,1},{4,1,-1},{6,-1,1}}},{"boundingMargin",0}}});
+  REQUIRE(Load(doc)->Trace(Ray()).verdict==Verdict::Blocked);
+  REQUIRE(Load(doc)->Trace(Ray({5,0,0},{5.1,0,0})).verdict==Verdict::Blocked);
+  REQUIRE(Load(doc)->Trace(Ray({0,1.01,0},{10,1.01,0})).verdict==Verdict::Clear);
+  g["worldTransform"]={0,-2,0,2,2,0,0,0,0,0,2,0};
+  REQUIRE(Load(doc)->Trace(Ray({2,5,0},{2,15,0})).verdict==Verdict::Blocked);
+  REQUIRE(Load(doc)->Trace(Ray({4.01,5,0},{4.01,15,0})).verdict==Verdict::Clear);
+  g["volumes"][0]["planes"][0][0]=0;
+  REQUIRE_THROWS_WITH(Load(doc),"SRP_COLLISION_VOLUME_INVALID");
+}
+
+TEST_CASE("Havok mesh radius blocks grazing segments without enlarging actual actor hits", "[srp-collision]")
+{
+  auto doc=Fixture();auto& g=doc["geometry"][0];
+  g["representation"]="havok-physical-v2";g["margin"]=.5;g["volumes"]=nlohmann::json::array();
+  REQUIRE(Load(doc)->Trace(Ray({4.75,-2,0},{4.75,2,0})).verdict==Verdict::Blocked);
+  REQUIRE(Load(doc)->Trace(Ray({4.49,-2,0},{4.49,2,0})).verdict==Verdict::Clear);
+  REQUIRE(Load(doc)->Trace(Ray({0,5.25,0},{10,5.25,0})).verdict==Verdict::Blocked);
+  REQUIRE(Load(doc)->Trace(Ray({0,5.51,0},{10,5.51,0})).verdict==Verdict::Clear);
+  g["margin"]=-1;
+  REQUIRE_THROWS_WITH(Load(doc),"SRP_COLLISION_MARGIN_INVALID");
+}
 }
 
 TEST_CASE("Native collision intersects physical triangles in both directions", "[srp-collision]")

@@ -423,9 +423,15 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.contains("srpNpcLiveUnloadV1"))
       partOne->worldState.ConfigureSrpNpcLiveUnload(serverSettings.at("srpNpcLiveUnloadV1"));
     if (serverSettings.contains("srpCollisionV1") && serverSettings.at("srpCollisionV1").value("enabled", false)) {
-      partOne->worldState.InstallSrpCollisionScene(
-        SrpCollision::LoadServerScene(serverSettings.at("srpCollisionV1"), pluginPaths).scene,
-        serverSettings.at("srpCollisionV1"));
+      auto installed=SrpCollision::LoadServerScene(serverSettings.at("srpCollisionV1"), pluginPaths);
+      auto verifiedConfig=serverSettings.at("srpCollisionV1");
+      // The enumerated dynamic set comes from the pinned audit, never an
+      // operator-supplied empty list alongside a different scene.
+      verifiedConfig["dynamicAudit"]=installed.dynamicAudit;
+      verifiedConfig["physicalBaselineVerified"]=installed.document.at("bindings").contains("producerSources")&&
+        !installed.document.at("geometry").empty()&&std::all_of(installed.document.at("geometry").begin(),installed.document.at("geometry").end(),
+          [](const auto& row){return row.at("representation")=="havok-physical-v2";});
+      partOne->worldState.InstallSrpCollisionScene(installed.scene,verifiedConfig);
     }
     partOne->animationSystem.Init(&partOne->worldState);
 

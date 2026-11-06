@@ -1,5 +1,6 @@
 #include "SrpCollisionLoader.h"
 #include <catch2/catch_all.hpp>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -8,7 +9,7 @@
 
 // End-to-end validation with a scene produced from the shipped game assets.
 // The bundle is mounted at SRP_SCENE_DIR (scene.json, audit.json, producer.py,
-// assets/) and the plugin used by the producer is given by SRP_SCENE_PLUGIN.
+// assets/) and SRP_SCENE_PLUGIN locates the directory of installed plugins.
 // Without them the case skips: the synthetic cases cannot certify real geometry.
 namespace {
 std::filesystem::path EnvPath(const char* name)
@@ -58,7 +59,10 @@ TEST_CASE("A produced scene loads through the audited loader and blocks", "[srp-
     { "coverageAuditPath", (dir / "audit.json").string() },
     { "sceneSha256", digest }
   };
-  const auto installed = SrpCollision::LoadServerScene(config, { plugin });
+  std::vector<std::filesystem::path> plugins;
+  for (const auto& entry : document.at("bindings").at("loadOrder"))
+    plugins.push_back(plugin.parent_path() / entry.at("name").get<std::string>());
+  const auto installed = SrpCollision::LoadServerScene(config, plugins);
 
   // Provenance came from the actual plugin and asset bytes, and the scene is
   // the one whose digest we just computed.
@@ -66,7 +70,11 @@ TEST_CASE("A produced scene loads through the audited loader and blocks", "[srp-
   REQUIRE(installed.document.at("geometry").size() > 0);
   REQUIRE(installed.scene->References().size() > 0);
 
-  const auto& geometry = installed.document.at("geometry").at(0);
+  const auto& rows = installed.document.at("geometry");
+  const auto triangleBatch = std::find_if(rows.begin(), rows.end(),
+    [](const auto& row) { return !row.at("triangles").empty(); });
+  REQUIRE(triangleBatch != rows.end());
+  const auto& geometry = *triangleBatch;
   const auto& vertices = geometry.at("vertices");
   const auto& index = geometry.at("triangles").at(0).get<std::array<int, 3>>();
   REQUIRE(vertices.size() >= 3);

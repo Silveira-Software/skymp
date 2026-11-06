@@ -22,6 +22,7 @@ import bsa  # noqa: E402
 import esm  # noqa: E402
 import nif  # noqa: E402
 import actor_shapes  # noqa: E402
+import havok  # noqa: E402
 
 MESH_ARCHIVES = ('Skyrim - Meshes0.bsa', 'Skyrim - Meshes1.bsa')
 SCHEMA_VERSION = 1
@@ -29,7 +30,7 @@ UNITS = 'skyrim-world'
 # Base records that can carry a collision-bearing model.
 MODEL_BASES = {b'STAT', b'MSTT', b'DOOR', b'FURN', b'CONT', b'ACTI', b'FLOR', b'TREE',
                b'ADDN', b'MOVS', b'BNDS', b'IDLM', b'SLGM', b'WEAP', b'ARMO', b'BOOK',
-               b'MISC', b'KEYM', b'INGR', b'ALCH', b'AMMO'}
+               b'MISC', b'KEYM', b'INGR', b'ALCH', b'AMMO', b'LIGH'}
 # Reference bases whose collision can change at runtime (they open, close or
 # get displaced), so a snapshot may only be complete while none of them is live.
 DYNAMIC_BASES = {b'DOOR', b'CONT', b'FURN', b'ACTI', b'MSTT', b'MISC', b'KEYM', b'INGR',
@@ -78,10 +79,12 @@ def apply_matrix(m, v):
 class AssetCache:
     """Resolves a meshes path from loose files first, then the BSA archives."""
 
-    def __init__(self, data_dir):
-        self.data_dir = data_dir
+    def __init__(self, data_dir, plugins=(), loose_overrides=()):
+        self.loose_roots = [*loose_overrides, data_dir]
         self.archives = []
-        for name in MESH_ARCHIVES:
+        # Later active plugins' matching archives win over base archives.
+        names = [os.path.splitext(plugin)[0] + '.bsa' for plugin in reversed(plugins)]
+        for name in dict.fromkeys([*names, *MESH_ARCHIVES]):
             path = os.path.join(data_dir, name)
             if os.path.exists(path):
                 self.archives.append(bsa.BsaArchive(path))
@@ -95,9 +98,10 @@ class AssetCache:
             key = 'meshes\\' + key
         if key in self.cache:
             return self.cache[key]
-        loose = os.path.join(self.data_dir, *key.split('\\'))
+        loose = next((path for root in self.loose_roots
+                      if os.path.isfile(path := os.path.join(root, *key.split('\\')))), None)
         data = None
-        if os.path.exists(loose):
+        if loose is not None:
             with open(loose, 'rb') as f:
                 data = f.read()
         else:
@@ -111,22 +115,9 @@ class AssetCache:
 
 
 def collision_triangles(data):
-    """Decode every compressed-mesh collision body in a NIF payload."""
-    doc = nif.Nif(data)
-    triangles = []
-    blocks = doc.blocks_of_type('bhkCompressedMeshShapeData')
-    for offset, size in blocks:
-        shape = nif.decode_compressed_mesh_shape_data(data[offset:offset + size])
-        triangles.extend(shape.triangles)
-    # Doors and other simple props collide through a box shape instead. That box
-    # is the physical shape the engine uses, so its triangles are the collision.
-    for offset, size in doc.blocks_of_type('bhkBoxShape'):
-        triangles.extend(nif.decode_box_shape(data[offset:offset + size]))
-    others = [name for name, _, _ in doc.blocks if name.startswith('bhk')]
-    has_other = any(name not in ('bhkCompressedMeshShapeData', 'bhkCompressedMeshShape',
-                                 'bhkCollisionObject', 'bhkRigidBody', 'bhkMoppBvTreeShape')
-                    for name in others)
-    return triangles, doc, has_other
+    """Actor proxies require exact triangles, never outer LOS envelopes."""
+    triangles, volumes, margin, doc = havok.read(data)
+    return triangles, doc, bool(volumes) or margin > 0
 
 
 def bounds_of(points):
@@ -154,6 +145,8 @@ def unresolved_bounds(record, matrix):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dir', required=True)
+    parser.add_argument('--asset-data-dir', help='read-only asset tree if plugins are staged separately')
+    parser.add_argument('--loose-override', action='append', default=[])
     parser.add_argument('--plugins', nargs='+', default=['Skyrim.esm'])
     parser.add_argument('--cell', required=True, help='editor id or form id')
     parser.add_argument('--out', required=True)
@@ -178,7 +171,7 @@ def main():
     if cell_id is None:
         raise SystemExit('cell not found: %s' % args.cell)
     refs = order.cell_references(cell_id)
-    assets = AssetCache(args.data_dir)
+    assets = AssetCache(args.asset_data_dir or args.data_dir, args.plugins, args.loose_override)
     os.makedirs(args.assets, exist_ok=True)
 
     geometry = []
@@ -188,6 +181,7 @@ def main():
     all_points = []
     imported = 0
     dynamic_blockers = []
+    untracked_physics = []
     for reference_id, source_index, ref in refs:
         name = ref.field(b'NAME')
         data = ref.field(b'DATA')
@@ -206,10 +200,10 @@ def main():
         scale = struct.unpack('<f', scale_raw)[0] if scale_raw and len(scale_raw) == 4 else 1.0
         entry.update({'position': [round(v, 3) for v in pos]})
         matrix = transform_matrix(pos, rot, scale)
-        if record is not None and (record.sig in {b'SOUN', b'ASPC'} or
-                                   record.sig == b'STAT' and not record.zstring(b'MODL')):
+        if record is not None and (record.sig in {b'SOUN', b'ASPC', b'TXST'} or
+                                   record.sig in {b'STAT', b'IDLM', b'LIGH', b'ACTI'} and not record.zstring(b'MODL')):
             entry['decision'] = 'non-colliding-record'
-            entry['reason'] = 'sound-or-model-free-static-record'
+            entry['reason'] = 'sound-decal-or-model-free-record'
             audit_refs.append(entry)
             continue
         if record is None or record.sig not in MODEL_BASES:
@@ -234,25 +228,33 @@ def main():
             audit_refs.append(entry)
             continue
         try:
-            triangles, doc, has_other = collision_triangles(payload)
+            triangles, volumes, margin, doc = havok.read(payload)
         except (nif.NifError, bsa.BsaError, struct.error) as ex:
             entry['decision'] = 'unresolved'
             entry['reason'] = 'decode-error: %s' % ex
             unresolved.append([round(v, 3) for v in pos])
             audit_refs.append(entry)
             continue
-        if not triangles:
+        if not triangles and not volumes:
             if not any(name.startswith('bhk') for name, _, _ in doc.blocks):
                 entry['decision'] = 'non-colliding-model'
                 entry['reason'] = 'parsed-nif-has-no-havok-body'
                 audit_refs.append(entry)
                 continue
             entry['decision'] = 'unresolved'
-            entry['reason'] = 'no-compressed-mesh' + (' (other shapes present)' if has_other else '')
+            entry['reason'] = 'no-physical-shape'
             unresolved.append([round(v, 3) for v in pos])
             audit_refs.append(entry)
             continue
+        if doc.has_movable_body:
+            untracked_physics.append(reference_id)
         world = [apply_matrix(matrix, v) for tri in triangles for v in tri]
+        for volume in volumes:
+            if volume['kind'] == 'convex-envelope':
+                world.extend(apply_matrix(matrix, v) for v in volume['vertices'])
+            else:
+                center, radius = volume['center'], volume['radius']
+                world.extend(apply_matrix(matrix, [center[k]+s*radius for k in range(3)]) for s in (-1,1))
         lo, hi = bounds_of(world)
         all_points.extend(world)
         # Portable paths: the scene is produced on Windows but consumed by a
@@ -271,7 +273,7 @@ def main():
             'reference': reference,
             'base': base_desc,
             'asset': asset_name,
-            'representation': 'havok-triangles',
+            'representation': 'havok-physical-v2',
             'worldTransform': matrix,
             'referenceTransform': matrix,
             'vertices': [[round(c, 4) for c in v] for v in
@@ -279,9 +281,11 @@ def main():
                          + [tri[2] for tri in triangles]],
             'triangles': [[i, i + len(triangles), i + 2 * len(triangles)]
                           for i in range(len(triangles))],
+            'volumes': volumes, 'margin': margin,
         })
         entry['decision'] = 'imported'
         entry['triangles'] = len(triangles)
+        entry['volumes'] = len(volumes)
         entry['bounds'] = [[round(v, 2) for v in lo], [round(v, 2) for v in hi]]
         audit_refs.append(entry)
         imported += 1
@@ -337,6 +341,8 @@ def main():
     plugin_hashes = [{'name': name, 'sha256': sha256_file(os.path.join(args.data_dir, name))}
                      for name in args.plugins]
     producer_sha = sha256_file(os.path.abspath(__file__))
+    producer_sources = [{'path':name,'sha256':sha256_file(os.path.join(os.path.dirname(__file__),name))}
+                        for name in ('producer.py','havok.py','nif.py','esm.py','bsa.py','lz4.py','actor_shapes.py')]
     audit = {
         'schemaVersion': SCHEMA_VERSION,
         'cell': {'formId': '%08x' % cell_id, 'editorId': str(args.cell)},
@@ -346,8 +352,10 @@ def main():
             'worldOrCell': cell_id,
             'complete': True,
             'blockers': sorted(dynamic_blockers),
+            'untrackedPhysics': sorted(untracked_physics),
         },
         'producerSha256': producer_sha,
+        'producerSources': producer_sources,
         'references': audit_refs + actor_audit_entries,
         'summary': {
             'references': len(audit_refs),
@@ -368,6 +376,7 @@ def main():
             'assets': [{'path': path, 'sha256': digest}
                        for path, digest in sorted(used_assets.items())],
             'producerSha256': producer_sha,
+            'producerSources': producer_sources,
             'coverageAuditSha256': audit_sha,
         },
         'geometry': geometry,
