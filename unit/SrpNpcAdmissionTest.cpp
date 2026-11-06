@@ -246,6 +246,8 @@ TEST_CASE("Original activation and old loot packets cannot materialize a cold ac
   auto& world = p.worldState;
   world.ConfigureSrpNpcAdmission(Config());
   world.npcEnabled = true;
+  REQUIRE_FALSE(world.IsSrpOriginalControlled(0x4cc2d));
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(0x4cc2d));
   p.CreateActor(0xff000090, {0, 0, 0}, 0, 0x165a8, 9100);
   DoConnect(p, 9);
   p.SetUserActor(9, 0xff000090);

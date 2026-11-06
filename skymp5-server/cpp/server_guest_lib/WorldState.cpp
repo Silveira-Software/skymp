@@ -444,14 +444,12 @@ bool WorldState::IsSrpOriginalControlled(uint32_t formId)
 {
   if (formId >= 0xff000000 || !pImpl->npcAdmission.Enabled())
     return false;
-  uint32_t baseId = 0;
-  if (espm) {
-    const auto row = espm->GetBrowser().LookupById(formId);
-    if (row.rec && row.rec->GetType() == "ACHR")
-      baseId = row.ToGlobalId(reinterpret_cast<const espm::ACHR*>(row.rec)
-                                ->GetData(GetEspmCache())
-                                .baseId);
-  }
+  if (!espm) return false;
+  const auto row = espm->GetBrowser().LookupById(formId);
+  if (!row.rec || row.rec->GetType() != "ACHR") return false;
+  const auto baseId = row.ToGlobalId(reinterpret_cast<const espm::ACHR*>(row.rec)
+                                     ->GetData(GetEspmCache())
+                                     .baseId);
   return pImpl->npcAdmission.Controlled(
            FormDesc::FromFormId(formId, espmFiles).ToString()) ||
     !SrpNpcSource(formId, baseId).empty();
