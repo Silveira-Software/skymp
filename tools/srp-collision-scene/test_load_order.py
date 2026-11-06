@@ -56,6 +56,16 @@ class LoadOrderTest(unittest.TestCase):
         self.assertEqual(producer.unresolved_bounds(record, matrix), ([800, 1960, 2900], [1200, 2040, 3100]))
         self.assertIsNone(producer.unresolved_bounds(None, matrix))
 
+    def test_only_the_winning_interior_cell_can_claim_complete_coverage(self):
+        order = self.order()
+        fields = lambda flags: b'DATA' + struct.pack('<HB', 1, flags)
+        order.plugins[0].records[0x3A] = esm.Record(b'CELL', 0x3A, 0, fields(1))
+        producer.require_interior_cell(order, 0x3A)
+        for flags, data in ((0, fields(0)), (0x20, fields(1)), (0, b'')):
+            order.plugins[2].records[0x3A] = esm.Record(b'CELL', 0x3A, flags, data)
+            with self.assertRaisesRegex(ValueError, 'interior CELL'):
+                producer.require_interior_cell(order, 0x3A)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -142,6 +142,13 @@ def unresolved_bounds(record, matrix):
     return bounds_of(corners)
 
 
+def require_interior_cell(order, cell_id):
+    record = order.resolve(cell_id)
+    data = record.field(b'DATA') if record and record.sig == b'CELL' else None
+    if not data or record.flags & 0x20 or not data[0] & 1:
+        raise ValueError('collision coverage requires a winning interior CELL')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dir', required=True)
@@ -170,6 +177,7 @@ def main():
             break
     if cell_id is None:
         raise SystemExit('cell not found: %s' % args.cell)
+    require_interior_cell(order, cell_id)
     refs = order.cell_references(cell_id)
     assets = AssetCache(args.asset_data_dir or args.data_dir, args.plugins, args.loose_override)
     os.makedirs(args.assets, exist_ok=True)
