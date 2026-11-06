@@ -9,6 +9,7 @@
 #include "DynamicFields.h"
 #include "database_drivers/FileDatabase.h"
 #include "save_storages/AsyncSaveStorage.h"
+#include "gamemode_events/GameModeEvent.h"
 #include <catch2/catch_all.hpp>
 #include <filesystem>
 #include <unistd.h>
@@ -547,4 +548,33 @@ TEST_CASE("Lethal impact records exactly one authoritative death", "[srp-origina
   // With the outbox closed the refusal is the target's own state: it is dead.
   REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w, testUserId, cowId, "req-lethal-3"),
                       "SRP_IMPACT_ACTOR_INACTIVE");
+
+  class LootOpenRecorder : public PartOneListener
+  {
+  public:
+    std::vector<nlohmann::json> requests;
+    void OnConnect(Networking::UserId) override {}
+    void OnDisconnect(Networking::UserId) override {}
+    void OnCustomPacket(Networking::UserId, const simdjson::dom::element&) override {}
+    bool OnMpApiEvent(const GameModeEvent& event) override
+    {
+      if (std::string(event.GetName()) == "onSrpOriginalLootOpen")
+        requests.push_back(nlohmann::json::parse(event.GetArgumentsJsonArray()));
+      return true;
+    }
+  };
+  const auto recorder = std::make_shared<LootOpenRecorder>();
+  w.AddListener(recorder);
+  const auto corpseInventory = cow.GetInventory().ToJson();
+  const auto playerInventory = player.GetInventory().ToJson();
+  cow.Activate(player);
+  REQUIRE(recorder->requests == std::vector<nlohmann::json>{
+    nlohmann::json::array({cowId, playerId})});
+  cow.Activate(player, false, true);
+  cow.Activate(player, true, false);
+  REQUIRE(recorder->requests.size() == 1);
+  REQUIRE(cow.GetInventory().ToJson() == corpseInventory);
+  REQUIRE(player.GetInventory().ToJson() == playerInventory);
+  REQUIRE_THROWS_WITH(cow.TakeItem(player, Inventory::Entry(15, 1)),
+    "SRP_ORIGINAL_LOOT_LIFECYCLE_NOT_APPROVED");
 }

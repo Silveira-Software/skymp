@@ -18,6 +18,7 @@ static thread_local std::unordered_set<const MpObjectReference*> srpConsumptionT
 #include "UpdatePropertyMessage.h"
 #include "WorldState.h"
 #include "gamemode_events/ActivateEvent.h"
+#include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/PutItemEvent.h"
 #include "gamemode_events/TakeItemEvent.h"
 #include "libespm/CompressedFieldsCache.h"
@@ -471,7 +472,19 @@ void MpObjectReference::Activate(MpObjectReference& activationSource,
                                  bool defaultProcessingOnly,
                                  bool isSecondActivation)
 {
-  if(AsActor()&&SrpOriginalLifecycle::Managed(*AsActor()))return;
+  if (AsActor() && SrpOriginalLifecycle::Managed(*AsActor())) {
+    auto* player = activationSource.AsActor();
+    if (AsActor()->IsDead() && player && player->GetProfileId() > 0 &&
+        !defaultProcessingOnly && !isSecondActivation) {
+      CheckInteractionAbility(activationSource);
+      // Inspection request only. The durable loot bridge owns delivery and
+      // receipt acknowledgement. Default Activate/TakeItem remain blocked.
+      CustomEvent request(GetFormId(), "onSrpOriginalLootOpen",
+        nlohmann::json::array({player->GetFormId()}).dump());
+      request.Fire(GetParent());
+    }
+    return;
+  }
   if (spdlog::should_log(spdlog::level::trace)) {
     for (auto& script : ListActivePexInstances()) {
       spdlog::trace("MpObjectReference::Activate {:x} - found script {}",
