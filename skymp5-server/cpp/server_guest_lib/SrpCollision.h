@@ -66,7 +66,8 @@ public:
   // unsupported actor collision templates return no mesh and must deny impact.
   std::optional<std::vector<Triangle>> ActorTriangles(
     const std::string& baseDesc, const std::string& raceDesc,
-    const std::array<double,12>& serverPose) const;
+    const std::array<double,12>& serverPose,
+    std::optional<bool> female = std::nullopt) const;
 
 private:
   Scene() = default;
@@ -90,6 +91,7 @@ private:
   struct ActorShape {
     std::string baseDesc, raceDesc;
     std::vector<Triangle> triangles;
+    std::optional<bool> female;
   };
   std::string id;
   nlohmann::json bindings;

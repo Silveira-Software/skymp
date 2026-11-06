@@ -31,6 +31,7 @@ NPC_::Data NPC_::GetData(
         result.isEssential = !!(flags & 0x2);
         result.isUnique = !!(flags & 0x20);
         result.isProtected = !!(flags & 0x800);
+        result.isFemale = !!(flags & 1);
         result.autoCalcStats = !!(flags & 0x10);
         result.pcLevelMult = !!(flags & 0x80);
         result.level = ReadFieldScalar<uint16_t>(data, dataSize, 8);

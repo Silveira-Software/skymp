@@ -1097,6 +1097,18 @@ uint32_t MpActor::GetRaceId() const
     });
 }
 
+bool MpActor::IsFemale() const
+{
+  if (const auto appearance = GetAppearance()) return appearance->isFemale;
+  return EvaluateTemplate<espm::NPC_::UseTraits>(
+    GetParent(), GetBaseId(), GetTemplateChain(),
+    [](const auto&, const auto& data) {
+      if (!data.hasStatsConfiguration)
+        throw std::runtime_error("SRP_COLLISION_ACTOR_SEX_UNKNOWN");
+      return data.isFemale;
+    });
+}
+
 bool MpActor::IsWeaponDrawn() const
 {
   return GetAnimationVariableBool("_skymp_isWeapDrawn");

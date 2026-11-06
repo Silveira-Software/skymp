@@ -70,6 +70,32 @@ TEST_CASE("A produced scene loads through the audited loader and blocks", "[srp-
   REQUIRE(installed.document.at("geometry").size() > 0);
   REQUIRE(installed.scene->References().size() > 0);
 
+  // Actual pinned controller geometry must survive the native reader with the
+  // same identity, sex, height transform and triangle count. This is physical
+  // asset integration, not an assertion about the current Skyrim animation.
+  if (installed.document.contains("actorShapes")) {
+    const std::array<double,12> pose{1,0,0,0,0,1,0,0,0,0,1,0};
+    for (const auto& shape : installed.document.at("actorShapes")) {
+      if (shape.at("representation") != "havok-controller-inscribed-v1") continue;
+      const auto base=shape.at("baseDesc").get<std::string>();
+      const auto race=shape.at("raceDesc").get<std::string>();
+      REQUIRE_FALSE(installed.scene->ActorTriangles(base,race,pose).has_value());
+      const auto mesh=installed.scene->ActorTriangles(base,race,pose,shape.at("sex").get<int>()==1);
+      REQUIRE(mesh.has_value());
+      REQUIRE(mesh->size()==shape.at("triangles").size());
+      const auto& t=mesh->at(0);
+      const SrpCollision::Vec3 center{(t.a.x+t.b.x+t.c.x)/3.,(t.a.y+t.b.y+t.c.y)/3.,(t.a.z+t.b.z+t.c.z)/3.};
+      const SrpCollision::Vec3 u{t.b.x-t.a.x,t.b.y-t.a.y,t.b.z-t.a.z};
+      const SrpCollision::Vec3 v{t.c.x-t.a.x,t.c.y-t.a.y,t.c.z-t.a.z};
+      SrpCollision::Vec3 n{u.y*v.z-u.z*v.y,u.z*v.x-u.x*v.z,u.x*v.y-u.y*v.x};
+      const auto length=std::sqrt(n.x*n.x+n.y*n.y+n.z*n.z);
+      REQUIRE(length>0);
+      n={n.x/length,n.y/length,n.z/length};
+      REQUIRE(SrpCollision::IntersectMesh({center.x-n.x,center.y-n.y,center.z-n.z},
+        {center.x+n.x,center.y+n.y,center.z+n.z},*mesh).verdict==SrpCollision::Verdict::Blocked);
+    }
+  }
+
   const auto& rows = installed.document.at("geometry");
   const auto triangleBatch = std::find_if(rows.begin(), rows.end(),
     [](const auto& row) { return !row.at("triangles").empty(); });

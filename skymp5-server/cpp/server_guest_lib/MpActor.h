@@ -37,6 +37,7 @@ public:
   std::vector<uint32_t> GetSpellList() const;
 
   std::unique_ptr<const Appearance> GetAppearance() const;
+  bool IsFemale() const;
   const std::string& GetAppearanceAsJson();
   std::string GetLastAnimEventAsJson() const;
   const Equipment& GetEquipment() const;

@@ -123,6 +123,7 @@ public:
   void InstallSrpCollisionScene(std::shared_ptr<const SrpCollision::Scene> scene,
                                 const nlohmann::json& config = {});
   std::shared_ptr<const SrpCollision::Scene> GetSrpCollisionScene() const;
+  std::optional<std::array<double,12>> CaptureSrpActorCollisionPose(const MpActor& actor);
   std::optional<SrpOriginalImpact::Frame> CaptureSrpOriginalImpactFrame(
     const MpActor& attacker, const MpActor& target);
 

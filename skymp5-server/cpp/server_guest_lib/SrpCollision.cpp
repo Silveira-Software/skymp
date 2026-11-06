@@ -6,6 +6,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace SrpCollision {
 namespace {
@@ -362,14 +363,29 @@ std::shared_ptr<const Scene> Scene::Load(const nlohmann::json& document,
     out->unresolved.emplace_back(Location(unknown.at("worldOrCell")),ReadBox(unknown));
   if(document.contains("actorShapes")) {
     Require(document.at("actorShapes").is_array(),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
-    std::set<std::pair<std::string,std::string>> actorKeys;
+    std::set<std::tuple<std::string,std::string,int>> actorKeys;
+    std::set<std::pair<std::string,std::string>> legacyKeys, sexedKeys;
     for(const auto& shape:document.at("actorShapes")) {
       const auto base=shape.at("baseDesc").get<std::string>(),race=shape.at("raceDesc").get<std::string>();
-      Require(!base.empty() && !race.empty() && actorKeys.emplace(base,race).second &&
-        shape.at("policy")=="SERVER_MESH_PROXY_V1" && shape.at("representation")=="havok-triangles" &&
+      const bool controller=shape.at("representation")=="havok-controller-inscribed-v1";
+      int sex=-1;
+      if(controller){
+        Require(shape.contains("sex")&&shape.at("sex").is_number_integer(),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
+        sex=shape.at("sex").get<int>();
+        Require(sex==0||sex==1,"SRP_COLLISION_ACTOR_SHAPES_INVALID");
+        sexedKeys.emplace(base,race);
+      }else{
+        Require(shape.at("representation")=="havok-triangles"&&!shape.contains("sex"),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
+        legacyKeys.emplace(base,race);
+      }
+      Require(!base.empty() && !race.empty() && actorKeys.emplace(base,race,sex).second &&
+        shape.at("policy")=="SERVER_MESH_PROXY_V1" &&
         assetNames.count(shape.at("asset").get<std::string>()),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
-      out->actorShapes.push_back({base,race,ReadMesh(shape,ReadTransform(shape.at("localTransform")),count)});
+      out->actorShapes.push_back({base,race,ReadMesh(shape,ReadTransform(shape.at("localTransform")),count),
+        controller?std::optional<bool>(sex==1):std::nullopt});
     }
+    for(const auto& key:legacyKeys)
+      Require(!sexedKeys.count(key),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
   }
   return out;
 }
@@ -391,11 +407,13 @@ Result IntersectMesh(Vec3 from, Vec3 to, const std::vector<Triangle>& triangles)
   return result;
 }
 std::optional<std::vector<Triangle>> Scene::ActorTriangles(const std::string& baseDesc,
-  const std::string& raceDesc,const std::array<double,12>& serverPose) const
+  const std::string& raceDesc,const std::array<double,12>& serverPose,
+  std::optional<bool> female) const
 {
   if(!ValidTransform(serverPose))return {};
   const auto found=std::find_if(actorShapes.begin(),actorShapes.end(),[&](const ActorShape& shape){
-    return shape.baseDesc==baseDesc && shape.raceDesc==raceDesc;
+    return shape.baseDesc==baseDesc && shape.raceDesc==raceDesc &&
+      (!shape.female.has_value() || shape.female==female);
   });
   if(found==actorShapes.end())return {};
   std::vector<Triangle> triangles;

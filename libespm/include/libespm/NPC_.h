@@ -75,6 +75,7 @@ public:
     bool isEssential = false;
     bool isUnique = false;
     bool isProtected = false;
+    bool isFemale = false;
 
     bool hasStatsConfiguration = false;
     bool autoCalcStats = false;

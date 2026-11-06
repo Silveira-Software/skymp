@@ -621,6 +621,27 @@ std::shared_ptr<const SrpCollision::Scene> WorldState::GetSrpCollisionScene() co
   return pImpl->srpCollisionScene;
 }
 
+std::optional<std::array<double,12>> WorldState::CaptureSrpActorCollisionPose(const MpActor& actor)
+{
+  if(actor.GetParent()!=this)return {};
+  // Bone overrides require a corresponding physical controller producer.
+  const auto& fields=actor.GetChangeForm();
+  if(fields.setNodeScale.has_value()&&!fields.setNodeScale->empty())return {};
+  double scale=1.;
+  if(actor.GetFormId()<0xff000000){
+    if(!HasEspm())return {};
+    const auto lookup=GetEspm().GetBrowser().LookupById(actor.GetFormId());
+    if(!lookup.rec||lookup.rec->GetType()!="ACHR")return {};
+    scale=reinterpret_cast<const espm::REFR*>(lookup.rec)->GetData(GetEspmCache()).scale;
+  }
+  const auto p=actor.GetPos(),r=actor.GetAngle();
+  if(!std::isfinite(scale)||scale<=.01||scale>=100)return {};
+  for(float value:{p.x,p.y,p.z,r.x,r.y,r.z})
+    if(!std::isfinite(value))return {};
+  const double yaw=r.z*std::acos(-1.)/180.,c=std::cos(yaw)*scale,s=std::sin(yaw)*scale;
+  return std::array<double,12>{c,-s,0.,p.x,s,c,0.,p.y,0.,0.,scale,p.z};
+}
+
 namespace {
 // The server cannot derive door or movable collision from plugin bytes, so a
 // dynamic snapshot may only be called complete when the installed scene audit
@@ -711,20 +732,13 @@ std::optional<SrpOriginalImpact::Frame> WorldState::CaptureSrpOriginalImpactFram
   if (!targetGeneration)
     return std::nullopt;
 
-  const double yawRad = targetAngle.z * (std::acos(-1.0) / 180.0);
-  const double cosYaw = std::cos(yawRad);
-  const double sinYaw = std::sin(yawRad);
-
-  std::array<double, 12> serverPose = {
-    cosYaw, -sinYaw, 0.0, targetPos.x,
-    sinYaw,  cosYaw, 0.0, targetPos.y,
-    0.0,     0.0,    1.0, targetPos.z
-  };
+  const auto serverPose=CaptureSrpActorCollisionPose(target);
+  if(!serverPose)return {};
 
   const auto baseDesc = FormDesc::FromFormId(target.GetBaseId(), espmFiles).ToString();
   const auto raceDesc = FormDesc::FromFormId(target.GetRaceId(), espmFiles).ToString();
 
-  auto targetTrianglesOpt = pImpl->srpCollisionScene->ActorTriangles(baseDesc, raceDesc, serverPose);
+  auto targetTrianglesOpt = pImpl->srpCollisionScene->ActorTriangles(baseDesc, raceDesc, *serverPose, target.IsFemale());
   if (!targetTrianglesOpt.has_value() || targetTrianglesOpt->empty())
     return std::nullopt;
 

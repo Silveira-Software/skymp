@@ -259,13 +259,19 @@ def main():
         all_points.extend(world)
         # Portable paths: the scene is produced on Windows but consumed by a
         # Linux server, where a backslash is a filename character, not a
-        # separator. Case is preserved because Linux resolution is exact.
-        asset_name = model.replace('\\', '/')
+        # separator. Skyrim resolves models without case sensitivity, whereas
+        # a Windows-created directory cannot preserve two case-only aliases.
+        # Use one canonical path in both the scene and the copied asset tree.
+        asset_name = model.replace('\\', '/').lower()
         target = os.path.join(args.assets, *asset_name.split('/'))
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if not os.path.exists(target):
             with open(target, 'wb') as f:
                 f.write(payload)
+        else:
+            with open(target, 'rb') as f:
+                if f.read() != payload:
+                    raise ValueError('collision output conflicts with pinned asset: '+asset_name)
         digest = hashlib.sha256(payload).hexdigest()
         used_assets[asset_name] = digest
         geometry.append({
@@ -342,7 +348,7 @@ def main():
                      for name in args.plugins]
     producer_sha = sha256_file(os.path.abspath(__file__))
     producer_sources = [{'path':name,'sha256':sha256_file(os.path.join(os.path.dirname(__file__),name))}
-                        for name in ('producer.py','havok.py','nif.py','esm.py','bsa.py','lz4.py','actor_shapes.py')]
+                        for name in ('producer.py','havok.py','nif.py','esm.py','bsa.py','lz4.py','actor_shapes.py','actor_controller.py')]
     audit = {
         'schemaVersion': SCHEMA_VERSION,
         'cell': {'formId': '%08x' % cell_id, 'editorId': str(args.cell)},

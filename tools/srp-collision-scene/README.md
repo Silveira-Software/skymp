@@ -55,3 +55,26 @@ Exit codes: `0` pass, `2` game data not available (skip), `1` failure.
 - Coverage is only marked complete for spaces where every reference was
   enumerated. Exterior terrain collision is not produced by this tool, so
   exteriors must not claim complete coverage.
+
+## Character controller proxies
+
+Actor manifest schema 2 resolves deterministic NPC trait templates and the
+sex-specific RACE skeletal ANAM, following xEdit's record definition:
+https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES5.pas
+
+actor_controller.py reads layer-30 bhkSPCollisionObject phantoms, capsules,
+convex support vertices, shape lists and MOPP child geometry. Layout reference:
+https://github.com/niftools/nifxml/blob/develop/nif.xml
+
+The phantom and rooted bind transforms must agree; their duplicated translation
+is applied once. Unsupported, animated, malformed or mismatched controllers
+are rejected. Capsule surfaces and convex hulls are inscribed for positive hit
+tests; outer LOS envelopes never become hit proxies. NPC and race height are
+pinned in the local transform. The native adds original ACHR scale, selects the
+authoritative sex and refuses unrepresented bone overrides. Schema-1 triangle
+proxies remain readable, but cannot overlap a schema-2 binding.
+
+These meshes define a server collision policy. They do not certify the client's
+current animation or Havok pose. Untracked movable blockers still prevent a
+complete impact frame. No gameplay flag, XP, respawn or transformation is enabled
+by producing this scene.

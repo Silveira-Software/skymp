@@ -235,9 +235,9 @@ std::optional<double> AttackerGripHeight(const Frame& frame,const MpActor& attac
   const auto raceDesc=FormDesc::FromFormId(attacker.GetRaceId(),world->espmFiles).ToString();
   const auto pos=attacker.GetPos(),angle=attacker.GetAngle();
   if(!Finite(Vec{pos.x,pos.y,pos.z})||!std::isfinite(angle.z))return {};
-  const double yaw=angle.z*std::acos(-1.0)/180.0,c=std::cos(yaw),s=std::sin(yaw);
-  std::array<double,12> pose={c,-s,0.0,pos.x, s,c,0.0,pos.y, 0.0,0.0,1.0,pos.z};
-  const auto mesh=frame.scene->ActorTriangles(baseDesc,raceDesc,pose);
+  const auto pose=world->CaptureSrpActorCollisionPose(attacker);
+  if(!pose)return {};
+  const auto mesh=frame.scene->ActorTriangles(baseDesc,raceDesc,*pose,attacker.IsFemale());
   if(!mesh||mesh->empty())return {};
   double minZ=1e300,maxZ=-1e300,sumX=0,sumY=0;size_t count=0;
   for(const auto& triangle:*mesh)for(const auto& v:{triangle.a,triangle.b,triangle.c}){

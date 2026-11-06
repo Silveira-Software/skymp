@@ -185,3 +185,31 @@ TEST_CASE("Native collision rejects nonfinite and zero length queries", "[srp-co
   q=Ray();q.to=q.from;REQUIRE(scene->Trace(q).verdict==Verdict::Unknown);
   q=Ray();q.worldOrCell=0;REQUIRE(scene->Trace(q).verdict==Verdict::Unknown);
 }
+
+TEST_CASE("Controller proxies bind sex and cannot shadow legacy geometry", "[srp-collision]")
+{
+  auto document=Fixture();
+  auto shape=document.at("geometry").at(0);
+  shape["baseDesc"]="7:Skyrim.esm";shape["raceDesc"]="13745:Skyrim.esm";
+  shape["policy"]="SERVER_MESH_PROXY_V1";shape["representation"]="havok-controller-inscribed-v1";
+  shape["localTransform"]={1,0,0,0,0,1,0,0,0,0,1,0};shape["sex"]=0;
+  auto female=shape;female["sex"]=1;female["localTransform"][11]=10;
+  document["actorShapes"]=nlohmann::json::array({shape,female});
+  const auto scene=Load(document);
+  const std::array<double,12> pose{1,0,0,0,0,1,0,0,0,0,1,0};
+  REQUIRE_FALSE(scene->ActorTriangles("7:Skyrim.esm","13745:Skyrim.esm",pose).has_value());
+  const auto maleMesh=scene->ActorTriangles("7:Skyrim.esm","13745:Skyrim.esm",pose,false);
+  const auto femaleMesh=scene->ActorTriangles("7:Skyrim.esm","13745:Skyrim.esm",pose,true);
+  REQUIRE(maleMesh.has_value());REQUIRE(femaleMesh.has_value());
+  REQUIRE(femaleMesh->at(0).a.z-maleMesh->at(0).a.z==10);
+  auto legacy=shape;legacy.erase("sex");legacy["representation"]="havok-triangles";
+  document["actorShapes"].push_back(legacy);
+  REQUIRE_THROWS_WITH(Load(document),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
+  document["actorShapes"]=nlohmann::json::array({shape,shape});
+  REQUIRE_THROWS_WITH(Load(document),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
+  document["actorShapes"]=nlohmann::json::array({shape});
+  document["actorShapes"][0]["sex"]=2;
+  REQUIRE_THROWS_WITH(Load(document),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
+  document["actorShapes"][0]["sex"]=false;
+  REQUIRE_THROWS_WITH(Load(document),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
+}

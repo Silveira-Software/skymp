@@ -162,6 +162,28 @@ MpActor& SetupPlayer(PartOne& w, const MpActor& target)
 }
 }
 
+TEST_CASE("Collision pose rejects bone overrides and reads authoritative actor sex", "[srp-original-impact]")
+{
+  auto& w=GetPartOne();AttachStorage(w);
+  auto& cow=SetupCow(w);
+  auto& player=SetupPlayer(w,cow);
+  const auto before=player.GetChangeForm();
+  const auto pose=w.worldState.CaptureSrpActorCollisionPose(player);
+  REQUIRE(pose.has_value());
+  REQUIRE(pose->at(3)==player.GetPos().x);
+  REQUIRE(pose->at(7)==player.GetPos().y);
+  REQUIRE(pose->at(11)==player.GetPos().z);
+  Appearance appearance;
+  appearance.raceId=player.GetRaceId();appearance.isFemale=true;
+  player.SetAppearance(&appearance);
+  REQUIRE(player.IsFemale());
+  appearance.isFemale=false;player.SetAppearance(&appearance);
+  REQUIRE_FALSE(player.IsFemale());
+  player.SetNodeScale("NPC Root [Root]",2.f,false);
+  REQUIRE_FALSE(w.worldState.CaptureSrpActorCollisionPose(player).has_value());
+  player.ApplyChangeForm(before);
+}
+
 TEST_CASE("Impact fails closed when server collision scene is not installed", "[srp-original-impact]")
 {
   auto& w = GetPartOne();
