@@ -1,6 +1,8 @@
 #include "SrpNpcAdmission.h"
 #include "ActionListener.h"
 #include "HitMessage.h"
+#include "ActivateMessage.h"
+#include "TakeItemMessage.h"
 #include "SrpOriginalLifecycle.h"
 #include "TestUtils.hpp"
 PartOne& GetPartOne();
@@ -235,6 +237,33 @@ TEST_CASE("R38.3 controlled original is quarantined before identity adoption",
   REQUIRE_THROWS(cow.Kill(nullptr, false));
   REQUIRE(w.InspectSrpNpcAdmission().at("fauna") == 1);
   REQUIRE(w.GetLoadedActors(0) == std::vector<uint32_t>{ 0x10ebaf });
+}
+
+TEST_CASE("Original activation and old loot packets cannot materialize a cold actor",
+          "[srp-original-impact][espm]")
+{
+  auto& p = GetPartOne();
+  auto& world = p.worldState;
+  world.ConfigureSrpNpcAdmission(Config());
+  world.npcEnabled = true;
+  p.CreateActor(0xff000090, {0, 0, 0}, 0, 0x165a8, 9100);
+  DoConnect(p, 9);
+  p.SetUserActor(9, 0xff000090);
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(0x10ebaf));
+  const auto budget = world.InspectSrpNpcAdmission();
+  RawMessageData message;
+  message.userId = 9;
+  ActivateMessage activate;
+  activate.data.caster = 0x14;
+  activate.data.target = 0x10ebaf;
+  REQUIRE_NOTHROW(p.GetActionListener().OnActivate(message, activate));
+  TakeItemMessage take;
+  take.target = 0x10ebaf;
+  take.baseId = 15;
+  take.count = 1;
+  REQUIRE_NOTHROW(p.GetActionListener().OnTakeItem(message, take));
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(0x10ebaf));
+  REQUIRE(world.InspectSrpNpcAdmission() == budget);
 }
 TEST_CASE(
   "R38.3 administrative 180 plus 120 budgets share one 300 identity limit",

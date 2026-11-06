@@ -476,8 +476,11 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
     }
   }
 
+  const auto targetId = static_cast<uint32_t>(msg.data.target);
   auto targetPtr = std::dynamic_pointer_cast<MpObjectReference>(
-    partOne.worldState.LookupFormById(static_cast<uint32_t>(msg.data.target)));
+    partOne.worldState.IsSrpOriginalControlled(targetId)
+      ? partOne.worldState.LookupFormByIdNoLoad(targetId)
+      : partOne.worldState.LookupFormById(targetId));
   if (!targetPtr)
     return;
 
@@ -535,6 +538,10 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
     return;
   }
 
+  // A client cannot warm a quarantined original by asking to loot it.
+  if (partOne.worldState.IsSrpOriginalControlled(msg.target) &&
+      !partOne.worldState.LookupFormByIdNoLoad(msg.target))
+    return;
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(msg.target);
 
   auto worldState = actor->GetParent();
