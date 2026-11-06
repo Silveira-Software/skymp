@@ -1,5 +1,6 @@
 #include "ActionListener.h"
 #include "SrpOriginalLifecycle.h"
+#include "SrpTransformationFence.h"
 #include "gamemode_events/SrpOriginalImpactRequestEvent.h"
 #include <sodium.h>
 #include "AnimationSystem.h"
@@ -227,7 +228,7 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
     return;
   }
 
-  const bool isAllowed = actor->IsRaceMenuOpen();
+  const bool isAllowed = actor->IsRaceMenuOpen() && !SrpTransformationFenced(*actor);
 
   if (isAllowed) {
     actor->SetRaceMenuOpen(false);
@@ -247,6 +248,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   if (!actor) {
     return;
   }
+
+  if (SrpTransformationFenced(*actor)) return;
 
   bool isAllowed = true;
   const auto actorFormId = actor->GetFormId();
@@ -847,6 +850,11 @@ void ActionListener::OnChangeValues(const RawMessageData& rawMsgData,
       rawMsgData.userId);
   }
 
+  if (SrpTransformationFenced(*actor)) {
+    actor->NetSendChangeValues(actor->GetActorValues(), std::nullopt);
+    return;
+  }
+
   if (actor->ShouldSkipRestoration()) {
     return;
   }
@@ -1105,6 +1113,10 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     aggressor=form?form->AsActor():nullptr;
     if(!aggressor)return;
   }
+
+  // A race switch may reset local AVs/equipment. It must not borrow either the
+  // previous or the next form's combat while its durable handshake is pending.
+  if (SrpTransformationFenced(*aggressor)) return;
 
   if (hitData.target == 0x14) {
     hitData.target = myActor->GetFormId();

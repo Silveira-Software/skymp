@@ -741,15 +741,18 @@ Napi::Value ScampServer::CreateBot(const Napi::CallbackInfo& info)
 
   auto pair = this->serverMock->CreateClient();
   auto bot = std::make_shared<Bot>(pair.first);
+  const auto mockUserId = pair.second;
 
   auto jBot = Napi::Object::New(info.Env());
 
   jBot.Set(
     "getUserId",
     Napi::Function::New(
-      info.Env(), [bot, pair, serverCombined](const Napi::CallbackInfo& info) {
+      info.Env(), [bot, mockUserId, serverCombined](const Napi::CallbackInfo& info) {
         try {
-          Networking::UserId realUserId = pair.second;
+          // Capturing pair retains its client even after bot.destroy(). Keep
+          // only the id so destroy can deliver the real mock disconnect.
+          Networking::UserId realUserId = mockUserId;
           return Napi::Number::New(
             info.Env(),
             serverCombined->GetCombinedUserId(kMockServerIdx, realUserId));

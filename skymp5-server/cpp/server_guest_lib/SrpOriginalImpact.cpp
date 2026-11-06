@@ -6,6 +6,7 @@
 #include "SrpActorStats.h"
 #include "SrpOriginalLifecycle.h"
 #include "SrpOriginalStats.h"
+#include "SrpTransformationFence.h"
 #include "WorldState.h"
 #include "libespm/espm.h"
 #include <algorithm>
@@ -71,6 +72,7 @@ MpActor& Authenticated(PartOne& server,Networking::UserId user)
   auto* actor=server.serverState.ActorByUser(user);
   Require(actor && actor->GetParent()==&server.worldState,"SRP_IMPACT_AUTHENTICATED_ACTOR_REQUIRED");
   Require(!SrpOriginalLifecycle::Managed(*actor),"SRP_IMPACT_NATIVE_NPC_ATTACK_PRODUCER_REQUIRED");
+  Require(!SrpTransformationFenced(*actor),"SRP_IMPACT_TRANSFORMATION_PENDING");
   return *actor;
 }
 void Active(const MpActor& actor)

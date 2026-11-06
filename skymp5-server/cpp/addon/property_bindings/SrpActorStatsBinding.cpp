@@ -18,6 +18,8 @@ Napi::Value SrpActorStatsBinding::Get(Napi::Env env, ScampServer& server,
   auto result = stats.ToJson();
   result["enabled"] = stats.enabled;
   result["serverAuthoritative"] = true;
+  result["transformationFenceVersion"] = 1;
+  result["raceMenuOpen"] = actor.IsRaceMenuOpen();
   if (const auto* balance = server.GetPartOne()->worldState.GetSrpCreatureBalance(actor)) {
     result["creatureBalance"] = {{"combatLevel", balance->level},
       {"healthCap", balance->healthCap}, {"physicalHitCap", balance->physicalHitCap},
