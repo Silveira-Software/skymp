@@ -31,6 +31,10 @@ TEST_CASE("Transformation fence preserves native resources and equipment packets
   equipment.data.numChanges = before.equipment.numChanges + 1;
   server.GetActionListener().OnUpdateEquipment(raw, equipment);
   REQUIRE(actor.GetEquipment() == before.equipment);
+  actor.SetPropertyValueDump("private.srpTransformationV1", "{\"schemaVersion\":1,\"fenced\":false,\"restoration\":{}}", false, false);
+  server.GetActionListener().OnUpdateEquipment(raw, equipment);
+  REQUIRE(actor.GetEquipment() == before.equipment);
+  actor.SetPropertyValueDump("private.srpTransformationV1", "{\"schemaVersion\":1,\"fenced\":true}", false, false);
 
   // The blocked hit must not materialize a cold original target as a side effect.
   HitMessage hit; hit.data.aggressor = 0x14; hit.data.target = 0x10ebaf;
@@ -55,10 +59,16 @@ TEST_CASE("Unknown transformation receipts fail closed and ordinary actors remai
   server.CreateActor(id, {0, 0, 0}, 0, 0x3c, 813);
   auto& actor = server.worldState.GetFormAt<MpActor>(id);
   REQUIRE_FALSE(SrpTransformationFenced(actor));
+  REQUIRE(SrpTransformationCanChangeCharacter(actor));
   for (const auto* value : {"null", "{}", "{\"schemaVersion\":2,\"fenced\":false}",
                             "{\"schemaVersion\":1,\"fenced\":1}", "{\"schemaVersion\":\"1\",\"fenced\":false}"}) {
     actor.SetPropertyValueDump("private.srpTransformationV1", value, false, false);
     REQUIRE(SrpTransformationFenced(actor));
+    REQUIRE_FALSE(SrpTransformationCanChangeCharacter(actor));
   }
+  actor.SetPropertyValueDump("private.srpTransformationV1", "{\"schemaVersion\":1,\"fenced\":false,\"restoration\":{}}", false, false);
+  REQUIRE_FALSE(SrpTransformationCanChangeCharacter(actor));
+  actor.SetPropertyValueDump("private.srpTransformationV1", "{\"schemaVersion\":1,\"fenced\":false,\"restoration\":null}", false, false);
+  REQUIRE(SrpTransformationCanChangeCharacter(actor));
   server.DestroyActor(id);
 }

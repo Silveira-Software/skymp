@@ -13,3 +13,12 @@ inline bool SrpTransformationFenced(const MpActor& actor)
   if (!it->contains("fenced") || !it->at("fenced").is_boolean()) return true;
   return it->at("fenced").get<bool>();
 }
+
+inline bool SrpTransformationCanChangeCharacter(const MpActor& actor)
+{
+  const auto& fields = actor.GetDynamicFields().GetAsJson();
+  const auto it = fields.find("private.srpTransformationV1");
+  if (it == fields.end()) return true;
+  if (SrpTransformationFenced(actor)) return false;
+  return it->contains("restoration") && it->at("restoration").is_null();
+}

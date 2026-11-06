@@ -249,7 +249,9 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     return;
   }
 
-  if (SrpTransformationFenced(*actor)) return;
+  // Beast races unequip local armor during the race switch. Keep the canonical
+  // equipment while the restoration envelope exists, including after ACK.
+  if (!SrpTransformationCanChangeCharacter(*actor)) return;
 
   bool isAllowed = true;
   const auto actorFormId = actor->GetFormId();

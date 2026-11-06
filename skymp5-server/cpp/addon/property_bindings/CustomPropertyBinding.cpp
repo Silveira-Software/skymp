@@ -1,5 +1,6 @@
 #include "CustomPropertyBinding.h"
 #include "NapiHelper.h"
+#include "SrpTransformationFence.h"
 
 namespace {
 auto EnsurePropertyExists(const GamemodeApi::State& state,
@@ -62,6 +63,13 @@ void CustomPropertyBinding::Set(Napi::Env env, ScampServer& scampServer,
   auto& state = scampServer.GetGamemodeApiState();
 
   auto newValueDump = NapiHelper::Stringify(env, newValue);
+
+  if (propertyName == "srpActiveCharacterId" &&
+      newValueDump != refr.GetDynamicFields().GetValueDump(propertyName)) {
+    const auto* actor = refr.AsActor();
+    if (actor && !SrpTransformationCanChangeCharacter(*actor))
+      throw std::runtime_error("SRP_TRANSFORMATION_CHARACTER_SWITCH_REQUIRES_HUMAN");
+  }
 
   if (isPrivate) {
     if (isPrivateIndexed) {
