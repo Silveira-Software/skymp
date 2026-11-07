@@ -1,6 +1,7 @@
 #include "ServerState.h"
 
 #include <algorithm>
+#include <sodium.h>
 
 #include <spdlog/spdlog.h>
 
@@ -16,6 +17,11 @@ void ServerState::Connect(Networking::UserId userId, const std::string& guid)
 
   userInfo[userId] = std::make_unique<UserInfo>();
   userInfo[userId]->guid = guid;
+  unsigned char incarnation[32];
+  randombytes_buf(incarnation, sizeof(incarnation));
+  char encoded[sizeof(incarnation) * 2 + 1];
+  sodium_bin2hex(encoded, sizeof(encoded), incarnation, sizeof(incarnation));
+  userInfo[userId]->sessionIncarnation = encoded;
 
   spdlog::info("ServerState::Connect: assigning guid for userId={}: guid={}",
                userId, guid);
@@ -62,6 +68,13 @@ const std::string& ServerState::UserGuid(Networking::UserId userId)
   }
 
   return userInfo[userId]->guid;
+}
+
+const std::string& ServerState::SessionIncarnation(Networking::UserId userId) const
+{
+  static const std::string empty;
+  return userId < userInfo.size() && userInfo[userId]
+    ? userInfo[userId]->sessionIncarnation : empty;
 }
 
 Networking::UserId ServerState::UserByActor(MpActor* actor)

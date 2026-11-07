@@ -51,6 +51,9 @@ struct UserInfo
   std::vector<std::vector<DeferredMessage>> deferredChannels;
 
   std::string guid;
+  // Fresh server-issued transport incarnation, including reconnects with the
+  // same GUID/user slot. Never supplied by the client or reused after restart.
+  std::string sessionIncarnation;
 };
 
 class ServerState
@@ -72,6 +75,7 @@ public:
   bool IsConnected(Networking::UserId userId) const;
   MpActor* ActorByUser(Networking::UserId userId);
   const std::string& UserGuid(Networking::UserId userId);
+  const std::string& SessionIncarnation(Networking::UserId userId) const;
   Networking::UserId UserByActor(MpActor* actor);
   void EnsureUserExists(Networking::UserId userId);
 };

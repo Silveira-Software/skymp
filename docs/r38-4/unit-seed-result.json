@@ -1,0 +1,20 @@
+{
+  "status": "PASS",
+  "exitCode": 0,
+  "seed": 3286815900,
+  "cases": {
+    "successes": "374",
+    "failures": "0",
+    "expectedFailures": "0",
+    "skips": "0"
+  },
+  "assertions": {
+    "successes": "511974",
+    "failures": "0",
+    "expectedFailures": "0",
+    "skips": "0"
+  },
+  "unitSha256": "eb8e401a5f4d9d8149d50316977c978868c8ff60ead1ebb6d8fd0543ca574643",
+  "remoteEvidence": "/opt/skymp/candidates/r38-4-operation-20261029/unit-seed-1793322551832983669",
+  "productionWritten": false
+}

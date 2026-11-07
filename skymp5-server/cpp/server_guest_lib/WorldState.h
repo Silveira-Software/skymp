@@ -7,6 +7,8 @@
 #include "MpForm.h"
 #include "MpObjectReference.h"
 #include "NiPoint3.h"
+#include "SrpCollision.h"
+#include "SrpOriginalImpact.h"
 #include "PartOneListener.h"
 #include "condition_functions/ConditionFunctionMap.h"
 #include "libespm/Loader.h"
@@ -91,6 +93,40 @@ public:
   // none) and whether the database driver already stored that copy.
   uint64_t GetChangeFormGeneration(uint32_t formId) const;
   bool IsChangeFormSaved(uint32_t formId, uint64_t generation) const;
+  // Read existing original metadata, including cold database images, without
+  // loading an actor. ACK bookkeeping is reconstructed from persisted images.
+  std::vector<nlohmann::json> GetSrpOriginalEncounterImages();
+  void RetainOriginalForUnload(MpObjectReference& actor);
+  void ConfigureSrpNpcAdmission(const nlohmann::json& config);
+  struct CreatureBalance
+  {
+    uint16_t level;
+    float healthCap;
+    float physicalHitCap;
+    float magicHitCap;
+  };
+  void ConfigureSrpCreatureBalance(const nlohmann::json& config);
+  const CreatureBalance* GetSrpCreatureBalance(const MpActor& actor) const;
+  nlohmann::json InspectSrpNpcAdmission() const;
+  bool IsSrpOriginalControlled(uint32_t formId);
+  void CheckSrpNpcMovement(uint32_t formId,const FormDesc& location,const NiPoint3& pos);
+  std::vector<uint32_t> GetLoadedActors(uint32_t modIndex) const;
+  void ReleaseSrpNpcAdmission(uint32_t formId);
+  void RetainSrpNpcTombstone(const MpChangeForm& image);
+  bool FinalizeSrpNpcRetirement(uint32_t formId);
+  void TickSrpNpcRetirements();
+  void ConfigureSrpNpcLiveUnload(const nlohmann::json& config);
+  void TickSrpNpcLiveUnload();
+  bool CanSrpNpcHost(const MpObjectReference& remote, const MpActor& host) const;
+  bool IsSrpNpcSuspending(uint32_t formId) const;
+  void NotifySrpNpcConnection(uint32_t userId, bool connected);
+  void InstallSrpCollisionScene(std::shared_ptr<const SrpCollision::Scene> scene,
+                                const nlohmann::json& config = {});
+  std::shared_ptr<const SrpCollision::Scene> GetSrpCollisionScene() const;
+  std::optional<std::array<double,12>> CaptureSrpActorCollisionPose(const MpActor& actor);
+  std::optional<SrpOriginalImpact::Frame> CaptureSrpOriginalImpactFrame(
+    const MpActor& attacker, const MpActor& target);
+
   bool HasEspmFile(std::string_view filename) const noexcept;
 
   template <typename T>
@@ -200,14 +236,21 @@ public:
     if (outDestroyedForm)
       *outDestroyedForm = std::dynamic_pointer_cast<FormType>(it->second);
 
-    it->second->BeforeDestroy();
+    if (IsSrpNpcSuspending(formId))
+      throw std::runtime_error("SRP_NPC_UNLOAD_REQUIRES_DURABLE_COMPLETION");
+
+    // The retirement path already ran BeforeDestroy while retaining the actor
+    // and its index until the resulting generation reached durable storage.
+    if (!FinalizeSrpNpcRetirement(formId))
+      it->second->BeforeDestroy();
 
     if (auto formIndex = dynamic_cast<FormIndex*>(form.get())) {
-      if (formIdxManager && !formIdxManager->DestroyID(formIndex->idx))
+      if (formIdxManager && !ReleaseSrpNpcIndex(formIndex->idx))
         throw std::runtime_error("DestroyID failed");
     }
 
     forms.erase(it);
+    ReleaseSrpNpcAdmission(formId);
   };
 
   espm::Loader& GetEspm() const;
@@ -278,6 +321,12 @@ public:
   std::vector<GameModeEvent*> currentGameModeEventsStack;
 
 private:
+  bool ReleaseSrpNpcIndex(uint32_t idx);
+  bool SrpNpcHasInterest(const MpActor& actor) const;
+  bool SrpNpcCanSuspend(const MpActor& actor);
+  void ReleaseSrpNpcHost(uint32_t formId);
+  std::string SrpNpcRegion(const FormDesc& location,const NiPoint3& pos) const;
+  std::string SrpNpcSource(uint32_t formId,uint32_t baseId) const;
   bool AttachEspmRecord(const espm::CombineBrowser& br,
                         const espm::RecordHeader* record,
                         const espm::IdMapping& mapping,

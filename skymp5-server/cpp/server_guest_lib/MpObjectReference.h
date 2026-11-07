@@ -110,6 +110,7 @@ public:
   bool HasPrimitive() const;
   FormCallbacks GetCallbacks() const;
   bool HasScript(const char* name) const;
+  bool HasSrpUnloadDependencies() const;
   bool IsActivationBlocked() const;
   bool GetTeleportFlag() const;
 
