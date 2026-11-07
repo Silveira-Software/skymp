@@ -1,0 +1,68 @@
+name: SRP client isolation candidate
+on:
+  pull_request:
+    paths:
+      - skyrim-platform/src/platform_se/skyrim_platform/FlowManager.*
+      - skyrim-platform/src/platform_se/skyrim_platform/main.cpp
+      - skyrim-platform/tests/FlowManagerWindowsTests.cpp
+      - tools/test-flow-manager-windows.py
+      - .github/workflows/srp-client-isolation.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: srp-client-isolation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  candidate:
+    runs-on: windows-2022
+    timeout-minutes: 100
+    env:
+      VCPKG_MAX_CONCURRENCY: 4
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      VCPKG_DISABLE_METRICS: 1
+      VCPKG_BINARY_SOURCES: default
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install build-only Yarn
+        run: npm install --global yarn@1.22.22
+      - name: Test actual Windows process isolation
+        run: python tools/test-flow-manager-windows.py "${{ runner.temp }}/srp-process-test"
+      - name: Bootstrap pinned official vcpkg
+        run: ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+      - name: Configure private client candidate without game installation
+        shell: pwsh
+        env:
+          CI: false
+        run: >-
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          -DBUILD_CLIENT=OFF -DBUILD_SKYRIM_PLATFORM=ON -DBUILD_FRONT=OFF
+          -DBUILD_GAMEMODE=OFF -DBUILD_SCRIPTS=OFF -DBUILD_UNIT_TESTS=OFF
+          -DINSTALL_CLIENT_DIST=OFF -DDOWNLOAD_SKYRIM_DATA=OFF -DSKYRIM_DIR=OFF
+      - name: Compile platform DLLs only
+        run: cmake --build build --config Release --target skyrim_platform skyrim_platform_entry SkyrimPlatformCEF --parallel 4
+      - name: Hash compiled candidate
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem build -Recurse -File | Where-Object { $_.Name -in 'SkyrimPlatformImpl.dll','SkyrimPlatform.dll','SkyrimPlatformCEF.exe.hidden' }
+          if ($files.Count -ne 3) { throw 'Exactly the three platform outputs are required' }
+          $files | ForEach-Object { [pscustomobject]@{path=$_.FullName.Substring($pwd.Path.Length+1);sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$_.Length;commit='${{ github.event.pull_request.head.sha || github.sha }}'} } | ConvertTo-Json | Set-Content candidate-sha256.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: srp-process-isolation-proof
+          path: ${{ runner.temp }}/srp-process-test/result.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: srp-platform-private-candidate
+          path: |
+            candidate-sha256.json
+            build/**/SkyrimPlatformImpl.dll
+            build/**/SkyrimPlatform.dll
+            build/**/SkyrimPlatformCEF.exe.hidden
