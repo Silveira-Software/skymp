@@ -208,6 +208,22 @@ Vec3 Transform(const std::array<double,12>& matrix,Vec3 v)
     matrix[4]*v.x+matrix[5]*v.y+matrix[6]*v.z+matrix[7],
     matrix[8]*v.x+matrix[9]*v.y+matrix[10]*v.z+matrix[11]};
 }
+Aabb TransformBounds(const Aabb& source, const std::array<double, 12>& matrix)
+{
+  const auto infinity = std::numeric_limits<double>::infinity();
+  Aabb bounds{{infinity, infinity, infinity}, {-infinity, -infinity, -infinity}};
+  for (double x : {source.min.x, source.max.x})
+    for (double y : {source.min.y, source.max.y})
+      for (double z : {source.min.z, source.max.z})
+        Include(bounds, Transform(matrix, {x, y, z}));
+  bounds.min = {std::nextafter(bounds.min.x, -infinity),
+                std::nextafter(bounds.min.y, -infinity),
+                std::nextafter(bounds.min.z, -infinity)};
+  bounds.max = {std::nextafter(bounds.max.x, infinity),
+                std::nextafter(bounds.max.y, infinity),
+                std::nextafter(bounds.max.z, infinity)};
+  return bounds;
+}
 std::vector<Triangle> ReadMesh(const nlohmann::json& geometry,
   const std::array<double,12>& matrix,size_t& count,bool allowEmpty=false)
 {
@@ -381,8 +397,22 @@ std::shared_ptr<const Scene> Scene::Load(const nlohmann::json& document,
       Require(!base.empty() && !race.empty() && actorKeys.emplace(base,race,sex).second &&
         shape.at("policy")=="SERVER_MESH_PROXY_V1" &&
         assetNames.count(shape.at("asset").get<std::string>()),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
-      out->actorShapes.push_back({base,race,ReadMesh(shape,ReadTransform(shape.at("localTransform")),count),
-        controller?std::optional<bool>(sex==1):std::nullopt});
+      const auto transform = ReadTransform(shape.at("localTransform"));
+      auto triangles = ReadMesh(shape, transform, count);
+      std::optional<Aabb> blockingBounds;
+      if (shape.contains("blockingBounds")) {
+        Require(controller, "SRP_COLLISION_ACTOR_BLOCKING_BOUNDS_INVALID");
+        blockingBounds = TransformBounds(ReadBox(shape.at("blockingBounds")), transform);
+        Require(Valid(*blockingBounds), "SRP_COLLISION_ACTOR_BLOCKING_BOUNDS_INVALID");
+        for (const auto& triangle : triangles)
+          for (const auto& vertex : {triangle.a, triangle.b, triangle.c})
+            Require(vertex.x >= blockingBounds->min.x && vertex.x <= blockingBounds->max.x &&
+                    vertex.y >= blockingBounds->min.y && vertex.y <= blockingBounds->max.y &&
+                    vertex.z >= blockingBounds->min.z && vertex.z <= blockingBounds->max.z,
+                    "SRP_COLLISION_ACTOR_BLOCKING_BOUNDS_INVALID");
+      }
+      out->actorShapes.push_back({base, race, std::move(triangles),
+        controller ? std::optional<bool>(sex == 1) : std::nullopt, blockingBounds});
     }
     for(const auto& key:legacyKeys)
       Require(!sexedKeys.count(key),"SRP_COLLISION_ACTOR_SHAPES_INVALID");
@@ -422,6 +452,21 @@ std::optional<std::vector<Triangle>> Scene::ActorTriangles(const std::string& ba
     if(!Valid(t))return {};triangles.push_back(t);
   }
   return triangles;
+}
+
+std::optional<Aabb> Scene::ActorBlockingBounds(const std::string& baseDesc,
+  const std::string& raceDesc,const std::array<double,12>& serverPose,
+  std::optional<bool> female) const
+{
+  if(!ValidTransform(serverPose))return {};
+  const auto found=std::find_if(actorShapes.begin(),actorShapes.end(),[&](const ActorShape& shape){
+    return shape.baseDesc==baseDesc && shape.raceDesc==raceDesc &&
+      (!shape.female.has_value() || shape.female==female);
+  });
+  if(found==actorShapes.end() || !found->blockingBounds)return {};
+  const auto bounds = TransformBounds(*found->blockingBounds, serverPose);
+  if(!Valid(bounds))return {};
+  return bounds;
 }
 
 Result Scene::Trace(const Query& query) const

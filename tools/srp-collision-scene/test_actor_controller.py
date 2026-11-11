@@ -40,6 +40,11 @@ class ControllerTest(unittest.TestCase):
         self.assertAlmostEqual(max(p[2] for p in points), 6*havok.SCALE, delta=eps)
         self.assertEqual(sources[0]['filterLayer'], 30)
         self.assertGreater(len(triangles), 500)
+        envelope = sources[0]['blockingBounds']
+        for axis, (lo, hi) in enumerate(((0, 2), (1, 3), (2, 6))):
+            self.assertAlmostEqual(envelope['min'][axis], lo * havok.SCALE, delta=eps)
+            self.assertAlmostEqual(envelope['max'][axis], hi * havok.SCALE, delta=eps)
+            self.assertTrue(all(envelope['min'][axis] <= p[axis] <= envelope['max'][axis] for p in points))
 
     def test_surface_faces_never_leave_physical_capsule(self):
         rng = random.Random(42100)

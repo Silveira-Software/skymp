@@ -1,6 +1,7 @@
 #include "SrpNpcAdmission.h"
 #include "ActionListener.h"
 #include "HitMessage.h"
+#include "SpellCastMessage.h"
 #include "ActivateMessage.h"
 #include "TakeItemMessage.h"
 #include "SrpOriginalLifecycle.h"
@@ -350,4 +351,40 @@ TEST_CASE("Original hit packets cannot materialize cold targets or unhosted aggr
   REQUIRE_FALSE(w.LookupFormByIdNoLoad(0x10ebaf));
   REQUIRE(MpChangeForm::ToJson(player.GetChangeForm())==before);
   REQUIRE(w.GetChangeFormGeneration(0x10ebaf)==0);
+}
+
+TEST_CASE("Original spell cast packets cannot load cold actors through hosting or target lookup",
+          "[srp-original-combat][espm]")
+{
+  auto& server = GetPartOne();
+  auto& world = server.worldState;
+  world.ConfigureSrpNpcAdmission(Config());
+  DoConnect(server, 0);
+  server.CreateActor(0xff000001, {0, 0, 0}, 0, 0x3c, 9101);
+  server.SetUserActor(0, 0xff000001);
+  auto& player = world.GetFormAt<MpActor>(0xff000001);
+  Equipment equipment;
+  equipment.leftSpell = 0x12fd0;
+  player.SetEquipment(equipment);
+  const auto before = MpChangeForm::ToJson(player.GetChangeForm());
+  world.npcEnabled = true;
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(0x10ebaf));
+  SpellCastMessage message;
+  message.data.caster = 0x10ebaf;
+  message.data.target = 0x14;
+  message.data.spell = 0x12fd0;
+  RawMessageData raw;
+  raw.userId = 0;
+  REQUIRE_NOTHROW(server.GetActionListener().OnSpellCast(raw, message));
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(0x10ebaf));
+  // A stale hosting entry still cannot create its missing caster.
+  world.hosters[0x10ebaf] = player.GetFormId();
+  REQUIRE_NOTHROW(server.GetActionListener().OnSpellCast(raw, message));
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(0x10ebaf));
+  message.data.caster = 0x14;
+  message.data.target = 0x10ebaf;
+  REQUIRE_NOTHROW(server.GetActionListener().OnSpellCast(raw, message));
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(0x10ebaf));
+  REQUIRE(world.GetChangeFormGeneration(0x10ebaf) == 0);
+  REQUIRE(MpChangeForm::ToJson(player.GetChangeForm()) == before);
 }

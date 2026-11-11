@@ -68,6 +68,13 @@ public:
     const std::string& baseDesc, const std::string& raceDesc,
     const std::array<double,12>& serverPose,
     std::optional<bool> female = std::nullopt) const;
+  // Outer controller envelope, independently produced from physical shape
+  // radii/support vertices. An inscribed target mesh alone cannot prove LOS
+  // clear around a third actor. Legacy scenes without it stay unsupported.
+  std::optional<Aabb> ActorBlockingBounds(
+    const std::string& baseDesc, const std::string& raceDesc,
+    const std::array<double,12>& serverPose,
+    std::optional<bool> female = std::nullopt) const;
 
 private:
   Scene() = default;
@@ -92,6 +99,7 @@ private:
     std::string baseDesc, raceDesc;
     std::vector<Triangle> triangles;
     std::optional<bool> female;
+    std::optional<Aabb> blockingBounds;
   };
   std::string id;
   nlohmann::json bindings;

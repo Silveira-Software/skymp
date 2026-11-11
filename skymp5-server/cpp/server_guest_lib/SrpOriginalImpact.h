@@ -21,6 +21,9 @@ struct Frame {
   NiPoint3 attackerPosition, attackerAngle, targetPosition, targetAngle;
   std::shared_ptr<const SrpCollision::Scene> scene;
   SrpCollision::DynamicSnapshot dynamics;
+  // Full sorted server actor identities/generations/poses and their meshes.
+  // Do not reduce this binding to the target generation or a 64-bit counter.
+  std::string dynamicStateDigest;
   // Independently pinned, transformed target mesh, never OBND-derived proof.
   // Missing/unsupported pose representation cannot authorize an impact.
   std::vector<SrpCollision::Triangle> targetTriangles;

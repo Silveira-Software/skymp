@@ -1261,7 +1261,6 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     caster = myActor;
     spellCastData.caster = caster->GetFormId();
   } else {
-    caster = &partOne.worldState.GetFormAt<MpActor>(spellCastData.caster);
     const auto it = partOne.worldState.hosters.find(spellCastData.caster);
 
     if (it == partOne.worldState.hosters.end() ||
@@ -1269,9 +1268,12 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
       spdlog::error(
         "SendToNeighbours - No permission to send OnSpellCast with "
         "caster actor {:x}",
-        caster->GetFormId());
+        spellCastData.caster);
       return;
     }
+    const auto form = partOne.worldState.LookupFormByIdNoLoad(spellCastData.caster);
+    caster = form ? form->AsActor() : nullptr;
+    if (!caster) return;
   }
 
   if (spellCastData.target == 0x14) {
@@ -1280,7 +1282,9 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
 
   const auto observedTarget =
     partOne.worldState.LookupFormByIdNoLoad(spellCastData.target);
-  if (SrpOriginalLifecycle::Managed(*caster) ||
+  if (SrpTransformationFenced(*caster) ||
+      partOne.worldState.IsSrpOriginalControlled(spellCastData.target) ||
+      SrpOriginalLifecycle::Managed(*caster) ||
       (observedTarget && observedTarget->AsActor() &&
        SrpOriginalLifecycle::Managed(*observedTarget->AsActor())))
     return;

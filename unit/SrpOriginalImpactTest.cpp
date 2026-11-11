@@ -94,7 +94,7 @@ nlohmann::json ActorShape(const std::string& baseDesc, const std::string& raceDe
 std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
   uint32_t cellId, const std::string& baseDesc, const std::string& raceDesc,
   const NiPoint3& center, const std::string& attackerBase,
-  const std::string& attackerRace)
+  const std::string& attackerRace, bool controllerEnvelope = false)
 {
   const std::string dummyHash(64, 'a');
   // The audited coverage box must actually contain the real fixture position.
@@ -104,6 +104,12 @@ std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
   const double x = center.x, y = center.y, z = center.z;
   nlohmann::json shapes = nlohmann::json::array(
     {ActorShape(baseDesc, raceDesc), ActorShape(attackerBase, attackerRace)});
+  if (controllerEnvelope) {
+    auto& shape = shapes.at(1);
+    shape["sex"] = 0;
+    shape["representation"] = "havok-controller-inscribed-v1";
+    shape["blockingBounds"] = {{"min", {-41, -41, -1}}, {"max", {41, 41, 129}}};
+  }
   nlohmann::json doc = {
     {"schemaVersion", 1},
     {"units", "skyrim-world"},
@@ -359,6 +365,71 @@ TEST_CASE("Impact refuses a dynamic snapshot the audit does not cover", "[srp-or
   );
 }
 
+TEST_CASE("Original impact binds third actor envelopes and refuses stale or incomplete LOS",
+          "[srp-original-impact]")
+{
+  auto& server = GetPartOne();
+  AttachStorage(server);
+  auto& cow = SetupCow(server);
+  auto& player = SetupPlayer(server, cow);
+  Isolate(server, cow, player);
+  auto& world = server.worldState;
+  const auto cell = cow.GetCellOrWorld().ToFormId(world.espmFiles);
+  const auto descriptor = [&](uint32_t id) {
+    return FormDesc::FromFormId(id, world.espmFiles).ToString();
+  };
+  const auto install = [&](bool withBounds, const nlohmann::json& audit) {
+    world.InstallSrpCollisionScene(CreateSyntheticScene(cell, descriptor(cow.GetBaseId()),
+      descriptor(cow.GetRaceId()), cow.GetPos(), descriptor(player.GetBaseId()),
+      descriptor(player.GetRaceId()), withBounds), audit);
+  };
+  auto audit = AuditConfig(cell, true);
+  const uint32_t bystanderId = 0xff000092;
+  auto blockedPosition = cow.GetPos();
+  blockedPosition.y -= 30;
+  server.CreateActor(bystanderId, blockedPosition, 0, cell, 9192);
+  auto& bystander = world.GetFormAt<MpActor>(bystanderId);
+  install(false, audit);
+  REQUIRE_FALSE(world.CaptureSrpOriginalImpactFrame(player, cow).has_value());
+  install(true, audit);
+  const auto blocked = world.CaptureSrpOriginalImpactFrame(player, cow);
+  REQUIRE(blocked.has_value());
+  REQUIRE(blocked->dynamics.unresolvedBlockers.size() == 1);
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(server, testUserId, cowId, "bystander-blocks"),
+                      "SRP_IMPACT_SERVER_COLLISION_NOT_CLEAR");
+
+  auto clearPosition = blockedPosition;
+  clearPosition.x += 150;
+  bystander.SetPos(clearPosition);
+  const auto clear = world.CaptureSrpOriginalImpactFrame(player, cow);
+  REQUIRE(clear.has_value());
+  REQUIRE(clear->dynamicStateDigest != blocked->dynamicStateDigest);
+  const auto issued = SrpOriginalImpact::Begin(server, testUserId, cowId, "bystander-clear");
+  WaitForSaved(server, player);
+  // The move is outside the attack segment but still invalidates the snapshot.
+  clearPosition.x += 5;
+  bystander.SetPos(clearPosition);
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(server, testUserId, issued.at("operationId").get<std::string>()),
+                      "SRP_IMPACT_FRAME_CHANGED");
+  const auto health = cow.GetActorValues().healthPercentage;
+  REQUIRE(health > 0.f);
+  const auto beforeTransition = bystander.GetChangeForm();
+  bystander.SetPropertyValueDump("private.srpTransformationV1",
+    R"({"schemaVersion":1,"fenced":true})", false, false);
+  REQUIRE_FALSE(world.CaptureSrpOriginalImpactFrame(player, cow).has_value());
+  bystander.ApplyChangeForm(beforeTransition);
+  REQUIRE(world.CaptureSrpOriginalImpactFrame(player, cow).has_value());
+  audit["physicalBaselineVerified"] = true;
+  audit["dynamicAudit"]["untrackedPhysics"] = nlohmann::json::array({0x7546f});
+  install(true, audit);
+  REQUIRE_FALSE(world.CaptureSrpOriginalImpactFrame(player, cow).has_value());
+  REQUIRE(cow.GetActorValues().healthPercentage == health);
+  server.DestroyActor(bystanderId);
+  world.InstallSrpCollisionScene(nullptr);
+  server.DestroyActor(playerId);
+  server.serverState.Disconnect(testUserId);
+}
+
 TEST_CASE("Impact refuses an attacker whose collision proxy is unknown", "[srp-original-impact]")
 {
   auto& w = GetPartOne();
@@ -459,7 +530,7 @@ TEST_CASE("Impact serialises two attackers without double damage", "[srp-origina
   const auto playerBase = FormDesc::FromFormId(player.GetBaseId(), w.worldState.espmFiles).ToString();
   const auto playerRace = FormDesc::FromFormId(player.GetRaceId(), w.worldState.espmFiles).ToString();
   auto scene = CreateSyntheticScene(cellId, baseDesc, raceDesc, cow.GetPos(),
-                                    playerBase, playerRace);
+                                    playerBase, playerRace, true);
   w.worldState.InstallSrpCollisionScene(scene, AuditConfig(cellId, true));
 
   WARN("STEP 0 gens a1=" << gen1() << " a2=" << gen2() << " target=" << genT());
@@ -599,4 +670,81 @@ TEST_CASE("Lethal impact records exactly one authoritative death", "[srp-origina
   REQUIRE(player.GetInventory().ToJson() == playerInventory);
   REQUIRE_THROWS_WITH(cow.TakeItem(player, Inventory::Entry(15, 1)),
     "SRP_ORIGINAL_LOOT_LIFECYCLE_NOT_APPROVED");
+}
+
+TEST_CASE("Cancel completes a saved lethal request before acknowledging its receipt",
+          "[srp-original-impact]")
+{
+  auto& server = GetPartOne();
+  AttachStorage(server);
+  auto& cow = SetupCow(server);
+  auto& player = SetupPlayer(server, cow);
+  Isolate(server, cow, player);
+  auto& world = server.worldState;
+  const auto descriptor = [&](uint32_t id) {
+    return FormDesc::FromFormId(id, world.espmFiles).ToString();
+  };
+  const auto cell = cow.GetCellOrWorld().ToFormId(world.espmFiles);
+  world.InstallSrpCollisionScene(CreateSyntheticScene(cell, descriptor(cow.GetBaseId()),
+    descriptor(cow.GetRaceId()), cow.GetPos(), descriptor(player.GetBaseId()),
+    descriptor(player.GetRaceId())), AuditConfig(cell, true));
+  auto health = cow.GetActorValues();
+  health.healthPercentage = .02f;
+  cow.SetPercentages(health, nullptr);
+  WaitForSaved(server, cow);
+  const auto alive = cow.GetChangeForm();
+  const auto issued = SrpOriginalImpact::Begin(server, testUserId, cowId, "cancel-durable-death");
+  const auto operationId = issued.at("operationId").get<std::string>();
+  WaitForSaved(server, player);
+  const auto applied = SrpOriginalImpact::Apply(server, testUserId, operationId);
+  REQUIRE(applied.at("lethal").get<bool>());
+  const auto complete = cow.GetChangeForm().dynamicFields.GetAsJson();
+
+  // Reconstruct the exact durable boundary before Kill's corpse transaction.
+  // The hit receipt and DYING request exist, while health/drops remain original.
+  auto interrupted = alive;
+  auto fields = interrupted.dynamicFields.GetAsJson();
+  fields[SrpOriginalImpact::kProperty] = complete.at(SrpOriginalImpact::kProperty);
+  auto lifecycle = complete.at("private.srpOriginalLifecycleV1");
+  auto pending = lifecycle.at("death");
+  pending.erase("observedAtMs");
+  pending["requestedAtMs"] = applied.at("targetReceipt").at("appliedAtMs");
+  lifecycle["state"] = "DYING";
+  lifecycle["pendingDeath"] = pending;
+  lifecycle.erase("death");
+  lifecycle.erase("rewards");
+  lifecycle.erase("epochs");
+  fields["private.srpOriginalLifecycleV1"] = lifecycle;
+  interrupted.dynamicFields = DynamicFields::FromJson(fields);
+  cow.ApplyChangeForm(interrupted);
+  WaitForSaved(server, cow);
+  REQUIRE_FALSE(cow.IsDead());
+  REQUIRE(SrpOriginalLifecycle::AwaitingCorpse(cow));
+
+  auto conflicting = interrupted;
+  auto conflictingFields = fields;
+  conflictingFields["private.srpOriginalLifecycleV1"]["pendingDeath"]["operationId"] = "foreign-death";
+  conflicting.dynamicFields = DynamicFields::FromJson(conflictingFields);
+  cow.ApplyChangeForm(conflicting);
+  WaitForSaved(server, cow);
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Cancel(server, testUserId, operationId),
+                      "SRP_IMPACT_DEATH_RECEIPT_CONFLICT");
+  REQUIRE_FALSE(cow.IsDead());
+  REQUIRE(cow.GetInventory().ToJson() == alive.inv.ToJson());
+  cow.ApplyChangeForm(interrupted);
+  WaitForSaved(server, cow);
+
+  const auto recovering = SrpOriginalImpact::Cancel(server, testUserId, operationId);
+  REQUIRE(recovering.at("state").get<std::string>() == "TARGET_SAVE_PENDING");
+  REQUIRE(cow.IsDead());
+  REQUIRE_FALSE(SrpOriginalLifecycle::AwaitingCorpse(cow));
+  WaitForSaved(server, cow);
+  const auto acknowledged = SrpOriginalImpact::Cancel(server, testUserId, operationId);
+  REQUIRE(acknowledged.at("state").get<std::string>() == "APPLIED");
+  const auto inventory = cow.GetInventory().ToJson();
+  const auto death = SrpOriginalLifecycle::Inspect(cow).at("lifecycle");
+  REQUIRE(death.at("death").at("operationId") == operationId);
+  SrpOriginalImpact::Cancel(server, testUserId, operationId);
+  REQUIRE(cow.GetInventory().ToJson() == inventory);
+  REQUIRE(SrpOriginalLifecycle::Inspect(cow).at("lifecycle") == death);
 }

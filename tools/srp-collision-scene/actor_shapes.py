@@ -188,7 +188,10 @@ def produce_actor_shapes(manifest_path, order, assets, assets_root, collision_tr
         if controllers:
             shape.update(sex=int(female), representation='havok-controller-inscribed-v1',
                          localTransform=[scale,0,0,0,0,scale,0,0,0,0,scale,0],
-                         vertices=[list(point) for point in coords])
+                         vertices=[list(point) for point in coords],
+                         blockingBounds={
+                             'min':[min(s['blockingBounds']['min'][k] for s in controller_sources) for k in range(3)],
+                             'max':[max(s['blockingBounds']['max'][k] for s in controller_sources) for k in range(3)]})
         shapes.append(shape)
         used[canonical] = expected.lower()
         entry = {'baseDesc': base, 'raceDesc': race, 'asset': canonical,

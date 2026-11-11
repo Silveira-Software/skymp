@@ -220,7 +220,8 @@ Json FrameIdentity(const Frame& frame,double gripHeight)
   Json mesh=Json::array();for(const auto& triangle:frame.targetTriangles)
     mesh.push_back(Json::array({Vector(triangle.a),Vector(triangle.b),Vector(triangle.c)}));
   return {{"revision",frame.revision},{"sceneId",frame.scene->Id()},
-    {"dynamicRevision",frame.dynamics.revision},{"worldOrCell",frame.worldOrCell},
+    {"dynamicRevision",frame.dynamics.revision},{"dynamicStateDigest",frame.dynamicStateDigest},
+    {"worldOrCell",frame.worldOrCell},
     {"movementPolicy",frame.movementPolicy},{"hitRepresentation",frame.hitRepresentation},
     {"attackerPosition",Vector(frame.attackerPosition)},{"attackerAngle",Vector(frame.attackerAngle)},
     {"targetPosition",Vector(frame.targetPosition)},{"targetAngle",Vector(frame.targetAngle)},
@@ -296,6 +297,15 @@ Json Response(const MpActor& actor,const Json& entry,bool duplicate)
 Json Reconcile(MpActor& attacker,MpActor& target,Json ledger,Json entry,const Json& receipt)
 {
   Require(receipt.at("intent")==entry.at("intent"),"SRP_IMPACT_RECEIPT_INTENT_CONFLICT");
+  // Apply and Cancel share recovery of a committed lethal hit. A cancellation
+  // after restart must finish its saved death request before closing the outbox.
+  if(SrpOriginalLifecycle::AwaitingCorpse(target)){
+    const auto pending = SrpOriginalLifecycle::Inspect(target).at("lifecycle").at("pendingDeath");
+    Require(pending.at("operationId")==entry.at("operationId"),
+      "SRP_IMPACT_DEATH_RECEIPT_CONFLICT");
+    target.Kill(&attacker,false);
+    Require(!SrpOriginalLifecycle::AwaitingCorpse(target),"SRP_IMPACT_DEATH_INCOMPLETE");
+  }
   // An image restored from storage has no in-process save generation. Re-save
   // its SAME receipt/health before acknowledging; never repeat the damage.
   if(target.GetParent()->GetChangeFormGeneration(target.GetFormId())==0){
@@ -385,13 +395,6 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
   // A durable target-side receipt always wins over replay/reconnect/stale
   // snapshots. Reconciliation can acknowledge it but cannot damage again.
   if(targetLedger.at("operations").contains(operationId)){
-    // A previous attempt may have left the death request durable while the corpse
-    // transaction never ran. Finish it before acknowledging, so a replay cannot
-    // return APPLIED over an unfinished death.
-    if(SrpOriginalLifecycle::AwaitingCorpse(target)){
-      target.Kill(&attacker,false);
-      Require(!SrpOriginalLifecycle::AwaitingCorpse(target),"SRP_IMPACT_DEATH_INCOMPLETE");
-    }
     return Reconcile(attacker,target,ledger,entry,targetLedger.at("operations").at(operationId));
   }
   Active(attacker);Active(target);

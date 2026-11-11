@@ -15,6 +15,7 @@
 #include "libespm/ReadUnaligned.h"
 #include "SrpOriginalLifecycle.h"
 #include "SrpOriginalEncounter.h"
+#include "SrpTransformationFence.h"
 #include "gamemode_events/ChangeFormsSavedEvent.h"
 #include "libespm/GroupUtils.h"
 #include "papyrus-vm/Reader.h"
@@ -752,6 +753,48 @@ std::optional<SrpOriginalImpact::Frame> WorldState::CaptureSrpOriginalImpactFram
   dynamics.revision = targetGeneration;
   dynamics.complete = true;
 
+  // Use only actors already present in this simulation. The static audit's
+  // non-actor gate above still applies. A controller's inscribed surface can
+  // prove contact, while only its outer envelope can exclude an obstruction.
+  std::vector<uint32_t> bystanders;
+  for (const auto& [id, form] : forms) {
+    if (id == attacker.GetFormId() || id == target.GetFormId() || !form)
+      continue;
+    const auto* actor = form->AsActor();
+    if (actor && !actor->IsDeleted() && !actor->IsDisabled() &&
+        actor->GetCellOrWorld() == attacker.GetCellOrWorld())
+      bystanders.push_back(id);
+  }
+  std::sort(bystanders.begin(), bystanders.end());
+  auto dynamicState = nlohmann::json::array();
+  const auto vector = [](SrpCollision::Vec3 point) {
+    return nlohmann::json::array({point.x, point.y, point.z});
+  };
+  for (const auto id : bystanders) {
+    const auto& actor = *forms.at(id)->AsActor();
+    // A standing proxy cannot enclose a ragdoll or an unresolved transition.
+    if (actor.IsDead() || actor.IsRespawning() || SrpTransformationFenced(actor)) return {};
+    const auto pose = CaptureSrpActorCollisionPose(actor);
+    if (!pose) return {};
+    const auto base = FormDesc::FromFormId(actor.GetBaseId(), espmFiles).ToString();
+    const auto race = FormDesc::FromFormId(actor.GetRaceId(), espmFiles).ToString();
+    const auto bounds = pImpl->srpCollisionScene->ActorBlockingBounds(base, race, *pose, actor.IsFemale());
+    if (!bounds) return {};
+    dynamics.unresolvedBlockers.push_back(*bounds);
+    const auto& fields = actor.GetDynamicFields().GetAsJson();
+    const auto connection = pImpl->networkSessions.find(actor.GetUserId());
+    // Spending XP or writing another attack outbox does not change collision.
+    // Bind the actual actor/character incarnation and geometry, not every save.
+    const nlohmann::json identity = {
+      {"profileId", actor.GetProfileId()},
+      {"characterId", fields.value("srpActiveCharacterId", nlohmann::json())},
+      {"original", fields.value("private.srpOriginalReferenceV1", nlohmann::json())},
+      {"connectionGeneration", connection == pImpl->networkSessions.end() ? 0 : connection->second}};
+    dynamicState.push_back({{"id", id}, {"base", base}, {"race", race},
+      {"identity", identity}, {"pose", *pose},
+      {"min", vector(bounds->min)}, {"max", vector(bounds->max)}});
+  }
+
   SrpOriginalImpact::Frame frame;
   frame.revision = targetGeneration;
   frame.movementPolicy = "SERVER_BOUNDED_MOVEMENT_V1";
@@ -763,6 +806,7 @@ std::optional<SrpOriginalImpact::Frame> WorldState::CaptureSrpOriginalImpactFram
   frame.targetAngle = targetAngle;
   frame.scene = pImpl->srpCollisionScene;
   frame.dynamics = std::move(dynamics);
+  frame.dynamicStateDigest = SrpCollision::Scene::Digest(dynamicState);
   frame.targetTriangles = std::move(*targetTrianglesOpt);
 
   return frame;

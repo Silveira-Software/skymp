@@ -180,10 +180,17 @@ def read(data):
         kind, raw = blocks[i]
         if kind == 'bhkCapsuleShape':
             a,b,radius=capsule(raw)
+            bounds=([min(a[k],b[k])-radius for k in range(3)],
+                    [max(a[k],b[k])+radius for k in range(3)])
             return inscribed_capsule(tuple(x*havok.SCALE for x in a),
-                tuple(x*havok.SCALE for x in b),radius*havok.SCALE),[i]
+                tuple(x*havok.SCALE for x in b),radius*havok.SCALE),[i],[(
+                    tuple(x*havok.SCALE for x in bounds[0]),
+                    tuple(x*havok.SCALE for x in bounds[1]))]
         if kind == 'bhkConvexVerticesShape':
-            return convex_mesh(raw),[i]
+            vertices,_,margin=havok.convex(raw)
+            return convex_mesh(raw),[i],[(
+                tuple((min(p[k] for p in vertices)-margin)*havok.SCALE for k in range(3)),
+                tuple((max(p[k] for p in vertices)+margin)*havok.SCALE for k in range(3)))]
         if kind == 'bhkMoppBvTreeShape':
             # MOPP is an acceleration tree; the linked child defines geometry.
             if len(raw)<41:
@@ -205,11 +212,11 @@ def read(data):
             filters=struct.unpack_from('<%dI'%count,raw,36+count*4)
             if any(value not in (0,30) for value in filters):
                 raise nif.NifError('controller child filter unsupported')
-            mesh,ids=[],[i]
+            mesh,ids,bounds=[],[i],[]
             for child in struct.unpack_from('<%dI'%count,raw,4):
-                part,proof=read_shape(child,visited+(i,))
-                mesh.extend(part);ids.extend(proof)
-            return mesh,ids
+                part,proof,boxes=read_shape(child,visited+(i,))
+                mesh.extend(part);ids.extend(proof);bounds.extend(boxes)
+            return mesh,ids,bounds
         raise nif.NifError('controller shape unsupported: '+kind)
 
     for i, (name, raw) in enumerate(blocks):
@@ -226,7 +233,7 @@ def read(data):
         if kind != 'bhkSimpleShapePhantom' or len(body) != 100 or body[4] != 30:
             raise nif.NifError('controller body/filter unsupported')
         shape_id = struct.unpack_from('<I', body)[0]
-        mesh,shape_blocks=read_shape(shape_id)
+        mesh,shape_blocks,shape_bounds=read_shape(shape_id)
         values = struct.unpack_from('<16f', body, 36)
         if (not all(math.isfinite(x) for x in values) or
                 any(abs(values[k]) > 1e-6 for k in (3,7,11)) or
@@ -244,10 +251,19 @@ def read(data):
             raise nif.NifError('controller bind/phantom transform mismatch')
         havok.uniform_scale(matrix)
         triangles.extend(tuple(havok.point(matrix, p) for p in tri) for tri in mesh)
+        # The positive hit surface is inscribed. A separate OUTER envelope is
+        # needed to certify that a third actor cannot obstruct the segment.
+        # Transform all corners before taking extrema; rotating only min/max
+        # would lose coverage. nextafter rounds outward, never shrinks a body.
+        corners=[havok.point(matrix,(x,y,z)) for lo,hi in shape_bounds
+                 for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])]
+        blocking_bounds={'min':[math.nextafter(min(p[k] for p in corners),-math.inf) for k in range(3)],
+                         'max':[math.nextafter(max(p[k] for p in corners),math.inf) for k in range(3)]}
         sources.append({'collisionBlock': i, 'targetNode': target,
                         'phantomBlock': body_id, 'shapeBlock': shape_id,
                         'decodedShapeBlocks': shape_blocks,
-                        'filterLayer': 30, 'triangles': len(mesh)})
+                        'filterLayer': 30, 'triangles': len(mesh),
+                        'blockingBounds':blocking_bounds})
     if not sources:
         raise nif.NifError('character controller capsule absent')
     return triangles, sources
