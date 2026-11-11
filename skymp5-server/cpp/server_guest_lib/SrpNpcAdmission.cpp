@@ -107,11 +107,17 @@ void SrpNpcAdmission::Reserve(uint32_t id, const std::string& reference,
   auto source = sources.find(sourcePlugin.empty()
                                ? (id >= 0xff000000 ? std::string() : Plugin(r))
                                : Canonical(sourcePlugin));
-  if (source != sources.end() && !source->second.references.count(r))
+  const auto canonicalBase = Canonical(base);
+  const bool faunaBase = faunaBases.count(canonicalBase);
+  // Controlled dynamic actors require a reviewed NPC_ of the winning plugin.
+  // A base approval cannot authorize any of the plugin's placed ACHRs.
+  const bool approvedSpawn = id >= 0xff000000 && faunaBase &&
+    source != sources.end() && Plugin(canonicalBase) == source->first;
+  if (source != sources.end() &&
+      (id >= 0xff000000 ? !approvedSpawn : !source->second.references.count(r)))
     throw std::runtime_error("SRP_NPC_ADMISSION_REFERENCE_NOT_APPROVED");
-  const auto category = source != sources.end() ? source->second.category
-    : faunaBases.count(Canonical(base))         ? "fauna"
-                                                : "other";
+  const auto category = source != sources.end() && !approvedSpawn
+    ? source->second.category : faunaBase ? "fauna" : "other";
   uint32_t count = 0, zone = 0;
   for (const auto& [_, lease] : leases) {
     count += lease.category == category;

@@ -90,6 +90,48 @@ TEST_CASE("R38.3 winning override source cannot bypass the whitelist through "
   REQUIRE(g.Enabled());
   REQUIRE(g.Inspect().at("total") == 0);
 }
+
+TEST_CASE("Reviewed spawn bases use fauna slots without admitting originals",
+          "[srp-r383][srp-reviewed-spawn]")
+{
+  auto config = Config();
+  config["sources"][0]["category"] = "other";
+  config["faunaBases"] = { "23abe:Skyrim.esm", "23abe:Foreign.esp" };
+  config["limits"]["fauna"] = 1;
+  SrpNpcAdmission gate;
+  gate.Configure(config);
+
+  gate.Reserve(0xff000001, "1", "23abe:Skyrim.esm", "A", false, "Skyrim.esm");
+  REQUIRE(gate.Inspect().at("fauna") == 1);
+  REQUIRE_THROWS_WITH(gate.Reserve(0xff000002, "2", "23abe:Skyrim.esm", "B", false,
+                                   "Skyrim.esm"), "SRP_NPC_ADMISSION_CATEGORY_LIMIT");
+  REQUIRE_THROWS_WITH(gate.Reserve(0xff000002, "2", "23abf:Skyrim.esm", "B", false,
+                                   "Skyrim.esm"), "SRP_NPC_ADMISSION_REFERENCE_NOT_APPROVED");
+  REQUIRE_THROWS_WITH(gate.Reserve(0x10ebae, "10ebae:Skyrim.esm", "23abe:Skyrim.esm", "B", false,
+                                   "Skyrim.esm"), "SRP_NPC_ADMISSION_REFERENCE_NOT_APPROVED");
+  gate.Reserve(0x10ebaf, "10ebaf:Skyrim.esm", "23abe:Skyrim.esm", "B", false, "Skyrim.esm");
+  REQUIRE(gate.Inspect().at("other") == 1);
+  gate.Release(0xff000001);
+  gate.Reserve(0xff000001, "1", "23abe:Skyrim.esm", "A", false, "Skyrim.esm");
+
+  SrpNpcAdmission restarted;
+  restarted.Configure(config);
+  restarted.Reserve(0xff000001, "1", "23abe:Skyrim.esm", "A", false, "Skyrim.esm");
+  REQUIRE(restarted.Inspect().at("fauna") == 1);
+  REQUIRE_THROWS_WITH(restarted.Reserve(0xff000002, "2", "23abe:Foreign.esp", "B", false,
+                                        "Skyrim.esm"), "SRP_NPC_ADMISSION_REFERENCE_NOT_APPROVED");
+}
+
+TEST_CASE("World rejects spawn allowlist entries that are ACHR records",
+          "[srp-r383][srp-reviewed-spawn][espm]")
+{
+  auto& world = GetPartOne().worldState;
+  auto config = Config();
+  config["faunaBases"] = { "10ebaf:Skyrim.esm" };
+  REQUIRE_THROWS_WITH(world.ConfigureSrpNpcAdmission(config),
+                      "SRP_NPC_ADMISSION_BASE_REQUIRED");
+  REQUIRE(world.InspectSrpNpcAdmission().at("enabled") == false);
+}
 TEST_CASE("R38.3 invalid configuration cannot raise administration maxima or "
           "replace active leases",
           "[srp-r383]")

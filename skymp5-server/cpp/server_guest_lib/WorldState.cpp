@@ -414,10 +414,24 @@ void WorldState::ConfigureSrpNpcAdmission(const nlohmann::json& config)
   if (config.is_object())
     for (const auto& desc :
          config.value("faunaBases", nlohmann::json::array())) {
-      auto d = FormDesc::FromString(desc.get<std::string>());
-      auto record = GetEspm().GetBrowser().LookupById(d.ToFormId(espmFiles));
+      const auto base = desc.get<std::string>();
+      const auto id = FormDesc::FromString(base).ToFormId(espmFiles);
+      const auto record = GetEspm().GetBrowser().LookupById(id);
       if (!record.rec || record.rec->GetType() != "NPC_")
         throw std::runtime_error("SRP_NPC_ADMISSION_BASE_REQUIRED");
+      const auto& plugin = espmFiles.at(record.fileIdx);
+      if (!validated.ControlsPlugin(plugin))
+        continue;
+      if (id <= 7 || FormDesc::FromFormId(id, espmFiles).ToString() != base ||
+          base.substr(base.find(':') + 1) != plugin)
+        throw std::runtime_error("SRP_NPC_ADMISSION_SPAWN_BASE_INVALID");
+      const auto npc = reinterpret_cast<const espm::NPC_*>(record.rec);
+      const auto data = npc->GetData(GetEspmCache());
+      espm::ScriptData scripts;
+      npc->GetScriptData(&scripts, GetEspmCache());
+      if (data.isEssential || data.isProtected || data.isUnique ||
+          data.baseTemplate || !scripts.scripts.empty())
+        throw std::runtime_error("SRP_NPC_ADMISSION_SPAWN_BASE_PROTECTED");
     }
   pImpl->npcAdmission.Configure(config);
 }
