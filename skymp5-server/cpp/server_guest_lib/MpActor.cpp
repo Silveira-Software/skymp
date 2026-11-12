@@ -1573,6 +1573,8 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
 {
   if(SrpOriginalLifecycle::Managed(*this))return;
   auto spawnRespawn = SpawnRespawnState(*this);
+  if (spawnRespawn && (IsDeleted() || IsDisabled()))
+    return;
   spdlog::trace("MpActor::RespawnWithDelay {:x} - isRespawning: {}",
                 GetFormId(), pImpl->isRespawning);
 
@@ -1600,10 +1602,16 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
       const auto remaining = spawnRespawn->at("dueAtMs").get<int64_t>() - now;
       time = std::chrono::milliseconds(remaining > 0 ? remaining : 1000);
     }
+    const bool reviewedSpawn = spawnRespawn.has_value();
     worldState->SetTimer(time).Then([worldState, this, formId, shouldTeleport,
                                      respawnTimerIndex,
-                                     respawnTime](Viet::Void) {
-      if (worldState->LookupFormById(formId).get() == this) {
+                                     respawnTime, reviewedSpawn](Viet::Void) {
+      const auto& form = reviewedSpawn
+        ? worldState->LookupFormByIdNoLoad(formId)
+        : worldState->LookupFormById(formId);
+      if (form.get() == this) {
+        if (reviewedSpawn && (IsDeleted() || IsDisabled()))
+          return;
         bool isLatestRespawn = respawnTimerIndex == pImpl->respawnTimerIndex;
         if (isLatestRespawn) {
           const bool durableSpawn = SpawnRespawnState(*this).has_value();

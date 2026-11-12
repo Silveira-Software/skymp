@@ -172,6 +172,36 @@ TEST_CASE("Opted-in fauna reloads its persisted respawn deadline and clears it o
   REQUIRE(loaded.GetDynamicFields().GetAsJson().at("private.srpSpawnRespawnV1").at("dueAtMs")>=state.at("dueAtMs"));
 }
 
+TEST_CASE("A reviewed fauna respawn timer cannot reset disabled or deleted actors",
+          "[srp-reviewed-spawn][srp-spawn-respawn][espm]")
+{
+  auto& server = GetPartOne();
+  auto config = Config();
+  config["sources"] = nlohmann::json::array();
+  server.worldState.ConfigureSrpNpcAdmission(config);
+  const uint32_t ref = 0xff000080;
+  server.worldState.AddForm(std::make_unique<MpActor>(
+    LocationalData{{0,0,0},{0,0,0},FormDesc::Tamriel()},
+    FormCallbacks::DoNothing(),0x23abe), ref);
+  auto retained = server.worldState.LookupFormByIdNoLoad(ref);
+  auto& actor = server.worldState.GetFormAt<MpActor>(ref);
+  actor.SetPropertyValueDump("srpSpawnSource", "\"FAUNA\"", false, false);
+  actor.SetPropertyValueDump("srpMobInstanceId", "\"retiring\"", false, false);
+  actor.SetPropertyValueDump("private.srpSpawnRespawnV1",
+    R"({"schemaVersion":1,"instanceId":"retiring","dueAtMs":null})", false, false);
+  actor.SetRespawnTime(.05f);
+  actor.Kill(nullptr, false);
+  const auto marker = actor.GetDynamicFields().GetAsJson().at("private.srpSpawnRespawnV1");
+  SECTION("disabled before the scheduled reset") { actor.Disable(); }
+  SECTION("deleted before the scheduled reset") { actor.Delete(); }
+  for (int tick = 0; tick < 50; ++tick) {
+    server.Tick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.GetDynamicFields().GetAsJson().at("private.srpSpawnRespawnV1") == marker);
+}
+
 TEST_CASE("Fauna without a respawn marker keeps the admitted corpse after reload",
           "[srp-reviewed-spawn][srp-spawn-respawn][espm]")
 {
