@@ -13,7 +13,7 @@ import nif
 SCALE = 69.99125
 IDENTITY = (1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.)
 NODE_TYPES = {'NiNode', 'BSFadeNode', 'NiSwitchNode', 'BSMultiBoundNode',
-              'BSLeafAnimNode', 'BSOrderedNode', 'BSRangeNode'}
+              'BSLeafAnimNode', 'BSOrderedNode', 'BSRangeNode', 'BSTreeNode'}
 
 
 def point(m, p):

@@ -36,6 +36,20 @@ def sphere(radius=1, body_type='bhkRigidBody', translation=(0,0,0)):
 
 
 class HavokGraphTests(unittest.TestCase):
+    def test_tree_root_applies_parent_transform_to_collision_child(self):
+        original = sphere()
+        blocks = [(name, original[offset:offset+length])
+                  for name, offset, length in nif.Nif(original).blocks]
+        child = node(translation=(1, 2, 3))
+        tree = node(collision=0xffffffff, translation=(4, 5, 6))[:-4]
+        tree += pack('6I', 1, 4, 0, 1, 4, 0)
+        blocks[0] = ('BSTreeNode', tree)
+        blocks[2] = ('bhkCollisionObject', pack('IHI', 4, 0x81, 1))
+        blocks.append(('NiNode', child))
+        _, volumes, _, doc = havok.read(file(blocks))
+        self.assertEqual(volumes[0]['center'], (5, 7, 9))
+        self.assertTrue(doc.has_movable_body)
+
     def test_capsule_los_envelope_contains_the_whole_real_support_shape(self):
         raw = sphere(body_type='bhkRigidBodyT', translation=(2,-3,4))
         doc = nif.Nif(raw)
