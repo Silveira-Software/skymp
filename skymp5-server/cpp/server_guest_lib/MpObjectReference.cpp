@@ -1988,10 +1988,30 @@ std::vector<espm::CONT::ContainerObject> GetInventoryObjects(
   const espm::LookupResult& lookupRes)
 {
   auto& compressedFieldsCache = worldState->GetEspmCache();
+  auto resolveObjects = [&](const espm::LookupResult& owner,
+                            std::vector<espm::CONT::ContainerObject> objects) {
+    // CNTO FormIDs are relative to the plugin that owns the winning field.
+    // For a templated NPC, that plugin may differ from the actor's base.
+    const auto& browser = worldState->GetEspm().GetBrowser();
+    std::vector<espm::CONT::ContainerObject> resolved;
+    resolved.reserve(objects.size());
+    for (auto entry : objects) {
+      if (!entry.formId || !entry.count) {
+        continue;
+      }
+      entry.formId = owner.ToGlobalId(entry.formId);
+      if (entry.formId && (entry.formId >> 24) != 0xff &&
+          browser.LookupById(entry.formId).rec) {
+        resolved.push_back(entry);
+      }
+    }
+    return resolved;
+  };
 
   auto baseContainer = espm::Convert<espm::CONT>(lookupRes.rec);
   if (baseContainer) {
-    return baseContainer->GetData(compressedFieldsCache).objects;
+    return resolveObjects(lookupRes,
+                          baseContainer->GetData(compressedFieldsCache).objects);
   }
 
   auto baseNpc = espm::Convert<espm::NPC_>(lookupRes.rec);
@@ -1999,7 +2019,9 @@ std::vector<espm::CONT::ContainerObject> GetInventoryObjects(
     auto baseId = lookupRes.ToGlobalId(lookupRes.rec->GetId());
     return EvaluateTemplate<espm::NPC_::UseInventory>(
       worldState, baseId, templateChain,
-      [](const auto&, const auto& npcData) { return npcData.objects; });
+      [&](const auto& owner, const auto& npcData) {
+        return resolveObjects(owner, npcData.objects);
+      });
   }
 
   return {};
