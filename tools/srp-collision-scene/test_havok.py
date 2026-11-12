@@ -36,6 +36,32 @@ def sphere(radius=1, body_type='bhkRigidBody', translation=(0,0,0)):
 
 
 class HavokGraphTests(unittest.TestCase):
+    def test_capsule_los_envelope_contains_the_whole_real_support_shape(self):
+        raw = sphere(body_type='bhkRigidBodyT', translation=(2,-3,4))
+        doc = nif.Nif(raw)
+        blocks = [(name, raw[offset:offset+length]) for name,offset,length in doc.blocks]
+        a, b, radius = (-2.,1.,0.), (3.,-1.,5.), .75
+        payload = pack('If8s4f4f',0,radius,b'\0'*8,*a,radius,*b,radius)
+        blocks[-1] = ('bhkCapsuleShape',payload)
+        triangles, volumes, _, _ = havok.read(file(blocks))
+        self.assertEqual(triangles,[])
+        self.assertEqual(len(volumes),1)
+        self.assertEqual(volumes[0]['kind'],'convex-envelope')
+        planes = volumes[0]['planes']
+        for end in (a,b):
+            for yaw in range(0,360,15):
+                for pitch in range(-90,91,15):
+                    y,p = math.radians(yaw),math.radians(pitch)
+                    direction = (math.cos(p)*math.cos(y),math.cos(p)*math.sin(y),math.sin(p))
+                    point = [(end[k]+radius*direction[k]+(2,-3,4)[k])*havok.SCALE for k in range(3)]
+                    self.assertTrue(all(sum(plane[k]*point[k] for k in range(3))+plane[3] < 0 for plane in planes))
+
+    def test_capsule_corrupt_payload_and_unequal_radii_remain_unknown(self):
+        payload = pack('If8s4f4f',0,1.,b'\0'*8,0.,0.,0.,1.,0.,0.,2.,1.)
+        for invalid in [payload[:-1],payload+b'\0',payload[:44]+pack('f',2.),payload[:4]+pack('f',float('nan'))+payload[8:]]:
+            with self.assertRaises(nif.NifError):
+                havok.capsule(invalid)
+
     def test_sphere_uses_engine_world_units(self):
         triangles,volumes,margin,_=havok.read(sphere())
         self.assertFalse(triangles)

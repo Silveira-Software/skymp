@@ -9,6 +9,7 @@ import math
 import struct
 import havok
 import nif
+from havok import capsule
 
 
 def convex_mesh(raw):
@@ -75,21 +76,6 @@ def convex_mesh(raw):
     def inward(p):
         return tuple((center[k]+(p[k]-center[k])*(1.-1e-7))*havok.SCALE for k in range(3))
     return [tuple(inward(points[i]) for i in face) for face in faces]
-
-
-def capsule(raw):
-    if len(raw) != 48:
-        raise nif.NifError('controller capsule payload')
-    radius = struct.unpack_from('<f', raw, 4)[0]
-    a = struct.unpack_from('<3f', raw, 16)
-    r1 = struct.unpack_from('<f', raw, 28)[0]
-    b = struct.unpack_from('<3f', raw, 32)
-    r2 = struct.unpack_from('<f', raw, 44)[0]
-    if (not all(math.isfinite(x) for x in (*a, *b, radius, r1, r2)) or
-            not 0 < radius < 100 or
-            abs(r1 - radius) > 1e-6 or abs(r2 - radius) > 1e-6):
-        raise nif.NifError('controller capsule radii/coordinates')
-    return a, b, radius
 
 
 def inscribed_capsule(a, b, radius, sides=24, hemispheres=6):

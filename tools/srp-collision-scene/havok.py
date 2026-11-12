@@ -64,6 +64,21 @@ def convex(block):
     return vertices, normalized, radius+.002
 
 
+def capsule(raw):
+    if len(raw) != 48:
+        raise nif.NifError('controller capsule payload')
+    radius = struct.unpack_from('<f', raw, 4)[0]
+    a = struct.unpack_from('<3f', raw, 16)
+    r1 = struct.unpack_from('<f', raw, 28)[0]
+    b = struct.unpack_from('<3f', raw, 32)
+    r2 = struct.unpack_from('<f', raw, 44)[0]
+    if (not all(math.isfinite(x) for x in (*a, *b, radius, r1, r2)) or
+            not 0 < radius < 100 or
+            abs(r1 - radius) > 1e-6 or abs(r2 - radius) > 1e-6):
+        raise nif.NifError('controller capsule radii/coordinates')
+    return a, b, radius
+
+
 def read(data):
     doc = nif.Nif(data)
     if doc.bsver not in (83, 100):
@@ -159,7 +174,7 @@ def read(data):
             for tri in mesh.triangles:
                 triangles.append(tuple(point(matrix, tuple(v*SCALE for v in p)) for p in tri))
             margins.append(struct.unpack_from('<f', raw, 8)[0]*SCALE*sf)
-        elif name in ('bhkConvexVerticesShape', 'bhkBoxShape', 'bhkSphereShape'):
+        elif name in ('bhkConvexVerticesShape', 'bhkBoxShape', 'bhkSphereShape', 'bhkCapsuleShape'):
             if name == 'bhkConvexVerticesShape':
                 vertices, planes, bound_margin = convex(raw)
             elif name == 'bhkBoxShape':
@@ -169,6 +184,24 @@ def read(data):
                 planes = [[*(s if j == axis else 0. for j in range(3)), -abs(dims[axis])-radius] for axis in range(3) for s in (-1., 1.)]
                 vertices = [[x, y, z] for x in (-dims[0], dims[0]) for y in (-dims[1], dims[1]) for z in (-dims[2], dims[2])]
                 bound_margin = radius
+            elif name == 'bhkCapsuleShape':
+                a, b, radius = capsule(raw)
+                # Support of a capsule in direction n is max(n.a, n.b)+r.
+                # Its six axial support planes form an OUTER LOS envelope.
+                # This volume can deny a trace, never authorize an actor hit.
+                lo = [min(a[k], b[k]) - radius - .002 for k in range(3)]
+                hi = [max(a[k], b[k]) + radius + .002 for k in range(3)]
+                planes = []
+                for axis in range(3):
+                    normal = [0., 0., 0.]
+                    normal[axis] = 1.
+                    planes.append([*normal, -hi[axis]])
+                    normal = [0., 0., 0.]
+                    normal[axis] = -1.
+                    planes.append([*normal, lo[axis]])
+                vertices = [[x, y, z] for x in (lo[0], hi[0])
+                            for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
+                bound_margin = 0.
             else:
                 if len(raw) != 8:
                     raise nif.NifError('sphere payload')
