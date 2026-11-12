@@ -14,6 +14,21 @@ SCALE = 69.99125
 IDENTITY = (1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.)
 NODE_TYPES = {'NiNode', 'BSFadeNode', 'NiSwitchNode', 'BSMultiBoundNode',
               'BSLeafAnimNode', 'BSOrderedNode', 'BSRangeNode', 'BSTreeNode'}
+RIGID_BODIES = {'bhkRigidBody', 'bhkRigidBodyT'}
+
+
+def limited_hinge(raw):
+    # Skyrim Havok 2010 stores two transforms, limits and a motor selector.
+    # Only the observed no-motor layout is supported here.
+    if len(raw) != 157 or raw[156] != 0:
+        raise nif.NifError('unsupported limited hinge layout')
+    count, first, second, _ = struct.unpack_from('<4I', raw)
+    values = struct.unpack_from('<35f', raw, 16)
+    minimum, maximum, friction = values[-3:]
+    if (count != 2 or first == second or not all(map(math.isfinite, values)) or
+            minimum > maximum or friction < 0):
+        raise nif.NifError('invalid limited hinge')
+    return first, second
 
 
 def point(m, p):
@@ -235,6 +250,8 @@ def read(data):
         else:
             raise nif.NifError('unsupported physical shape '+name)
     animated_radius = 0.
+    rigid_bodies = set()
+    constraints = {}
     for i, (name, raw) in enumerate(blocks):
         if name != 'bhkCollisionObject':
             continue
@@ -246,8 +263,20 @@ def read(data):
         if node(target)[1] != i:
             raise nif.NifError('collision target backlink mismatch')
         name, body = block(body_id)
-        if name not in ('bhkRigidBody', 'bhkRigidBodyT') or len(body) != 250:
+        if name not in RIGID_BODIES or len(body) < 250:
             raise nif.NifError('unsupported physical body '+name)
+        count = struct.unpack_from('<I', body, 244)[0]
+        if len(body) != 250 + count * 4 or body_id in rigid_bodies:
+            raise nif.NifError('invalid rigid body constraint list')
+        rigid_bodies.add(body_id)
+        for constraint in struct.unpack_from('<%dI' % count, body, 248):
+            constraint_type, payload = block(constraint)
+            if constraint_type != 'bhkLimitedHingeConstraint':
+                raise nif.NifError('unsupported rigid body constraint '+constraint_type)
+            entities = limited_hinge(payload)
+            if body_id not in entities or constraint in constraints.get(body_id, {}):
+                raise nif.NifError('invalid rigid body constraint link')
+            constraints.setdefault(body_id, {})[constraint] = entities
         mass = struct.unpack_from('<f', body, 180)[0]
         if not math.isfinite(mass) or mass < 0:
             raise nif.NifError('invalid rigid body mass')
@@ -256,7 +285,7 @@ def read(data):
         doc.has_movable_body |= body[224] != 7 and (body[4] != 1 or mass != 0)
         if name == 'bhkRigidBodyT':
             t, q = struct.unpack_from('<4f', body, 52), struct.unpack_from('<4f', body, 68)
-            if abs(sum(v*v for v in q)-1) > .001:
+            if not all(map(math.isfinite, (*t, *q))) or abs(sum(v*v for v in q)-1) > .001:
                 raise nif.NifError('invalid rigid body quaternion')
             columns = [nif._quat_rotate(q, v) for v in [(1,0,0), (0,1,0), (0,0,1)]]
             rigid = tuple(columns[x][y] if x < 3 else t[y]*SCALE for y in range(3) for x in range(4))
@@ -288,6 +317,14 @@ def read(data):
             animated_radius = max(animated_radius,radius)
             del triangles[start_t:]
             del volumes[start_v:]
+    for links in constraints.values():
+        for constraint, entities in links.items():
+            if not rigid_bodies.issuperset(entities):
+                raise nif.NifError('limited hinge body has no imported collision')
+            # The bind transform is useful as geometry, but it is not a
+            # measured runtime pose of the hinged assembly.
+            doc.has_movable_body = True
+            used.add(constraint)
     if any(i not in used for i in physical):
         raise nif.NifError('unconsumed physical graph block')
     margin = max(margins, default=0.)

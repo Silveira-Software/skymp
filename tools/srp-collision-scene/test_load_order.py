@@ -56,6 +56,22 @@ class LoadOrderTest(unittest.TestCase):
         self.assertEqual(producer.unresolved_bounds(record, matrix), ([800, 1960, 2900], [1200, 2040, 3100]))
         self.assertIsNone(producer.unresolved_bounds(None, matrix))
 
+    def test_malformed_reference_cannot_supply_a_collision_transform(self):
+        def ref(name, data, scale=b''):
+            payload = b''.join(key + struct.pack('<H', len(value)) + value
+                               for key, value in ((b'NAME', name), (b'DATA', data),
+                                                  (b'XSCL', scale)) if value)
+            return esm.Record(b'REFR', 0x7B, 0, payload)
+
+        name = struct.pack('<I', 0x7A)
+        data = struct.pack('<6f', 1, 2, 3, 0, 0, 0)
+        self.assertEqual(producer.reference_transform_fields(ref(name, data)),
+                         (0x7A, (1, 2, 3), (0, 0, 0), 1))
+        for record in (ref(b'', data), ref(name, data[:-1]), ref(name, data, b'\0'),
+                       ref(name, data, struct.pack('<f', float('nan'))),
+                       ref(name, struct.pack('<f', float('inf')) + data[4:])):
+            self.assertIsNone(producer.reference_transform_fields(record))
+
     def test_only_the_winning_interior_cell_can_claim_complete_coverage(self):
         order = self.order()
         fields = lambda flags: b'DATA' + struct.pack('<HB', 1, flags)

@@ -149,6 +149,20 @@ def require_interior_cell(order, cell_id):
         raise ValueError('collision coverage requires a winning interior CELL')
 
 
+def reference_transform_fields(ref):
+    name, data = ref.field(b'NAME'), ref.field(b'DATA')
+    scale_raw = ref.field(b'XSCL')
+    if (name is None or len(name) != 4 or name == b'\0' * 4 or
+            data is None or len(data) != 24 or
+            (scale_raw is not None and len(scale_raw) != 4)):
+        return None
+    position, rotation = struct.unpack_from('<3f', data), struct.unpack_from('<3f', data, 12)
+    scale = struct.unpack('<f', scale_raw)[0] if scale_raw is not None else 1.0
+    if not all(map(math.isfinite, (*position, *rotation, scale))) or scale <= 0:
+        return None
+    return struct.unpack('<I', name)[0], position, rotation, scale
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dir', required=True)
@@ -183,7 +197,6 @@ def main():
     os.makedirs(args.assets, exist_ok=True)
 
     geometry = []
-    unresolved = []
     audit_refs = []
     used_assets = {}
     all_points = []
@@ -191,21 +204,19 @@ def main():
     dynamic_blockers = []
     untracked_physics = []
     for reference_id, source_index, ref in refs:
-        name = ref.field(b'NAME')
-        data = ref.field(b'DATA')
-        if not name or not data or len(data) < 24:
-            continue
-        base_id = order.to_global(source_index, struct.unpack('<I', name)[0])
-        record = order.resolve(base_id)
         reference = '%x:%s' % (reference_id & 0xFFFFFF, order.plugin_name(reference_id))
+        fields = reference_transform_fields(ref)
+        if fields is None:
+            audit_refs.append({'reference': reference, 'decision': 'unresolved',
+                               'reason': 'invalid-reference-fields'})
+            continue
+        local_base, pos, rot, scale = fields
+        base_id = order.to_global(source_index, local_base)
+        record = order.resolve(base_id)
         if record is not None and record.sig in DYNAMIC_BASES:
             dynamic_blockers.append(reference_id)
         base_desc = '%x:%s' % (base_id & 0xFFFFFF, order.plugin_name(base_id))
         entry = {'reference': reference, 'base': base_desc}
-        pos = list(struct.unpack_from('<3f', data, 0))
-        rot = list(struct.unpack_from('<3f', data, 12))
-        scale_raw = ref.field(b'XSCL')
-        scale = struct.unpack('<f', scale_raw)[0] if scale_raw and len(scale_raw) == 4 else 1.0
         entry.update({'position': [round(v, 3) for v in pos]})
         matrix = transform_matrix(pos, rot, scale)
         if record is not None and (record.sig in {b'SOUN', b'ASPC', b'TXST'} or
@@ -217,14 +228,12 @@ def main():
         if record is None or record.sig not in MODEL_BASES:
             entry['decision'] = 'unresolved'
             entry['reason'] = 'base-signature' if record is not None else 'base-missing'
-            unresolved.append([round(pos[0], 3), round(pos[1], 3), round(pos[2], 3)])
             audit_refs.append(entry)
             continue
         model = record.zstring(b'MODL')
         if not model:
             entry['decision'] = 'unresolved'
             entry['reason'] = 'no-model'
-            unresolved.append([round(v, 3) for v in pos])
             audit_refs.append(entry)
             continue
         entry['model'] = model
@@ -232,7 +241,6 @@ def main():
         if payload is None:
             entry['decision'] = 'unresolved'
             entry['reason'] = 'asset-missing'
-            unresolved.append([round(v, 3) for v in pos])
             audit_refs.append(entry)
             continue
         try:
@@ -240,7 +248,6 @@ def main():
         except (nif.NifError, bsa.BsaError, struct.error) as ex:
             entry['decision'] = 'unresolved'
             entry['reason'] = 'decode-error: %s' % ex
-            unresolved.append([round(v, 3) for v in pos])
             audit_refs.append(entry)
             continue
         if not triangles and not volumes:
@@ -251,7 +258,6 @@ def main():
                 continue
             entry['decision'] = 'unresolved'
             entry['reason'] = 'no-physical-shape'
-            unresolved.append([round(v, 3) for v in pos])
             audit_refs.append(entry)
             continue
         if doc.has_movable_body:
@@ -337,16 +343,14 @@ def main():
     for entry in audit_refs:
         if entry.get('decision') != 'unresolved':
             continue
-        source_index, ref = ref_sources[entry['reference']]
-        raw = ref.field(b'NAME')
-        base = order.resolve(order.to_global(source_index, struct.unpack('<I', raw)[0])) if raw else None
-        data = ref.field(b'DATA')
-        scale_raw = ref.field(b'XSCL')
-        scale = struct.unpack('<f', scale_raw)[0] if scale_raw and len(scale_raw) == 4 else 1.0
-        matrix = transform_matrix(struct.unpack_from('<3f', data), struct.unpack_from('<3f', data, 12), scale)
-        source_bounds = unresolved_bounds(base, matrix)
-        if source_bounds is not None:
-            entry['sourceObjectBounds'] = source_bounds
+        if 'position' in entry:
+            source_index, ref = ref_sources[entry['reference']]
+            local_base, pos, rot, scale = reference_transform_fields(ref)
+            base = order.resolve(order.to_global(source_index, local_base))
+            matrix = transform_matrix(pos, rot, scale)
+            source_bounds = unresolved_bounds(base, matrix)
+            if source_bounds is not None:
+                entry['sourceObjectBounds'] = source_bounds
         bounds = (coverage[0]['min'], coverage[0]['max'])
         entry['unknownScope'] = 'ENTIRE_CELL_UNDECODED_PHYSICAL_SHAPE'
         entry['unknownBounds'] = bounds

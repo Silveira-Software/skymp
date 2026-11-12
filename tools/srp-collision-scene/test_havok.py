@@ -36,6 +36,27 @@ def sphere(radius=1, body_type='bhkRigidBody', translation=(0,0,0)):
 
 
 class HavokGraphTests(unittest.TestCase):
+    def test_hinged_bodies_import_both_shapes_and_require_runtime_pose(self):
+        original = sphere()
+        blocks = [(name, original[offset:offset+length])
+                  for name, offset, length in nif.Nif(original).blocks]
+        root = node()[:-4] + pack('2I', 1, 4)
+        body = blocks[1][1]
+        hinged = body[:244] + pack('2I', 1, 7) + body[248:]
+        hinge = pack('4I35fB', 2, 1, 5, 1, *([0.] * 35), 0)
+        blocks[0] = ('NiNode', root)
+        blocks[1] = ('bhkRigidBody', hinged)
+        blocks.extend([('NiNode', node(collision=6, translation=(0, 0, 3))),
+                       ('bhkRigidBody', body),
+                       ('bhkCollisionObject', pack('IHI', 4, 0x81, 5)),
+                       ('bhkLimitedHingeConstraint', hinge)])
+        _, volumes, _, doc = havok.read(file(blocks))
+        self.assertEqual([v['center'] for v in volumes], [(0, 0, 0), (0, 0, 3)])
+        self.assertTrue(doc.has_movable_body)
+        blocks[-1] = ('bhkLimitedHingeConstraint', hinge[:8] + pack('I', 4) + hinge[12:])
+        with self.assertRaisesRegex(nif.NifError, 'hinge body has no imported collision'):
+            havok.read(file(blocks))
+
     def test_tree_root_applies_parent_transform_to_collision_child(self):
         original = sphere()
         blocks = [(name, original[offset:offset+length])
