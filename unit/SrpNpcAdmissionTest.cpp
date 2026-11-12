@@ -132,6 +132,78 @@ TEST_CASE("World rejects spawn allowlist entries that are ACHR records",
                       "SRP_NPC_ADMISSION_BASE_REQUIRED");
   REQUIRE(world.InspectSrpNpcAdmission().at("enabled") == false);
 }
+
+TEST_CASE("Opted-in fauna reloads its persisted respawn deadline and clears it on return",
+          "[srp-reviewed-spawn][srp-spawn-respawn][espm]")
+{
+  auto config=Config();
+  config["sources"]=nlohmann::json::array();
+  constexpr uint32_t id=0xff000077, base=0x23abe;
+  auto create=[&](PartOne& server,const MpChangeForm* saved=nullptr) -> MpActor& {
+    server.worldState.ConfigureSrpNpcAdmission(config);
+    server.worldState.AddForm(std::make_unique<MpActor>(
+      LocationalData{{0,0,0},{0,0,0},FormDesc::Tamriel()},FormCallbacks::DoNothing(),base),id,false,saved);
+    return server.worldState.GetFormAt<MpActor>(id);
+  };
+  auto& first=GetPartOne();
+  auto& actor=create(first);
+  actor.SetPropertyValueDump("srpSpawnSource","\"FAUNA\"",false,false);
+  actor.SetPropertyValueDump("srpMobInstanceId","\"reviewed-1\"",false,false);
+  actor.SetPropertyValueDump("private.srpSpawnRespawnV1",
+    R"({"schemaVersion":1,"instanceId":"reviewed-1","dueAtMs":null})",false,false);
+  actor.SetRespawnTime(.15f);
+  actor.Kill(nullptr,false);
+  const auto state=actor.GetDynamicFields().GetAsJson().at("private.srpSpawnRespawnV1");
+  REQUIRE(state.at("dueAtMs").is_number_integer());
+  actor.RespawnWithDelay();
+  REQUIRE(actor.GetDynamicFields().GetAsJson().at("private.srpSpawnRespawnV1")==state);
+  const auto saved=actor.GetChangeForm();
+  auto& restarted=GetPartOne();
+  auto& loaded=create(restarted,&saved);
+  REQUIRE(loaded.IsDead());
+  REQUIRE(loaded.IsRespawning());
+  REQUIRE(loaded.GetDynamicFields().GetAsJson().at("private.srpSpawnRespawnV1")==state);
+  for(int i=0;i<400&&loaded.IsDead();i++) {
+    restarted.Tick();std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  REQUIRE_FALSE(loaded.IsDead());
+  REQUIRE(loaded.GetDynamicFields().GetAsJson().at("private.srpSpawnRespawnV1").at("dueAtMs").is_null());
+  loaded.Kill(nullptr,false);
+  REQUIRE(loaded.GetDynamicFields().GetAsJson().at("private.srpSpawnRespawnV1").at("dueAtMs")>=state.at("dueAtMs"));
+}
+
+TEST_CASE("Fauna without a respawn marker keeps the admitted corpse after reload",
+          "[srp-reviewed-spawn][srp-spawn-respawn][espm]")
+{
+  auto& server=GetPartOne();auto config=Config();config["sources"]=nlohmann::json::array();
+  server.worldState.ConfigureSrpNpcAdmission(config);
+  server.worldState.AddForm(std::make_unique<MpActor>(
+    LocationalData{{0,0,0},{0,0,0},FormDesc::Tamriel()},FormCallbacks::DoNothing(),0x23abe),0xff000078);
+  auto& actor=server.worldState.GetFormAt<MpActor>(0xff000078);
+  actor.SetIsDead(true);
+  const auto saved=actor.GetChangeForm();
+  auto& restarted=GetPartOne();restarted.worldState.ConfigureSrpNpcAdmission(config);
+  restarted.worldState.AddForm(std::make_unique<MpActor>(
+    LocationalData{{0,0,0},{0,0,0},FormDesc::Tamriel()},FormCallbacks::DoNothing(),0x23abe),0xff000078,false,&saved);
+  const auto& loaded=restarted.worldState.GetFormAt<MpActor>(0xff000078);
+  REQUIRE(loaded.IsDead());REQUIRE_FALSE(loaded.IsRespawning());
+}
+
+TEST_CASE("A respawn deadline cannot be reassigned to another creature instance",
+          "[srp-reviewed-spawn][srp-spawn-respawn][espm]")
+{
+  auto& server=GetPartOne();auto config=Config();config["sources"]=nlohmann::json::array();
+  server.worldState.ConfigureSrpNpcAdmission(config);
+  server.worldState.AddForm(std::make_unique<MpActor>(
+    LocationalData{{0,0,0},{0,0,0},FormDesc::Tamriel()},FormCallbacks::DoNothing(),0x23abe),0xff000079);
+  auto& actor=server.worldState.GetFormAt<MpActor>(0xff000079);
+  actor.SetPropertyValueDump("srpSpawnSource","\"FAUNA\"",false,false);
+  actor.SetPropertyValueDump("srpMobInstanceId","\"current\"",false,false);
+  actor.SetPropertyValueDump("private.srpSpawnRespawnV1",
+    R"({"schemaVersion":1,"instanceId":"foreign","dueAtMs":1})",false,false);
+  REQUIRE_THROWS_WITH(actor.RespawnWithDelay(),"SRP_SPAWN_RESPAWN_STATE_INVALID");
+  REQUIRE_FALSE(actor.IsRespawning());
+}
 TEST_CASE("R38.3 invalid configuration cannot raise administration maxima or "
           "replace active leases",
           "[srp-r383]")

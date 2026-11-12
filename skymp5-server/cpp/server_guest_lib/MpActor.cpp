@@ -46,6 +46,30 @@
 #include "script_classes/PapyrusObjectReference.h"
 #include "script_objects/MpFormGameObject.h"
 
+namespace {
+constexpr const char* kSpawnRespawn = "private.srpSpawnRespawnV1";
+std::optional<nlohmann::json> SpawnRespawnState(const MpActor& actor)
+{
+  const auto& fields = actor.GetDynamicFields().GetAsJson();
+  const auto state = fields.find(kSpawnRespawn);
+  if (state == fields.end() || state->is_null())
+    return std::nullopt;
+  if (actor.GetFormId() < 0xff000000 || actor.GetProfileId() >= 0 ||
+      SrpOriginalLifecycle::Managed(actor) ||
+      fields.value("srpSpawnSource", std::string()) != "FAUNA" ||
+      !state->is_object() || state->value("schemaVersion", 0) != 1 ||
+      !state->contains("instanceId") || !state->at("instanceId").is_string() ||
+      state->at("instanceId") != fields.value("srpMobInstanceId", nlohmann::json()) ||
+      state->at("instanceId").get<std::string>().empty() ||
+      !state->contains("dueAtMs") ||
+      (!state->at("dueAtMs").is_null() &&
+       (!state->at("dueAtMs").is_number_integer() ||
+        state->at("dueAtMs").get<int64_t>() <= 0)))
+    throw std::runtime_error("SRP_SPAWN_RESPAWN_STATE_INVALID");
+  return std::optional<nlohmann::json>(std::in_place, *state);
+}
+}
+
 struct MpActor::Impl
 {
   // TODO: consider optimizing data structure and/or general refactoring
@@ -758,7 +782,9 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   // We do the same in PartOne::SetUserActor for player characters
   const bool admittedNpc = !IsCreatedAsPlayer() && GetProfileId() < 0 &&
     GetParent() && GetParent()->InspectSrpNpcAdmission().value("enabled", false);
-  if (IsDead() && !IsRespawning() && !admittedNpc) {
+  const auto spawnRespawn = admittedNpc ? SpawnRespawnState(*this) : std::nullopt;
+  if (IsDead() && !IsRespawning() &&
+      (!admittedNpc || (spawnRespawn && !spawnRespawn->at("dueAtMs").is_null()))) {
     spdlog::info("MpActor::ApplyChangeForm {:x} - respawning dead actor",
                  GetFormId());
     RespawnWithDelay();
@@ -1178,6 +1204,12 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
       isDead ? 0.f : GetMagickaRespawnPercentage();
     changeForm.actorValues.staminaPercentage =
       isDead ? 0.f : GetStaminaRespawnPercentage();
+    if (!isDead) {
+      if (auto state = SpawnRespawnState(*this)) {
+        (*state)["dueAtMs"] = nullptr;
+        changeForm.dynamicFields.SetValueDump(kSpawnRespawn, state->dump());
+      }
+    }
   });
 
   if(isDead&&SrpActorModifiers::Managed(*this)){
@@ -1540,6 +1572,7 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
 void MpActor::RespawnWithDelay(bool shouldTeleport)
 {
   if(SrpOriginalLifecycle::Managed(*this))return;
+  auto spawnRespawn = SpawnRespawnState(*this);
   spdlog::trace("MpActor::RespawnWithDelay {:x} - isRespawning: {}",
                 GetFormId(), pImpl->isRespawning);
 
@@ -1555,57 +1588,81 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
   if (auto worldState = GetParent()) {
     float respawnTime = GetRespawnTime();
     auto time = Viet::TimeUtils::To<std::chrono::milliseconds>(respawnTime);
+    if (spawnRespawn) {
+      if (!std::isfinite(respawnTime) || respawnTime < 0 || respawnTime > 3600)
+        throw std::runtime_error("SRP_SPAWN_RESPAWN_DELAY_INVALID");
+      const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+      if (spawnRespawn->at("dueAtMs").is_null()) {
+        (*spawnRespawn)["dueAtMs"] = now + time.count();
+        SetPropertyValueDump(kSpawnRespawn, spawnRespawn->dump(), false, false);
+      }
+      const auto remaining = spawnRespawn->at("dueAtMs").get<int64_t>() - now;
+      time = std::chrono::milliseconds(remaining > 0 ? remaining : 1000);
+    }
     worldState->SetTimer(time).Then([worldState, this, formId, shouldTeleport,
                                      respawnTimerIndex,
                                      respawnTime](Viet::Void) {
       if (worldState->LookupFormById(formId).get() == this) {
         bool isLatestRespawn = respawnTimerIndex == pImpl->respawnTimerIndex;
         if (isLatestRespawn) {
-          // This is implemented here, not in MpActor::Respawn because we don't
-          // want inventory to be re-added in case of artificial resurrect from
-          // the gamemode
+          const bool durableSpawn = SpawnRespawnState(*this).has_value();
+          const auto reset = [&]() {
+            // This is implemented here, not in MpActor::Respawn because we don't
+            // want inventory to be re-added in case of artificial resurrect from
+            // the gamemode
 
-          // This will do nothing if death item resolved to no items
-          auto deathItem = EvaluateDeathItem();
-          if (deathItem.empty()) {
-            spdlog::info("MpActor::RespawnWithDelay {:x} - death item "
-                         "resolved to no items, keeping inventory",
-                         GetFormId());
-          } else {
-            spdlog::info("MpActor::RespawnWithDelay {:x} - death item "
-                         "resolved to {} items, re-adding base inventory",
-                         GetFormId(), deathItem.size());
-
-            if (!worldState->HasEspm()) {
-              spdlog::error(
-                "MpActor::RespawnWithDelay {:x} - no espm attached",
-                GetFormId());
+            // This will do nothing if death item resolved to no items
+            auto deathItem = EvaluateDeathItem();
+            if (deathItem.empty()) {
+              spdlog::info("MpActor::RespawnWithDelay {:x} - death item "
+                           "resolved to no items, keeping inventory",
+                           GetFormId());
             } else {
-              Inventory inventory = GetInventory();
-              Inventory inventoryToKeep;
-              for (auto& entry : inventory.entries) {
-                if (worldState->HasKeyword(entry.baseId, "SweetCantDrop")) {
-                  inventoryToKeep.entries.push_back(entry);
-                }
-              }
-              EditChangeForm(
-                [&](MpChangeForm& changeForm) {
-                  changeForm.inv = inventoryToKeep;
-                  changeForm.baseContainerAdded = false;
-                },
-                Mode::NoRequestSave);
-              EnsureBaseContainerAdded(worldState->GetEspm());
-              spdlog::info("MpActor::RespawnWithDelay {:x} - {} inventory "
-                           "entries with keyword kept",
-                           GetFormId(), inventoryToKeep.entries.size());
-            }
-          }
+              spdlog::info("MpActor::RespawnWithDelay {:x} - death item "
+                           "resolved to {} items, re-adding base inventory",
+                           GetFormId(), deathItem.size());
 
-          // Do actual respawn
-          spdlog::info("MpActor::RespawnWithDelay {:x} - finally, respawn "
-                       "after {} seconds",
-                       GetFormId(), respawnTime);
-          Respawn(shouldTeleport);
+              if (!worldState->HasEspm()) {
+                spdlog::error(
+                  "MpActor::RespawnWithDelay {:x} - no espm attached",
+                  GetFormId());
+              } else {
+                Inventory inventory = GetInventory();
+                Inventory inventoryToKeep;
+                for (auto& entry : inventory.entries) {
+                  if (worldState->HasKeyword(entry.baseId, "SweetCantDrop")) {
+                    inventoryToKeep.entries.push_back(entry);
+                  }
+                }
+                EditChangeForm(
+                  [&](MpChangeForm& changeForm) {
+                    changeForm.inv = inventoryToKeep;
+                    changeForm.baseContainerAdded = false;
+                  },
+                  Mode::NoRequestSave);
+                EnsureBaseContainerAdded(worldState->GetEspm());
+                spdlog::info("MpActor::RespawnWithDelay {:x} - {} inventory "
+                             "entries with keyword kept",
+                             GetFormId(), inventoryToKeep.entries.size());
+              }
+            }
+
+            // Do actual respawn
+            spdlog::info("MpActor::RespawnWithDelay {:x} - finally, respawn "
+                         "after {} seconds",
+                         GetFormId(), respawnTime);
+            Respawn(shouldTeleport);
+            return !IsDead();
+          };
+          // Gate denial rolls back the whole refill and death-state change.
+          // The same persisted deadline is retried without replacing its life.
+          if (durableSpawn) {
+            if (!RunChangeFormTransaction(reset))
+              RespawnWithDelay(shouldTeleport);
+          } else {
+            reset();
+          }
         }
       }
     });
