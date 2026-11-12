@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "SrpOriginalImpact.h"
 #include "SrpOriginalLifecycle.h"
 #include "SrpTransformationFence.h"
 #include "gamemode_events/SrpOriginalImpactRequestEvent.h"
@@ -1124,9 +1125,12 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     hitData.target = myActor->GetFormId();
   }
 
-  const auto targetForm = partOne.worldState.IsSrpOriginalControlled(hitData.target)
-    ? partOne.worldState.LookupFormByIdNoLoad(hitData.target)
-    : partOne.worldState.LookupFormById(hitData.target);
+  // A combat packet cannot bring a deferred dynamic actor into the world.
+  auto& world = partOne.worldState;
+  const auto targetForm = hitData.target >= 0xff000000 ||
+      world.IsSrpOriginalControlled(hitData.target)
+    ? world.LookupFormByIdNoLoad(hitData.target)
+    : world.LookupFormById(hitData.target);
   MpObjectReference* targetRef =
     targetForm ? targetForm->AsObjectReference() : nullptr;
   if (!targetRef) {
@@ -1164,6 +1168,34 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
                                           std::string("hit-") + hex);
       event.Fire(&partOne.worldState);
     }
+    return;
+  }
+
+  auto* targetActor = targetRef->AsActor();
+  if (world.RequiresSrpDynamicMeleeProof(*aggressor) ||
+      (targetActor && world.RequiresSrpDynamicMeleeProof(*targetActor))) {
+    if (!targetActor || !partOne.serverState.IsConnected(rawMsgData.userId) ||
+        hitData.projectile || hitData.isPowerAttack || hitData.isSneakAttack ||
+        hitData.isBashAttack)
+      return;
+    if (aggressor != myActor &&
+        (partOne.serverState.UserByActor(aggressor) != Networking::InvalidUserId ||
+         aggressor->GetCellOrWorld() != myActor->GetCellOrWorld() ||
+         !aggressor->GetListeners().count(myActor) ||
+         !world.CanSrpNpcHost(*aggressor, *myActor)))
+      return;
+    try {
+      SrpOriginalImpact::RequireDynamicMeleeContact(
+        world, *aggressor, *targetActor, hitData.source);
+    } catch (const std::exception& error) {
+      spdlog::debug("Reviewed dynamic melee refused {:x} -> {:x}: {}",
+                    aggressor->GetFormId(), targetActor->GetFormId(), error.what());
+      return;
+    }
+    // The legacy handler still owns damage and the NPC's death/loot/XP path.
+    // Its native block check computes this flag from the target's state.
+    hitData.isHitBlocked = false;
+    OnWeaponHit(aggressor, targetRef, hitData, IsUnarmedAttack(hitData.source));
     return;
   }
 
@@ -1285,8 +1317,10 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   if (SrpTransformationFenced(*caster) ||
       partOne.worldState.IsSrpOriginalControlled(spellCastData.target) ||
       SrpOriginalLifecycle::Managed(*caster) ||
+      partOne.worldState.RequiresSrpDynamicMeleeProof(*caster) ||
       (observedTarget && observedTarget->AsActor() &&
-       SrpOriginalLifecycle::Managed(*observedTarget->AsActor())))
+       (SrpOriginalLifecycle::Managed(*observedTarget->AsActor()) ||
+        partOne.worldState.RequiresSrpDynamicMeleeProof(*observedTarget->AsActor()))))
     return;
 
   if (caster->IsDead()) {
@@ -1321,7 +1355,9 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   caster->SendPapyrusEvent("OnSpellCast", args.data(), args.size());
 
   const auto targetRef = std::dynamic_pointer_cast<MpObjectReference>(
-    partOne.worldState.LookupFormById(spellCastData.target));
+    spellCastData.target >= 0xff000000
+      ? observedTarget
+      : partOne.worldState.LookupFormById(spellCastData.target));
 
   if (!targetRef) {
     spdlog::info(

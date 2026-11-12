@@ -324,6 +324,28 @@ Json Reconcile(MpActor& attacker,MpActor& target,Json ledger,Json entry,const Js
 }
 }
 
+void RequireDynamicMeleeContact(WorldState& world, const MpActor& attacker,
+                                const MpActor& target, uint32_t source)
+{
+  Require(&attacker != &target && attacker.GetParent() == &world &&
+            target.GetParent() == &world,
+          "SRP_IMPACT_DYNAMIC_ACTOR_INVALID");
+  Active(attacker);
+  Active(target);
+  Require(!SrpTransformationFenced(attacker) && !SrpTransformationFenced(target),
+          "SRP_IMPACT_TRANSFORMATION_PENDING");
+  const auto weapon = NativeWeapon(attacker);
+  Require(source == weapon.source, "SRP_IMPACT_WEAPON_SOURCE_MISMATCH");
+  const auto elapsed = std::chrono::steady_clock::now() -
+    attacker.GetLastHitTime(std::nullopt);
+  Require(elapsed >= std::chrono::milliseconds(weapon.interval),
+          "SRP_IMPACT_ATTACK_INTERVAL_PENDING");
+  const auto frame = Capture(world, attacker, target);
+  const auto grip = AttackerGripHeight(frame, attacker);
+  Require(grip.has_value(), "SRP_IMPACT_ATTACKER_PROXY_REQUIRED");
+  Contact(frame, weapon, *grip);
+}
+
 Json Begin(PartOne& server,Networking::UserId userId,uint32_t targetId,const std::string& requestId)
 {
   Require(Token(requestId),"SRP_IMPACT_REQUEST_ID_INVALID");

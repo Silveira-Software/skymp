@@ -98,6 +98,7 @@ public:
   std::vector<nlohmann::json> GetSrpOriginalEncounterImages();
   void RetainOriginalForUnload(MpObjectReference& actor);
   void ConfigureSrpNpcAdmission(const nlohmann::json& config);
+  bool RequiresSrpDynamicMeleeProof(const MpActor& actor) const;
   struct CreatureBalance
   {
     uint16_t level;

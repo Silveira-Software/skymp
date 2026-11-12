@@ -43,7 +43,9 @@ void SrpNpcAdmission::Configure(const nlohmann::json& j)
 {
   if (!leases.empty())
     throw std::runtime_error("SRP_NPC_ADMISSION_RECONFIGURE_WITH_LEASES");
-  if (!j.is_object() || j.size() != 5 || !j.contains("schemaVersion") ||
+  if (!j.is_object() ||
+      j.size() != (j.contains("reviewedMeleeBases") ? 6 : 5) ||
+      !j.contains("schemaVersion") ||
       !j.at("schemaVersion").is_number_integer() ||
       j.at("schemaVersion") != 1 || !j.contains("enabled") ||
       !j.at("enabled").is_boolean() || !j.contains("limits") ||
@@ -84,7 +86,24 @@ void SrpNpcAdmission::Configure(const nlohmann::json& j)
     if (!next.faunaBases.insert(desc).second)
       throw std::runtime_error("SRP_NPC_ADMISSION_BASE_DUPLICATE");
   }
+  if (j.contains("reviewedMeleeBases")) {
+    const auto& reviewed = j.at("reviewedMeleeBases");
+    if (!next.enabled || !reviewed.is_array())
+      throw std::runtime_error("SRP_NPC_ADMISSION_MELEE_CONFIG_INVALID");
+    for (const auto& value : reviewed) {
+      if (!value.is_string())
+        throw std::runtime_error("SRP_NPC_ADMISSION_MELEE_BASE_INVALID");
+      const auto base = Canonical(value.get<std::string>());
+      if (!next.faunaBases.count(base) || !next.sources.count(Plugin(base)) ||
+          !next.reviewedMeleeBases.insert(base).second)
+        throw std::runtime_error("SRP_NPC_ADMISSION_MELEE_BASE_INVALID");
+    }
+  }
   *this = std::move(next);
+}
+bool SrpNpcAdmission::RequiresMeleeProof(const std::string& base) const
+{
+  return reviewedMeleeBases.count(Canonical(base)) != 0;
 }
 bool SrpNpcAdmission::Controlled(const std::string& reference) const
 {

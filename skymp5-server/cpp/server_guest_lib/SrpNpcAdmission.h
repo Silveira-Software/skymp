@@ -15,6 +15,8 @@ public:
   bool HasLease(uint32_t id) const { return leases.count(id); }
   bool Controlled(const std::string& reference) const;
   bool ControlsPlugin(const std::string& plugin) const;
+  bool RequiresMeleeProof(const std::string& base) const;
+  bool HasReviewedMeleeBases() const { return !reviewedMeleeBases.empty(); }
   void Reserve(uint32_t id, const std::string& reference,
                const std::string& base, const std::string& region, bool player,
                const std::string& sourcePlugin = "");
@@ -37,5 +39,6 @@ private:
   uint32_t totalLimit = 0, faunaLimit = 0, otherLimit = 0, regionLimit = 0;
   std::map<std::string, Source> sources;
   std::set<std::string> faunaBases;
+  std::set<std::string> reviewedMeleeBases;
   std::map<uint32_t, Lease> leases;
 };

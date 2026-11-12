@@ -435,6 +435,14 @@ void WorldState::ConfigureSrpNpcAdmission(const nlohmann::json& config)
     }
   pImpl->npcAdmission.Configure(config);
 }
+
+bool WorldState::RequiresSrpDynamicMeleeProof(const MpActor& actor) const
+{
+  return actor.GetFormId() >= 0xff000000 &&
+    pImpl->npcAdmission.HasReviewedMeleeBases() &&
+    pImpl->npcAdmission.RequiresMeleeProof(
+      FormDesc::FromFormId(actor.GetBaseId(), espmFiles).ToString());
+}
 nlohmann::json WorldState::InspectSrpNpcAdmission() const
 {
   auto result = pImpl->npcAdmission.Inspect();

@@ -8,6 +8,7 @@
 
 class MpActor;
 class PartOne;
+class WorldState;
 
 // Server-policy melee admission. This is not Skyrim animation/pose parity.
 // Legacy OnHit/OnWeaponHit remain quarantined for managed originals.
@@ -42,4 +43,10 @@ nlohmann::json Apply(PartOne& server, Networking::UserId userId,
 nlohmann::json Cancel(PartOne& server, Networking::UserId userId,
                       const std::string& operationId);
 nlohmann::json Inspect(const MpActor& actor);
+
+// Validate geometry for the scoped dynamic hit before the legacy damage path.
+// The caller owns native packet authentication and applies the result inline.
+// This does not produce an original-reference receipt or a per-swing nonce.
+void RequireDynamicMeleeContact(WorldState& world, const MpActor& attacker,
+                                const MpActor& target, uint32_t source);
 }

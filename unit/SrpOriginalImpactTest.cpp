@@ -1,4 +1,7 @@
 #include "SrpOriginalImpact.h"
+#include "ActionListener.h"
+#include "FormCallbacks.h"
+#include "HitMessage.h"
 #include "SrpCollision.h"
 #include "SrpActorStats.h"
 #include "SrpOriginalReference.h"
@@ -8,6 +11,7 @@
 #include "PartOne.h"
 #include "DynamicFields.h"
 #include "database_drivers/FileDatabase.h"
+#include "formulas/TES5DamageFormula.h"
 #include "save_storages/AsyncSaveStorage.h"
 #include "gamemode_events/GameModeEvent.h"
 #include <catch2/catch_all.hpp>
@@ -94,7 +98,8 @@ nlohmann::json ActorShape(const std::string& baseDesc, const std::string& raceDe
 std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
   uint32_t cellId, const std::string& baseDesc, const std::string& raceDesc,
   const NiPoint3& center, const std::string& attackerBase,
-  const std::string& attackerRace, bool controllerEnvelope = false)
+  const std::string& attackerRace, bool controllerEnvelope = false,
+  bool wall = false)
 {
   const std::string dummyHash(64, 'a');
   // The audited coverage box must actually contain the real fixture position.
@@ -129,6 +134,19 @@ std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
     {"unresolved", nlohmann::json::array()},
     {"actorShapes", shapes}
   };
+  if (wall) {
+    const auto wallY = y - 25.0;
+    doc["geometry"].push_back({
+      {"worldOrCell", cellId}, {"reference", "1:fixture.esm"},
+      {"base", "2:fixture.esm"}, {"asset", "cow-proxy.nif"},
+      {"representation", "havok-triangles"},
+      {"worldTransform", {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+      {"referenceTransform", {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
+      {"vertices", {{x-50, wallY, z}, {x+50, wallY, z},
+                    {x+50, wallY, z+128}, {x-50, wallY, z+128}}},
+      {"triangles", {{0, 1, 2}, {0, 2, 3}}}
+    });
+  }
   return SrpCollision::Scene::Load(doc, doc.at("bindings"), SrpCollision::Scene::Digest(doc));
 }
 
@@ -317,6 +335,111 @@ TEST_CASE("Impact fails closed when attacker is turned away or out of melee reac
     SrpOriginalImpact::Begin(w, testUserId, cowId, "req-miss-1"),
     "SRP_IMPACT_SERVER_SEGMENT_MISSES_TARGET"
   );
+}
+
+TEST_CASE("Reviewed dynamic hits require server contact and a current host",
+          "[srp-dynamic-melee][espm]")
+{
+  auto& server = GetPartOne();
+  server.SetDamageFormula(std::make_unique<TES5DamageFormula>());
+  auto& world = server.worldState;
+  const nlohmann::json config = {
+    {"schemaVersion", 1}, {"enabled", true},
+    {"limits", {{"total", 3}, {"fauna", 2}, {"other", 2}, {"perRegion", 3}}},
+    {"sources", nlohmann::json::array({{
+      {"plugin", "Skyrim.esm"}, {"category", "fauna"},
+      {"references", nlohmann::json::array()}}})},
+    {"faunaBases", {"23abe:Skyrim.esm"}},
+    {"reviewedMeleeBases", {"23abe:Skyrim.esm"}}
+  };
+  auto invalid = config;
+  invalid["reviewedMeleeBases"] = {"23abf:Skyrim.esm"};
+  REQUIRE_THROWS_WITH(world.ConfigureSrpNpcAdmission(invalid),
+                      "SRP_NPC_ADMISSION_MELEE_BASE_INVALID");
+  world.ConfigureSrpNpcAdmission(config);
+  AttachStorage(server);
+  constexpr uint32_t ref = 0xff000095, cell = 0x3c, dagger = 0x1397e;
+  world.AddForm(std::make_unique<MpActor>(
+    LocationalData{{0, 0, 0}, {0, 0, 180}, FormDesc::Tamriel()},
+    server.CreateFormCallbacks(), 0x23abe), ref);
+  auto& npc = world.GetFormAt<MpActor>(ref);
+  WaitForSaved(server, npc);
+  auto& player = SetupPlayer(server, npc);
+  REQUIRE(world.RequiresSrpDynamicMeleeProof(npc));
+  REQUIRE_FALSE(world.RequiresSrpDynamicMeleeProof(player));
+  REQUIRE_FALSE(SrpOriginalLifecycle::Managed(npc));
+  const auto desc = [&](uint32_t id) {
+    return FormDesc::FromFormId(id, world.espmFiles).ToString();
+  };
+  const auto scene = [&](bool wall) {
+    return CreateSyntheticScene(cell, desc(npc.GetBaseId()), desc(npc.GetRaceId()),
+      npc.GetPos(), desc(player.GetBaseId()), desc(player.GetRaceId()), false, wall);
+  };
+  player.AddItem(dagger, 1);
+  Inventory::ExtraData worn;
+  worn.worn_ = true;
+  Equipment equipment;
+  equipment.inv.entries.emplace_back(dagger, 1, worn);
+  player.SetEquipment(equipment);
+  const auto npcHealth = [&] { return npc.GetActorValues().healthPercentage; };
+  const auto playerHealth = [&] { return player.GetActorValues().healthPercentage; };
+  const auto startNpc = npcHealth(), startPlayer = playerHealth();
+  const auto hit = [&](uint32_t attacker, uint32_t target, uint32_t source) {
+    HitMessage message;
+    message.data.aggressor = attacker;
+    message.data.target = target;
+    message.data.source = source;
+    RawMessageData raw;
+    raw.userId = testUserId;
+    server.GetActionListener().OnHit(raw, message);
+  };
+  constexpr uint32_t coldRef = 0xff0000a0;
+  MpChangeForm cold;
+  cold.recType = MpChangeForm::ACHR;
+  cold.formDesc = FormDesc::FromFormId(coldRef, world.espmFiles);
+  cold.baseDesc = FormDesc::FromString(desc(npc.GetBaseId()));
+  cold.worldOrCellDesc = FormDesc::Tamriel();
+  cold.position = {81920, 0, 0};
+  cold.profileId = -1;
+  world.LoadChangeForm(cold, FormCallbacks::DoNothing());
+  REQUIRE(world.InspectSrpNpcAdmission().at("deferredDynamicNpcs") == 1);
+  hit(0x14, coldRef, dagger);
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(coldRef));
+  REQUIRE(world.InspectSrpNpcAdmission().at("deferredDynamicNpcs") == 1);
+  hit(0x14, ref, dagger);
+  REQUIRE(npcHealth() == startNpc);
+  world.InstallSrpCollisionScene(scene(true), AuditConfig(cell, true));
+  hit(0x14, ref, dagger);
+  REQUIRE(npcHealth() == startNpc);
+  auto incomplete = AuditConfig(cell, true);
+  incomplete["physicalBaselineVerified"] = true;
+  incomplete["dynamicAudit"]["untrackedPhysics"] = {0x7546f};
+  world.InstallSrpCollisionScene(scene(false), incomplete);
+  hit(0x14, ref, dagger);
+  REQUIRE(npcHealth() == startNpc);
+  world.InstallSrpCollisionScene(scene(false), AuditConfig(cell, true));
+  hit(0x14, ref, 0x1f4);
+  REQUIRE(npcHealth() == startNpc);
+  hit(0x14, ref, dagger);
+  REQUIRE(npcHealth() < startNpc);
+  REQUIRE_FALSE(npc.IsDead());
+  const auto after = npcHealth();
+  hit(0x14, ref, dagger);
+  REQUIRE(npcHealth() == after);
+  hit(ref, 0x14, 0x1f4);
+  REQUIRE(playerHealth() == startPlayer);
+  MpObjectReference::Subscribe(&npc, &player);
+  world.hosters[ref] = playerId;
+  world.InstallSrpCollisionScene(scene(true), AuditConfig(cell, true));
+  hit(ref, 0x14, 0x1f4);
+  REQUIRE(playerHealth() == startPlayer);
+  world.InstallSrpCollisionScene(scene(false), AuditConfig(cell, true));
+  REQUIRE_NOTHROW(SrpOriginalImpact::RequireDynamicMeleeContact(
+    world, npc, player, 0x1f4));
+  REQUIRE(npc.GetListeners().count(&player) == 1);
+  REQUIRE(server.serverState.UserByActor(&npc) == Networking::InvalidUserId);
+  hit(ref, 0x14, 0x1f4);
+  REQUIRE(playerHealth() < startPlayer);
 }
 
 TEST_CASE("Impact refuses a dynamic snapshot the audit does not cover", "[srp-original-impact]")
