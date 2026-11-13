@@ -17,12 +17,47 @@
 #include "gamemode_events/GameModeEvent.h"
 #include <catch2/catch_all.hpp>
 #include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 PartOne& GetPartOne();
+
+TEST_CASE("R47 produces a native humanoid corpse fixture for the feeding consumer", "[.][srp-r47-feed-seed]")
+{
+  // Server fixture, not a client attack or an assertion of visual gameplay.
+  // Exercise the existing death producer instead of inventing a lifecycle JSON.
+  const char* directory = std::getenv("SRP_R47_SEED_DIR");
+  REQUIRE(directory != nullptr);
+  auto& w = GetPartOne();
+  using Save = Viet::AsyncSaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>;
+  auto database = std::make_shared<FileDatabase>(directory, std::make_shared<spdlog::logger>("r47-seed"), true);
+  w.worldState.AttachSaveStorage(std::make_shared<Save>(database));
+  w.worldState.npcEnabled = true;
+  auto& actor = w.worldState.GetFormAt<MpActor>(0x40413);
+  w.worldState.npcEnabled = false;
+  const auto save = [&] {
+    const auto generation = w.worldState.GetChangeFormGeneration(actor.GetFormId());
+    for (int i=0;i<2200 && !w.worldState.IsChangeFormSaved(actor.GetFormId(),generation);++i) {
+      w.Tick(); std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    REQUIRE(w.worldState.IsChangeFormSaved(actor.GetFormId(),generation));
+  };
+  SrpOriginalReference::Adopt(actor, {{"speciesId","humanoid"},{"policyRevision","r47-feeding-fixture"}});
+  save(); actor.ApplySrpOriginalStats(); save();
+  REQUIRE(actor.GetRaceId() == 0x97a3d);
+  actor.RunChangeFormTransaction([&] {
+    SrpOriginalLifecycle::BeginAuthoritativeDeath(actor, actor, "r47-native-fixture-death", 1000);
+    return true;
+  });
+  actor.Kill(); save();
+  const auto proof = SrpOriginalLifecycle::Inspect(actor);
+  REQUIRE(proof.at("state") == "DEAD");
+  REQUIRE(proof.at("saved") == true);
+  REQUIRE(proof.at("lifecycle").at("death").at("nativeDropsMaterialized") == true);
+}
 
 namespace {
 constexpr uint32_t cowId = 0x10ebaf;
