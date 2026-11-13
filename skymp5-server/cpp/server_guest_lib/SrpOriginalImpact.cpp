@@ -520,9 +520,10 @@ Json Reconcile(MpActor& attacker,MpActor& target,Json ledger,Json entry,const Js
 
 bool IsDrainSpell(WorldState& world,uint32_t source)
 {
-  if(!world.HasEspm())return false;
-  const auto first=FormDesc::FromString("8d5bf:Skyrim.esm").ToFormId(world.espmFiles);
-  return (source>=first&&source<=first+3)||source==FormDesc::FromString("19324:Dawnguard.esm").ToFormId(world.espmFiles);
+  if(!source||!world.HasEspm()||source/0x01000000>=world.espmFiles.size())return false;
+  const auto descriptor=FormDesc::FromFormId(source,world.espmFiles).ToString();
+  return descriptor=="8d5bf:Skyrim.esm" || descriptor=="8d5c0:Skyrim.esm" ||
+    descriptor=="8d5c1:Skyrim.esm" || descriptor=="8d5c2:Skyrim.esm" || descriptor=="19324:Dawnguard.esm";
 }
 
 bool OwnsDrainResources(const MpActor& actor)

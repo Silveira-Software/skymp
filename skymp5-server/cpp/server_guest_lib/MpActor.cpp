@@ -2196,6 +2196,28 @@ void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
     return;
   }
 
+  if (data.effectType == espm::MGEF::EffectType::CurePoison && !durationOverriden) {
+    const auto before = GetActorValues();
+    std::vector<std::pair<espm::ActorValue, std::string>> poisoned;
+    for (const auto& active : GetActiveMagicEffects().GetEntries()) {
+      if (!active.provenance || active.provenance->value("sourceType",std::string()) != "ALCH") continue;
+      const auto source = FormDesc::FromString(active.provenance->at("source").get<std::string>())
+        .ToFormId(worldState->espmFiles);
+      const auto record = worldState->GetEspm().GetBrowser().LookupById(source);
+      if (!record.rec || record.rec->GetType()!=espm::ALCH::kType ||
+          !espm::GetData<espm::ALCH>(source,worldState).isPoison) continue;
+      const auto value = espm::GetData<espm::MGEF>(active.data.effectId,worldState).data.primaryAV;
+      poisoned.emplace_back(value,ActiveMagicEffectsMap::StackKey(active));
+    }
+    if (!poisoned.empty()) {
+      EditChangeForm([&](MpChangeForm& form) {
+        for (const auto& [value,key] : poisoned) form.activeMagicEffects.RemoveByStackKey(value,key);
+      });
+      ReconcileSrpMaximums(before);
+    }
+    return;
+  }
+
   const espm::ActorValue av = data.primaryAV;
   const espm::MGEF::EffectType type = data.effectType;
   spdlog::trace("Actor value in ApplyMagicEffect(): {}",
