@@ -913,6 +913,51 @@ MpActor& SetupSecondPlayer(PartOne& w, const MpActor& target)
 }
 }
 
+TEST_CASE("Original melee refuses expired hosts and scopes receipts across characters",
+          "[srp-original-impact][srp-r46-melee]")
+{
+  auto& server = GetPartOne();
+  AttachStorage(server);
+  auto& target = SetupCow(server);
+  auto& attacker = SetupPlayer(server, target);
+  auto& other = SetupSecondPlayer(server, target);
+  Isolate(server, target, attacker);
+  ClearImpactState(other);
+  WaitForSaved(server, other);
+  auto& world = server.worldState;
+  const auto desc = [&](uint32_t id) {
+    return FormDesc::FromFormId(id, world.espmFiles).ToString();
+  };
+  const auto cell = target.GetCellOrWorld().ToFormId(world.espmFiles);
+  world.InstallSrpCollisionScene(CreateSyntheticScene(cell, desc(target.GetBaseId()),
+    desc(target.GetRaceId()), target.GetPos(), desc(attacker.GetBaseId()),
+    desc(attacker.GetRaceId()), true), AuditConfig(cell, true));
+  world.hosters[cowId] = secondPlayerId;
+  const auto before = target.GetActorValues().healthPercentage;
+  const auto first = SrpOriginalImpact::Begin(server, testUserId, cowId, "hit-scoped-host");
+  const auto id = first.at("operationId").get<std::string>();
+  WaitForSaved(server, attacker);
+  server.serverState.Disconnect(secondUserId);
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(server, testUserId, id),
+    "SRP_IMPACT_TARGET_HOST_SESSION_REQUIRED");
+  REQUIRE(target.GetActorValues().healthPercentage == before);
+  REQUIRE(SrpOriginalImpact::Cancel(server, testUserId, id).at("state") == "CANCELLED");
+  WaitForSaved(server, attacker);
+  world.hosters.erase(cowId);
+
+  // The same connection now controls a different durable character.
+  server.SetUserActor(testUserId, secondPlayerId);
+  const auto next = SrpOriginalImpact::Begin(server, testUserId, cowId, "hit-scoped-host");
+  const auto nextId = next.at("operationId").get<std::string>();
+  REQUIRE(nextId != id);
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(server, testUserId, id),
+    "SRP_IMPACT_OPERATION_NOT_ISSUED");
+  REQUIRE(SrpOriginalImpact::Inspect(attacker).at("ledger").at("operations")
+    .at(id).at("state") == "CANCELLED");
+  REQUIRE(SrpOriginalImpact::Cancel(server, testUserId, nextId).at("state") == "CANCELLED");
+  REQUIRE(target.GetActorValues().healthPercentage == before);
+}
+
 TEST_CASE("Impact serialises two attackers without double damage", "[srp-original-impact]")
 {
   auto& w = GetPartOne();
