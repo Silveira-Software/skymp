@@ -76,6 +76,7 @@ public:
   MpActor* ActorByUser(Networking::UserId userId);
   const std::string& UserGuid(Networking::UserId userId);
   const std::string& SessionIncarnation(Networking::UserId userId) const;
+  void RotateSessionIncarnation(Networking::UserId userId);
   Networking::UserId UserByActor(MpActor* actor);
   void EnsureUserExists(Networking::UserId userId);
 };

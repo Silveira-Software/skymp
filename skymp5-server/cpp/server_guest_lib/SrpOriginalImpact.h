@@ -44,6 +44,11 @@ nlohmann::json Cancel(PartOne& server, Networking::UserId userId,
                       const std::string& operationId);
 nlohmann::json Inspect(const MpActor& actor);
 
+// Versioned CustomPacket transport for original melee. Legacy HitMessage
+// has no action identity and cannot initiate this path.
+void HandleMeleePacket(PartOne& server, Networking::UserId userId,
+                       const std::string& content);
+
 // Validate geometry for the scoped dynamic hit before the legacy damage path.
 // The caller owns native packet authentication and applies the result inline.
 // This does not produce an original-reference receipt or a per-swing nonce.

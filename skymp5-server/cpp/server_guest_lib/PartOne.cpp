@@ -205,6 +205,8 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     actor.UnsubscribeFromAll();
     actor.RemoveFromGridAndUnsubscribeAll();
 
+    if (serverState.ActorByUser(userId) != &actor)
+      serverState.RotateSessionIncarnation(userId);
     serverState.actorsMap.Set(userId, &actor);
 
     actor.ForceSubscriptionsUpdate();
@@ -220,6 +222,8 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     actor.SetLastAnimEvent(std::nullopt);
 
   } else {
+    if (serverState.ActorByUser(userId))
+      serverState.RotateSessionIncarnation(userId);
     serverState.actorsMap.Erase(userId);
   }
 }

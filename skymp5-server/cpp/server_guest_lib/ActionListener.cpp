@@ -2,8 +2,6 @@
 #include "SrpOriginalImpact.h"
 #include "SrpOriginalLifecycle.h"
 #include "SrpTransformationFence.h"
-#include "gamemode_events/SrpOriginalImpactRequestEvent.h"
-#include <sodium.h>
 #include "AnimationSystem.h"
 #include "ConditionsEvaluator.h"
 #include "ConsoleCommands.h"
@@ -123,6 +121,12 @@ void ActionListener::OnCustomPacket(const RawMessageData& rawMsgData,
 {
   simdjson::dom::parser parser;
   auto content = parser.parse(msg.contentJsonDump).value();
+  std::string_view type;
+  if (!content["customPacketType"].get(type) && type == "srpOriginalMelee") {
+    SrpOriginalImpact::HandleMeleePacket(partOne, rawMsgData.userId,
+                                         msg.contentJsonDump);
+    return;
+  }
   for (auto& listener : partOne.GetListeners()) {
     listener->OnCustomPacket(rawMsgData.userId, content);
   }
@@ -1144,30 +1148,8 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   const bool managedTarget =
     targetRef->AsActor() && SrpOriginalLifecycle::Managed(*targetRef->AsActor());
   if (managedAggressor || managedTarget) {
-    // Managed actors stay quarantined from the legacy damage pipeline. A player
-    // attacking a managed original is routed to the authoritative impact service
-    // through a dedicated event; the packet only signals intention, never proves
-    // contact, damage or death. NPC-to-player authority is a separate producer.
-    // The aggressor must be the authenticated user's own actor: a hosted NPC
-    // attacking on a player's behalf (the hosters branch above) must never be
-    // treated as that player's hit, or it would borrow the player's damage,
-    // equipment and session.
-    if (!managedAggressor && managedTarget && aggressor == myActor) {
-      // requestId is cryptographic, so it never collides with an id persisted by
-      // a previous process. It is an idempotency key, not a dedup token: the
-      // native rate limit plus the reach/collision proof re-validate every
-      // admission, because the hit packet carries no per-swing nonce.
-      unsigned char bytes[16];
-      randombytes_buf(bytes, sizeof(bytes));
-      char hex[33];
-      sodium_bin2hex(hex, sizeof(hex), bytes, sizeof(bytes));
-      // Fire dispatches synchronously into the gamemode; nothing below touches
-      // server state, so a reentrant Begin/Apply from the JS handler cannot
-      // observe a half-applied OnHit. The legacy pipeline stays blocked.
-      SrpOriginalImpactRequestEvent event(rawMsgData.userId, hitData.target,
-                                          std::string("hit-") + hex);
-      event.Fire(&partOne.worldState);
-    }
+    // A legacy hit cannot distinguish a swing from a retransmission.
+    // Original melee uses the versioned intent handled by OnCustomPacket.
     return;
   }
 

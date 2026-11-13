@@ -1,5 +1,6 @@
 #include "SrpOriginalImpact.h"
 #include "ActionListener.h"
+#include "CustomPacketMessage.h"
 #include "FormCallbacks.h"
 #include "HitMessage.h"
 #include "SrpCollision.h"
@@ -15,7 +16,10 @@
 #include "save_storages/AsyncSaveStorage.h"
 #include "gamemode_events/GameModeEvent.h"
 #include <catch2/catch_all.hpp>
+#include <csignal>
 #include <filesystem>
+#include <poll.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 PartOne& GetPartOne();
@@ -25,13 +29,16 @@ constexpr uint32_t cowId = 0x10ebaf;
 constexpr uint32_t playerId = 0xff000091;
 constexpr Networking::UserId testUserId = 7;
 
-void AttachStorage(PartOne& w)
+std::shared_ptr<FileDatabase> AttachStorage(
+  PartOne& w, const std::filesystem::path& path =
+    std::filesystem::temp_directory_path() /
+      ("srp-impact-" + std::to_string(getpid())))
 {
-  const auto path = std::filesystem::temp_directory_path() /
-    ("srp-impact-" + std::to_string(getpid()));
   using Save = Viet::AsyncSaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>;
-  w.worldState.AttachSaveStorage(std::make_shared<Save>(
-    std::make_shared<FileDatabase>(path.string(), std::make_shared<spdlog::logger>("impact"), true)));
+  auto database = std::make_shared<FileDatabase>(
+    path.string(), std::make_shared<spdlog::logger>("impact"), true);
+  w.worldState.AttachSaveStorage(std::make_shared<Save>(database));
+  return database;
 }
 
 void WaitForSaved(PartOne& w, MpActor& actor)
@@ -220,6 +227,280 @@ TEST_CASE("Impact fails closed when server collision scene is not installed", "[
     SrpOriginalImpact::Begin(w, testUserId, cowId, "req-no-scene-1"),
     "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE"
   );
+}
+
+TEST_CASE("Versioned original melee binds a durable action to the connected character",
+          "[srp-original-impact][srp-r46-melee]")
+{
+  using Json = nlohmann::json;
+  struct ImpactListener : PartOne::Listener
+  {
+    PartOne* server = nullptr;
+    std::vector<Json> requests;
+    Json result;
+    void OnConnect(Networking::UserId) override {}
+    void OnDisconnect(Networking::UserId) override {}
+    void OnCustomPacket(Networking::UserId, const simdjson::dom::element&) override {}
+    bool OnMpApiEvent(const GameModeEvent& event) override
+    {
+      if (!server || std::string(event.GetName()) != "onSrpOriginalImpactRequest")
+        return true;
+      const auto args = Json::parse(event.GetArgumentsJsonArray());
+      requests.push_back(args);
+      result = SrpOriginalImpact::Begin(*server, args.at(0).get<Networking::UserId>(),
+        args.at(1).get<uint32_t>(), args.at(2).get<std::string>());
+      return false;
+    }
+  };
+  auto& server = GetPartOne();
+  const auto database = AttachStorage(server);
+  auto& cow = SetupCow(server);
+  auto& player = SetupPlayer(server, cow);
+  Isolate(server, cow, player);
+  auto& world = server.worldState;
+  const auto desc = [&](uint32_t id) { return FormDesc::FromFormId(id, world.espmFiles).ToString(); };
+  const auto cell = cow.GetCellOrWorld().ToFormId(world.espmFiles);
+  world.InstallSrpCollisionScene(CreateSyntheticScene(cell, desc(cow.GetBaseId()),
+    desc(cow.GetRaceId()), cow.GetPos(), desc(player.GetBaseId()), desc(player.GetRaceId())),
+    AuditConfig(cell, true));
+  auto listener = std::make_shared<ImpactListener>();
+  server.AddListener(listener);
+  listener->server = &server;
+  const auto send = [&](const Json& payload) {
+    RawMessageData raw;
+    raw.userId = testUserId;
+    CustomPacketMessage packet;
+    packet.contentJsonDump = payload.dump();
+    server.GetActionListener().OnCustomPacket(raw, packet);
+  };
+  const Json hello = {{"customPacketType", "srpOriginalMelee"}, {"version", 1},
+                      {"action", "hello"}};
+  const auto negotiate = [&] {
+    server.Messages().clear();
+    send(hello);
+    REQUIRE(server.Messages().size() == 1);
+    const auto ready = Json::parse(server.Messages().back().j.at("contentJsonDump").get<std::string>());
+    REQUIRE(ready.at("action") == "ready");
+    REQUIRE(ready.at("actorId") == playerId);
+    return ready.at("session").get<std::string>();
+  };
+  const auto session = negotiate();
+  Json impact = hello;
+  impact["action"] = "impact";
+  impact["session"] = session;
+  impact["actionId"] = std::string(32, 'a');
+  impact["targetId"] = cowId;
+  auto bad = impact;
+  bad["version"] = 2;
+  send(bad);
+  bad = impact;
+  bad["actionId"] = "bad-id";
+  send(bad);
+  bad = impact;
+  bad["targetId"] = 0xfffffff0u;
+  send(bad);
+  REQUIRE(listener->requests.empty());
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(0xfffffff0u));
+  RawMessageData raw;
+  raw.userId = testUserId;
+  HitMessage legacy;
+  legacy.data.aggressor = 0x14;
+  legacy.data.target = cowId;
+  legacy.data.source = 0x1f4;
+  server.GetActionListener().OnHit(raw, legacy);
+  REQUIRE(listener->requests.empty());
+
+  const auto health = cow.GetActorValues().healthPercentage;
+  send(impact);
+  REQUIRE(listener->requests.size() == 1);
+  REQUIRE(listener->result.at("state") == "ISSUED");
+  const auto op = listener->result.at("operationId").get<std::string>();
+  send(impact);
+  REQUIRE(listener->requests.at(0) == listener->requests.at(1));
+  REQUIRE(listener->result.at("duplicate") == true);
+  REQUIRE(listener->result.at("operationId") == op);
+  WaitForSaved(server, player);
+  REQUIRE(SrpOriginalImpact::Apply(server, testUserId, op).at("state") == "TARGET_SAVE_PENDING");
+  WaitForSaved(server, cow);
+  const auto after = cow.GetActorValues().healthPercentage;
+  REQUIRE(after < health);
+  // Read the exact persisted boundary before attacker acknowledgement.
+  std::optional<MpChangeForm> savedTarget, savedAttacker;
+  database->Iterate([&](const MpChangeForm& form) {
+    if (form.formDesc == cow.GetChangeForm().formDesc) savedTarget = form;
+    if (form.formDesc == player.GetChangeForm().formDesc) savedAttacker = form;
+  }, std::vector<FormDesc>{cow.GetChangeForm().formDesc, player.GetChangeForm().formDesc});
+  REQUIRE(savedTarget.has_value());
+  REQUIRE(savedAttacker.has_value());
+  REQUIRE(savedTarget->actorValues.healthPercentage == after);
+  REQUIRE(savedTarget->dynamicFields.GetAsJson().at(SrpOriginalImpact::kProperty)
+    .at("operations").contains(op));
+
+  auto& restarted = GetPartOne();
+  AttachStorage(restarted);
+  restarted.worldState.LoadChangeForm(*savedTarget, restarted.CreateFormCallbacks());
+  restarted.worldState.LoadChangeForm(*savedAttacker, restarted.CreateFormCallbacks());
+  restarted.worldState.npcEnabled = true;
+  auto& restoredTarget = restarted.worldState.GetFormAt<MpActor>(cowId);
+  restarted.worldState.npcEnabled = false;
+  auto& restoredPlayer = restarted.worldState.GetFormAt<MpActor>(playerId);
+  restarted.serverState.Connect(testUserId, "test-guid-1");
+  restarted.serverState.actorsMap.Set(testUserId, &restoredPlayer);
+  REQUIRE(restoredTarget.GetActorValues().healthPercentage == after);
+  const auto replayed = SrpOriginalImpact::Apply(restarted, testUserId, op);
+  REQUIRE(replayed.at("duplicate") == true);
+  if (replayed.at("state") == "TARGET_SAVE_PENDING") {
+    WaitForSaved(restarted, restoredTarget);
+    REQUIRE(SrpOriginalImpact::Apply(restarted, testUserId, op).at("state") == "APPLIED");
+  } else {
+    REQUIRE(replayed.at("state") == "APPLIED");
+  }
+  REQUIRE(restoredTarget.GetActorValues().healthPercentage == after);
+  const auto replayListener = std::make_shared<ImpactListener>();
+  restarted.AddListener(replayListener);
+  replayListener->server = &restarted;
+  CustomPacketMessage oldImpact;
+  oldImpact.contentJsonDump = impact.dump();
+  restarted.GetActionListener().OnCustomPacket(raw, oldImpact);
+  REQUIRE(replayListener->requests.empty());
+  replayListener->server = nullptr;
+
+  server.serverState.Disconnect(testUserId);
+  server.serverState.Connect(testUserId, "test-guid-1");
+  server.serverState.actorsMap.Set(testUserId, &player);
+  send(impact);
+  REQUIRE(listener->requests.size() == 2);
+  REQUIRE(negotiate() != session);
+  REQUIRE(SrpOriginalImpact::Apply(server, testUserId, op).at("state") == "APPLIED");
+  REQUIRE(cow.GetActorValues().healthPercentage == after);
+  WaitForSaved(server, player);
+
+  const auto current = negotiate();
+  auto renewed = impact;
+  renewed["session"] = current;
+  send(renewed);
+  REQUIRE(listener->requests.size() == 3);
+  REQUIRE(listener->result.at("operationId") == op);
+  REQUIRE(listener->result.at("state") == "APPLIED");
+  server.SetUserActor(testUserId, 0);
+  server.SetUserActor(testUserId, playerId);
+  REQUIRE(negotiate() != current);
+  impact["session"] = current;
+  send(impact);
+  REQUIRE(listener->requests.size() == 3);
+  REQUIRE(cow.GetActorValues().healthPercentage == after);
+  WaitForSaved(server, player);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  renewed["session"] = negotiate();
+  renewed["actionId"] = std::string(32, 'b');
+  send(renewed);
+  REQUIRE(listener->requests.size() == 4);
+  REQUIRE(listener->result.at("state") == "ISSUED");
+  REQUIRE(listener->result.at("operationId") != op);
+  listener->server = nullptr;
+}
+
+TEST_CASE("Original melee reconciles durable target damage after SIGKILL before acknowledgement",
+          "[srp-r46-crash][crash]")
+{
+  using Json = nlohmann::json;
+  const auto path = std::filesystem::temp_directory_path() /
+    ("srp-impact-crash-" + std::to_string(getpid()));
+  int signal[2];
+  REQUIRE(pipe(signal) == 0);
+  const auto child = fork();
+  REQUIRE(child >= 0);
+  if (child == 0) {
+    close(signal[0]);
+    try {
+      auto& server = GetPartOne();
+      AttachStorage(server, path);
+      auto& target = SetupCow(server);
+      auto& attacker = SetupPlayer(server, target);
+      auto& world = server.worldState;
+      const auto desc = [&](uint32_t id) {
+        return FormDesc::FromFormId(id, world.espmFiles).ToString();
+      };
+      const auto cell = target.GetCellOrWorld().ToFormId(world.espmFiles);
+      world.InstallSrpCollisionScene(CreateSyntheticScene(cell, desc(target.GetBaseId()),
+        desc(target.GetRaceId()), target.GetPos(), desc(attacker.GetBaseId()),
+        desc(attacker.GetRaceId())), AuditConfig(cell, true));
+      const auto before = target.GetActorValues().healthPercentage;
+      const auto id = SrpOriginalImpact::Begin(server, testUserId, cowId,
+        "hit-0123456789abcdef0123456789abcdef").at("operationId").get<std::string>();
+      WaitForSaved(server, attacker);
+      REQUIRE(SrpOriginalImpact::Apply(server, testUserId, id).at("state") == "TARGET_SAVE_PENDING");
+      WaitForSaved(server, target);
+      REQUIRE(target.GetActorValues().healthPercentage < before);
+      const char ready = 'R';
+      if (write(signal[1], &ready, 1) != 1)
+        _exit(2);
+      for (;;)
+        pause();
+    } catch (...) {
+      _exit(3);
+    }
+  }
+  close(signal[1]);
+  pollfd descriptor{signal[0], POLLIN, 0};
+  char phase = 0;
+  if (poll(&descriptor, 1, 45000) > 0)
+    read(signal[0], &phase, 1);
+  close(signal[0]);
+  kill(child, SIGKILL);
+  int status = 0;
+  REQUIRE(waitpid(child, &status, 0) == child);
+  REQUIRE(phase == 'R');
+  REQUIRE(WIFSIGNALED(status));
+  REQUIRE(WTERMSIG(status) == SIGKILL);
+
+  auto& restarted = GetPartOne();
+  const auto database = AttachStorage(restarted, path);
+  database->Iterate([&](const MpChangeForm& form) {
+    restarted.worldState.LoadChangeForm(form, restarted.CreateFormCallbacks());
+  }, std::nullopt);
+  restarted.worldState.npcEnabled = true;
+  auto& target = restarted.worldState.GetFormAt<MpActor>(cowId);
+  restarted.worldState.npcEnabled = false;
+  auto& attacker = restarted.worldState.GetFormAt<MpActor>(playerId);
+  restarted.serverState.Connect(testUserId, "test-guid-after-crash");
+  restarted.serverState.actorsMap.Set(testUserId, &attacker);
+  const auto ledger = attacker.GetDynamicFields().GetAsJson().at(SrpOriginalImpact::kProperty);
+  const auto id = ledger.at("pending").get<std::string>();
+  REQUIRE(ledger.at("operations").at(id).at("state") == "ISSUED");
+  REQUIRE(target.GetDynamicFields().GetAsJson().at(SrpOriginalImpact::kProperty)
+    .at("operations").contains(id));
+  const auto health = target.GetActorValues().healthPercentage;
+  const auto replay = SrpOriginalImpact::Apply(restarted, testUserId, id);
+  REQUIRE(replay.at("duplicate") == true);
+  if (replay.at("state") == "TARGET_SAVE_PENDING")
+    WaitForSaved(restarted, target);
+  REQUIRE(SrpOriginalImpact::Apply(restarted, testUserId, id).at("state") == "APPLIED");
+  WaitForSaved(restarted, attacker);
+  REQUIRE(target.GetActorValues().healthPercentage == health);
+
+  // Reload a fully acknowledged outbox too. Its in-process generation starts
+  // at zero, so retry must schedule a save before returning saved=true.
+  std::optional<MpChangeForm> terminal;
+  database->Iterate([&](const MpChangeForm& form) {
+    if (form.formDesc == attacker.GetChangeForm().formDesc) terminal = form;
+  }, std::vector<FormDesc>{attacker.GetChangeForm().formDesc});
+  REQUIRE(terminal.has_value());
+  auto& afterAck = GetPartOne();
+  AttachStorage(afterAck, path);
+  afterAck.worldState.LoadChangeForm(*terminal, afterAck.CreateFormCallbacks());
+  auto& reloadedAttacker = afterAck.worldState.GetFormAt<MpActor>(playerId);
+  afterAck.serverState.Connect(testUserId, "test-guid-after-ack");
+  afterAck.serverState.actorsMap.Set(testUserId, &reloadedAttacker);
+  REQUIRE(afterAck.worldState.GetChangeFormGeneration(playerId) == 0);
+  const auto acknowledged = SrpOriginalImpact::Apply(afterAck, testUserId, id);
+  REQUIRE(acknowledged.at("state") == "APPLIED");
+  REQUIRE(acknowledged.at("saved") == false);
+  REQUIRE(afterAck.worldState.GetChangeFormGeneration(playerId) > 0);
+  WaitForSaved(afterAck, reloadedAttacker);
+  REQUIRE(SrpOriginalImpact::Apply(afterAck, testUserId, id).at("saved") == true);
+  REQUIRE(SrpOriginalImpact::Cancel(afterAck, testUserId, id).at("saved") == true);
+  REQUIRE_FALSE(afterAck.worldState.LookupFormByIdNoLoad(cowId));
 }
 
 TEST_CASE("Impact verifies complete collision scene, rate limit, single hit, and replay resistance", "[srp-original-impact]")

@@ -5,11 +5,69 @@ import { FormType, HitEvent, storage } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { Hit } from "../messages/hitMessage";
+import { randomBytes } from "crypto";
+import { ConnectionMessage } from "../events/connectionMessage";
+import { CustomPacketMessage } from "../messages/customPacketMessage";
+import { RemoteServer } from "./remoteServer";
 
 export class HitService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         controller.on('hit', (e) => this.onHit(e));
+        controller.emitter.on("customPacketMessage", e => this.onMeleePacket(e));
+        controller.emitter.on("connectionDisconnect", () => this.resetMeleeSession());
+        controller.emitter.on("connectionFailed", () => this.resetMeleeSession());
+        controller.emitter.on("createActorMessage", e => {
+            if (!e.message.isMe) return;
+            this.resetMeleeSession();
+            this.meleeOwner = Number(e.message.refrId) >>> 0;
+        });
+        controller.on("update", () => {
+            if (this.meleeOwner && Date.now() >= this.nextMeleeHello &&
+                (this.meleeSession || this.meleeHelloAttempts < 3)) {
+                this.nextMeleeHello = Date.now() + 5000;
+                this.meleeHelloAttempts++;
+                this.sendMeleePacket({ action: "hello" });
+            }
+        });
+        controller.once("update", () => this.sp.hooks.sendAnimationEvent.add({
+            enter: () => {},
+            leave: ctx => {
+                if (!ctx.animationSucceeded || !this.meleeSession ||
+                    !/^attackStart/i.test(ctx.animEventName)) return;
+                this.swing = { id: randomBytes(16).toString("hex"), until: Date.now() + 2500 };
+            },
+        }, 0x14, 0x14));
+    }
+
+    private resetMeleeSession() {
+        this.meleeOwner = 0;
+        this.meleeSession = null;
+        this.swing = null;
+        this.nextMeleeHello = 0;
+        this.meleeHelloAttempts = 0;
+    }
+
+    private sendMeleePacket(data: Record<string, unknown>) {
+        this.controller.emitter.emit("sendMessage", {
+            message: {
+                t: MsgType.CustomPacket,
+                contentJsonDump: JSON.stringify({ customPacketType: "srpOriginalMelee", version: 1, ...data }),
+            },
+            reliability: "reliable",
+        });
+    }
+
+    private onMeleePacket(e: ConnectionMessage<CustomPacketMessage>) {
+        try {
+            const packet = JSON.parse(e.message.contentJsonDump);
+            if (packet?.customPacketType !== "srpOriginalMelee" || packet.version !== 1 ||
+                packet.action !== "ready" || !this.meleeOwner || packet.actorId !== this.meleeOwner ||
+                typeof packet.session !== "string" || !/^[0-9a-f]{64}$/.test(packet.session)) return;
+            this.meleeSession = packet.session;
+        } catch {
+            // Other custom packets belong to their respective services.
+        }
     }
 
     private onHit(e: HitEvent) {
@@ -62,8 +120,18 @@ export class HitService extends ClientListener {
             this.recentMagicHits.set(aggressorId, now);
         }
 
+        const data = this.getHitData(e);
+        const swing = this.swing;
+        if (aggressor === 0x14 && isWeapon && data.target > 0 && data.target < 0xff000000 &&
+            !data.projectile && !data.isBashAttack && !data.isPowerAttack && !data.isSneakAttack &&
+            this.meleeSession && swing && !swing.target && Date.now() <= swing.until &&
+            this.controller.lookupListener(RemoteServer).getMyRemoteRefrId() % 0x100000000 === this.meleeOwner) {
+            swing.target = data.target;
+            this.sendMeleePacket({ action: "impact", session: this.meleeSession,
+                actionId: swing.id, targetId: swing.target });
+        }
         this.controller.emitter.emit("sendMessage", {
-            message: { t: MsgType.OnHit, data: this.getHitData(e) },
+            message: { t: MsgType.OnHit, data },
             reliability: "reliable"
         });
     }
@@ -83,4 +151,9 @@ export class HitService extends ClientListener {
     }
 
     private recentMagicHits: Map<number, number> = new Map();
+    private meleeOwner = 0;
+    private meleeSession: string | null = null;
+    private nextMeleeHello = 0;
+    private meleeHelloAttempts = 0;
+    private swing: { id: string; until: number; target?: number } | null = null;
 }

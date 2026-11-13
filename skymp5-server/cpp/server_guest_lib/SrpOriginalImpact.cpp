@@ -8,12 +8,14 @@
 #include "SrpOriginalStats.h"
 #include "SrpTransformationFence.h"
 #include "WorldState.h"
+#include "gamemode_events/SrpOriginalImpactRequestEvent.h"
 #include "libespm/espm.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
 #include <sodium.h>
+#include <spdlog/spdlog.h>
 #include <stdexcept>
 
 namespace SrpOriginalImpact {
@@ -22,6 +24,7 @@ using Json = nlohmann::json;
 using Vec = SrpCollision::Vec3;
 constexpr size_t capacity = 4096;
 constexpr int64_t lifetimeMs = 5000;
+constexpr int64_t meleeSessionWindowMs = 15000;
 void Require(bool accepted, const char* message)
 {
   if (!accepted) throw std::runtime_error(message);
@@ -283,6 +286,24 @@ Frame Capture(WorldState& world,const MpActor& attacker,const MpActor& target)
   auto frame=world.CaptureSrpOriginalImpactFrame(attacker,target);
   Require(frame.has_value(),"SRP_IMPACT_SERVER_FRAME_UNAVAILABLE");return *frame;
 }
+
+std::string MeleeSession(PartOne& server, Networking::UserId userId,
+                         const MpActor& attacker, int64_t window)
+{
+  return Digest({{"protocol", "srpOriginalMelee/1"},
+                 {"session", server.serverState.SessionIncarnation(userId)},
+                 {"window", window},
+                 {"actor", PlayerIdentity(attacker, true).at("reference")},
+                 {"profileId", attacker.GetProfileId()},
+                 {"characterId", attacker.GetDynamicFields().GetAsJson().at(
+                   "srpActiveCharacterId")}});
+}
+
+bool ActionId(const std::string& id)
+{
+  return id.size() == 32 &&
+    id.find_first_not_of("0123456789abcdef") == std::string::npos;
+}
 void Write(MpActor& actor,const Json& ledger)
 {
   actor.SetPropertyValueDump(kProperty,Seal(ledger).dump(),false,false);
@@ -293,6 +314,14 @@ Json Response(const MpActor& actor,const Json& entry,bool duplicate)
     {"entry",entry},{"duplicate",duplicate},{"saved",Saved(actor)},
     {"generation",actor.GetParent()->GetChangeFormGeneration(actor.GetFormId())},
     {"enginePoseParity",false},{"lootEnabled",false},{"xpEnabled",false}};
+}
+Json TerminalResponse(MpActor& actor, const Json& ledger, const Json& entry)
+{
+  // A loaded terminal receipt is durable on disk but has no save generation
+  // in this process. Reaffirm the same ledger before acknowledging its retry.
+  if (actor.GetParent()->GetChangeFormGeneration(actor.GetFormId()) == 0)
+    actor.RunChangeFormTransaction([&] { Write(actor, ledger); return true; });
+  return Response(actor, entry, true);
 }
 Json Reconcile(MpActor& attacker,MpActor& target,Json ledger,Json entry,const Json& receipt)
 {
@@ -322,6 +351,52 @@ Json Reconcile(MpActor& attacker,MpActor& target,Json ledger,Json entry,const Js
   target.NetSendChangeValues(target.GetActorValues(),std::vector<espm::ActorValue>{espm::ActorValue::Health});
   return Response(attacker,entry,true);
 }
+}
+
+void HandleMeleePacket(PartOne& server, Networking::UserId userId,
+                       const std::string& content)
+{
+  // Bound this extension independently from other SkyMP custom packets.
+  if (content.size() > 512) return;
+  try {
+    const auto packet = Json::parse(content);
+    if (packet.at("version") != 1 || !packet.at("version").is_number_integer())
+      return;
+    auto& attacker = Authenticated(server, userId);
+    const auto& action = packet.at("action");
+    const auto window = Now() / meleeSessionWindowMs;
+    if (action == "hello" && packet.size() == 3) {
+      const auto session = MeleeSession(server, userId, attacker, window);
+      server.SendCustomPacket(userId, Json{{"customPacketType", "srpOriginalMelee"},
+        {"version", 1}, {"action", "ready"}, {"session", session},
+        {"actorId", attacker.GetFormId()}}.dump());
+      return;
+    }
+    if (action != "impact" || packet.size() != 6)
+      return;
+    const auto actionId = packet.at("actionId").get<std::string>();
+    const auto& target = packet.at("targetId");
+    if (!ActionId(actionId) || !target.is_number_unsigned() ||
+        target.get<uint64_t>() > std::numeric_limits<uint32_t>::max())
+      return;
+    const auto targetId = target.get<uint32_t>();
+    const auto form = server.worldState.LookupFormByIdNoLoad(targetId);
+    if (!form || !form->AsActor() || !SrpOriginalLifecycle::Managed(*form->AsActor()))
+      return;
+    const auto& session = packet.at("session");
+    if (session != MeleeSession(server, userId, attacker, window) &&
+        session != MeleeSession(server, userId, attacker, window - 1))
+      return;
+    // Keep target outside the key. Reusing a swing for a different target
+    // must conflict with its existing outbox entry.
+    // The ledger itself binds the character. Keep the same id across session
+    // renewal so a retried action cannot mint another operation on reconnect.
+    const auto digest = Digest({{"protocol", "srpOriginalMelee/1"}, {"actionId", actionId}});
+    SrpOriginalImpactRequestEvent event(userId, targetId, "hit-" + digest.substr(0, 32));
+    event.Fire(&server.worldState);
+  } catch (const std::exception& error) {
+    spdlog::debug("SRP original melee packet refused: {}", error.what());
+  }
 }
 
 void RequireDynamicMeleeContact(WorldState& world, const MpActor& attacker,
@@ -355,7 +430,8 @@ Json Begin(PartOne& server,Networking::UserId userId,uint32_t targetId,const std
   if(ledger.at("requests").contains(requestId)){
     const auto& entry=ledger.at("operations").at(ledger.at("requests").at(requestId).get<std::string>());
     Require(entry.at("intent").at("targetId")==targetId,"SRP_IMPACT_REQUEST_ID_CONFLICT");
-    return Response(attacker,entry,true);
+    return entry.at("state") == "ISSUED" ? Response(attacker,entry,true) :
+      TerminalResponse(attacker,ledger,entry);
   }
   Require(ledger.at("pending").is_null(),"SRP_IMPACT_PENDING_SWING_EXISTS");
   Require(ledger.at("operations").size()<capacity,"SRP_IMPACT_CAPACITY_REQUIRES_RECONCILIATION");
@@ -408,7 +484,7 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
   auto ledger=Ledger(attacker,"OUTBOX",identity);
   Require(ledger.at("operations").contains(operationId),"SRP_IMPACT_OPERATION_NOT_ISSUED");
   auto entry=ledger.at("operations").at(operationId);const auto intent=entry.at("intent");
-  if(entry.at("state")=="APPLIED")return Response(attacker,entry,true);
+  if(entry.at("state")=="APPLIED")return TerminalResponse(attacker,ledger,entry);
   Require(entry.at("state")=="ISSUED" && ledger.at("pending")==operationId,"SRP_IMPACT_OPERATION_NOT_PENDING");
   auto& target=Loaded(server.worldState,intent.at("targetId").get<uint32_t>());
   const auto targetIdentity=TargetIdentity(target);
@@ -498,7 +574,7 @@ Json Cancel(PartOne& server,Networking::UserId userId,const std::string& operati
   auto& attacker=Authenticated(server,userId);auto ledger=Ledger(attacker,"OUTBOX",PlayerIdentity(attacker));
   Require(ledger.at("operations").contains(operationId),"SRP_IMPACT_OPERATION_NOT_ISSUED");
   auto entry=ledger.at("operations").at(operationId);
-  if(entry.at("state")!="ISSUED")return Response(attacker,entry,true);
+  if(entry.at("state")!="ISSUED")return TerminalResponse(attacker,ledger,entry);
   auto& target=Loaded(server.worldState,entry.at("intent").at("targetId").get<uint32_t>());
   auto targetLedger=Ledger(target,"TARGET_RECEIPTS",TargetIdentity(target));
   if(targetLedger.at("operations").contains(operationId))
