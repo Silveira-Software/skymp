@@ -8,6 +8,7 @@
 
 #include "AtomicActorSpawnV16.h"
 #include "Bot.h"
+#include "MessageSerializerFactory.h"
 #include "ConditionsEvaluator.h"
 #include "FormCallbacks.h"
 #include "FormDesc.h"
@@ -803,6 +804,22 @@ Napi::Value ScampServer::CreateBot(const Napi::CallbackInfo& info)
       }
     }));
 
+  // Test clients consume the actual server handshake, rather than minting a
+  // session token or exposing server secrets through a gameplay API.
+  jBot.Set("receive", Napi::Function::New(info.Env(), [bot](const Napi::CallbackInfo& info) {
+    const auto packets = bot->Receive(); auto result = Napi::Array::New(info.Env(), packets.size());
+    for (size_t i=0; i<packets.size(); ++i) {
+      try {
+        const auto decoded = PartOne::GetMessageSerializerInstance().Deserialize(
+          reinterpret_cast<const uint8_t*>(packets[i].data()), packets[i].size());
+        if (decoded) {
+          nlohmann::json value; decoded->message->WriteJson(value);
+          result.Set(i, NapiHelper::ParseJson(info.Env(), value));
+        }
+      } catch (const std::exception&) { /* Legacy messages have no typed decoder. */ }
+    }
+    return result;
+  }));
   return jBot;
 }
 

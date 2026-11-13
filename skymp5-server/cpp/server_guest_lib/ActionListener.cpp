@@ -1124,6 +1124,9 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   // A race switch may reset local AVs/equipment. It must not borrow either the
   // previous or the next form's combat while its durable handshake is pending.
   if (SrpTransformationFenced(*aggressor)) return;
+  // Claws use the durable CustomPacket action, including on older clients.
+  // A legacy hit must not bypass condition or per-action receipt validation.
+  if (aggressor->GetRaceId() == FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(partOne.worldState.espmFiles)) return;
 
   if (hitData.target == 0x14) {
     hitData.target = myActor->GetFormId();

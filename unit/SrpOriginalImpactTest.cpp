@@ -19,9 +19,11 @@
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <sodium.h>
 
 PartOne& GetPartOne();
 
@@ -226,6 +228,81 @@ MpActor& SetupPlayer(PartOne& w, const MpActor& target)
   WaitForSaved(w, player);
   return player;
 }
+
+// Private server fixtures. The integrated probe obtains these properties from
+// the real canonical service and transformation coordinator instead.
+nlohmann::json TestSeal(nlohmann::json value)
+{
+  value.erase("checksum");
+  const auto text = value.dump();
+  unsigned char bytes[crypto_hash_sha256_BYTES]; char out[65];
+  crypto_hash_sha256(bytes, reinterpret_cast<const unsigned char*>(text.data()), text.size());
+  sodium_bin2hex(out, sizeof(out), bytes, sizeof(bytes));
+  value["checksum"] = out; return value;
+}
+void SetupClaws(PartOne& w, MpActor& player)
+{
+  Appearance appearance; appearance.raceId = 0xcdd84; player.SetAppearance(&appearance);
+  const auto owner = nlohmann::json{{"profileId", "9191"}, {"characterId", "combat-PC"}};
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  player.SetPropertyValueDump("private.srpSupernaturalCombatV1", TestSeal({
+    {"schemaVersion",1},{"owner",owner},{"revision",3},{"kind","werewolf"},{"form","werewolf"},
+    {"phase","NONE"},{"reserve",100},{"expiresAtMs",now+90000},{"clawsEnabled",true}}).dump(),false,false);
+  player.SetPropertyValueDump("private.srpTransformationV1", TestSeal({
+    {"schemaVersion",1},{"owner",owner},{"activeOperation","fixture-transform"},{"pending",nullptr},
+    {"fenced",false},{"restoration",{{"fixture",true}}},
+    {"operations",{{"fixture-transform",{{"state","APPLIED"},{"target","werewolf"},
+      {"targetAppearance",{{"raceId",0xcdd84}}}}}}}}).dump(),false,false);
+  WaitForSaved(w,player);
+}
+}
+
+TEST_CASE("R48 exports an isolated native combat world", "[.][srp-r48-seed]")
+{
+  const char* directory = std::getenv("SRP_R48_SEED_DIR"); REQUIRE(directory);
+  auto& w = GetPartOne(); AttachStorage(w, std::filesystem::path(directory)/"world");
+  auto& cow = SetupCow(w); auto& player = SetupPlayer(w,cow);
+  const auto desc = [&](uint32_t id) { return FormDesc::FromFormId(id,w.worldState.espmFiles).ToString(); };
+  nlohmann::json facts={{"actorId",playerId},{"targetId",cowId},{"pos",{cow.GetPos().x,cow.GetPos().y,cow.GetPos().z}},
+    {"worldOrCell",cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles)},
+    {"targetBase",desc(cow.GetBaseId())},{"targetRace",desc(cow.GetRaceId())},
+    {"playerBase",desc(player.GetBaseId())},{"playerRace",desc(player.GetRaceId())}};
+  std::ofstream(std::filesystem::path(directory)/"facts.json") << facts.dump(2);
+}
+
+TEST_CASE("Claws require the canonical condition, reserve, transformation and contact", "[srp-r48-claws]")
+{
+  auto& w=GetPartOne(); AttachStorage(w);
+  auto& cow=SetupCow(w); auto& player=SetupPlayer(w,cow); Isolate(w,cow,player);
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w,testUserId,cowId,"claw-human"),"SRP_CLAWS_WEREWOLF_RACE_REQUIRED");
+  SetupClaws(w,player);
+  const auto good=player.GetChangeForm();
+  auto state=player.GetDynamicFields().GetAsJson().at("private.srpSupernaturalCombatV1");
+  for (const auto& change : std::vector<nlohmann::json>{{{"reserve",0}},{{"expiresAtMs",0}},{{"form","human"}},{{"clawsEnabled",false}}}) {
+    auto denied=state;denied.update(change);
+    player.SetPropertyValueDump("private.srpSupernaturalCombatV1",TestSeal(denied).dump(),false,false);WaitForSaved(w,player);
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w,testUserId,cowId,"claw-denied"),"SRP_CLAWS_CONDITION_UNAVAILABLE");
+  }
+  player.ApplyChangeForm(good);WaitForSaved(w,player);
+  const auto desc=[&](uint32_t id){return FormDesc::FromFormId(id,w.worldState.espmFiles).ToString();};
+  const auto cell=cow.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
+  w.worldState.InstallSrpCollisionScene(CreateSyntheticScene(cell,desc(cow.GetBaseId()),desc(cow.GetRaceId()),cow.GetPos(),
+    desc(player.GetBaseId()),desc(player.GetRaceId()),false,true),AuditConfig(cell,true));
+  REQUIRE_THROWS(SrpOriginalImpact::Begin(w,testUserId,cowId,"claw-wall"));
+  REQUIRE_FALSE(SrpOriginalImpact::Inspect(player).at("present"));
+  w.worldState.InstallSrpCollisionScene(CreateSyntheticScene(cell,desc(cow.GetBaseId()),desc(cow.GetRaceId()),cow.GetPos(),
+    desc(player.GetBaseId()),desc(player.GetRaceId())),AuditConfig(cell,true));
+  auto far=player.GetPos();far.y-=500;player.SetPos(far);WaitForSaved(w,player);
+  REQUIRE_THROWS(SrpOriginalImpact::Begin(w,testUserId,cowId,"claw-far"));
+  player.ApplyChangeForm(good);WaitForSaved(w,player);
+  const auto op=SrpOriginalImpact::Begin(w,testUserId,cowId,"claw-return").at("operationId").get<std::string>();
+  WaitForSaved(w,player);
+  Appearance human;human.raceId=0x13746;player.SetAppearance(&human);WaitForSaved(w,player);
+  const auto before=cow.GetActorValues().healthPercentage;
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(w,testUserId,op),"SRP_IMPACT_WEAPON_CHANGED");
+  REQUIRE(SrpOriginalImpact::Cancel(w,testUserId,op).at("state")=="CANCELLED");
+  REQUIRE(cow.GetActorValues().healthPercentage==before);
 }
 
 TEST_CASE("Collision pose rejects bone overrides and reads authoritative actor sex", "[srp-original-impact]")
@@ -265,8 +342,9 @@ TEST_CASE("Impact fails closed when server collision scene is not installed", "[
 }
 
 TEST_CASE("Versioned original melee binds a durable action to the connected character",
-          "[srp-original-impact][srp-r46-melee]")
+          "[srp-original-impact][srp-r46-melee][srp-r48-claws]")
 {
+  const bool claws = GENERATE(false, true);
   using Json = nlohmann::json;
   struct ImpactListener : PartOne::Listener
   {
@@ -292,6 +370,7 @@ TEST_CASE("Versioned original melee binds a durable action to the connected char
   auto& cow = SetupCow(server);
   auto& player = SetupPlayer(server, cow);
   Isolate(server, cow, player);
+  if (claws) { SetupClaws(server, player); server.SetDamageFormula(std::make_unique<TES5DamageFormula>()); }
   auto& world = server.worldState;
   const auto desc = [&](uint32_t id) { return FormDesc::FromFormId(id, world.espmFiles).ToString(); };
   const auto cell = cow.GetCellOrWorld().ToFormId(world.espmFiles);
@@ -325,6 +404,7 @@ TEST_CASE("Versioned original melee binds a durable action to the connected char
   impact["session"] = session;
   impact["actionId"] = std::string(32, 'a');
   impact["targetId"] = cowId;
+  if (claws) impact["power"] = "werewolfClaws";
   auto bad = impact;
   bad["version"] = 2;
   send(bad);
@@ -432,15 +512,27 @@ TEST_CASE("Versioned original melee binds a durable action to the connected char
   REQUIRE(listener->requests.size() == 4);
   REQUIRE(listener->result.at("state") == "ISSUED");
   REQUIRE(listener->result.at("operationId") != op);
+  if (claws) {
+    const auto pending=listener->result.at("operationId").get<std::string>();
+    REQUIRE(SrpOriginalImpact::Cancel(server,testUserId,pending).at("state")=="CANCELLED");
+    WaitForSaved(server,player);
+    Appearance human;human.raceId=0x13746;player.SetAppearance(&human);WaitForSaved(server,player);
+    auto crossForm=impact;crossForm.erase("power");crossForm["session"]=negotiate();
+    send(crossForm);
+    REQUIRE(listener->result.at("operationId")==op);
+    REQUIRE(listener->result.at("state")=="APPLIED");
+    REQUIRE(cow.GetActorValues().healthPercentage==after);
+  }
   listener->server = nullptr;
 }
 
 TEST_CASE("Original melee reconciles durable target damage after SIGKILL before acknowledgement",
-          "[srp-r46-crash][crash]")
+          "[srp-r46-crash][srp-r48-claws][crash]")
 {
+  const bool claws = GENERATE(false, true);
   using Json = nlohmann::json;
   const auto path = std::filesystem::temp_directory_path() /
-    ("srp-impact-crash-" + std::to_string(getpid()));
+    ("srp-impact-crash-" + std::to_string(getpid()) + (claws ? "-claws" : "-human"));
   int signal[2];
   REQUIRE(pipe(signal) == 0);
   const auto child = fork();
@@ -452,6 +544,7 @@ TEST_CASE("Original melee reconciles durable target damage after SIGKILL before 
       AttachStorage(server, path);
       auto& target = SetupCow(server);
       auto& attacker = SetupPlayer(server, target);
+      if (claws) { SetupClaws(server, attacker); server.SetDamageFormula(std::make_unique<TES5DamageFormula>()); }
       auto& world = server.worldState;
       const auto desc = [&](uint32_t id) {
         return FormDesc::FromFormId(id, world.espmFiles).ToString();
@@ -462,7 +555,7 @@ TEST_CASE("Original melee reconciles durable target damage after SIGKILL before 
         desc(attacker.GetRaceId())), AuditConfig(cell, true));
       const auto before = target.GetActorValues().healthPercentage;
       const auto id = SrpOriginalImpact::Begin(server, testUserId, cowId,
-        "hit-0123456789abcdef0123456789abcdef").at("operationId").get<std::string>();
+        std::string(claws ? "claw-" : "hit-")+"0123456789abcdef0123456789abcdef").at("operationId").get<std::string>();
       WaitForSaved(server, attacker);
       REQUIRE(SrpOriginalImpact::Apply(server, testUserId, id).at("state") == "TARGET_SAVE_PENDING");
       WaitForSaved(server, target);

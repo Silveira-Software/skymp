@@ -3,6 +3,7 @@ const scampNativeNode = require(process.cwd() + "/scam_native.node");
 export declare interface Bot {
   destroy(): void;
   send(msg: Record<string, unknown>): void;
+  receive(): Record<string, unknown>[];
 }
 
 export type SendChatMessageFn = (

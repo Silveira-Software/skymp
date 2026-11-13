@@ -99,11 +99,15 @@ export class HitService extends ClientListener {
             return;
         }
 
-        const isWeapon = this.sp.Weapon.from(e.source);
-        const isSpell = !isWeapon && this.sp.Spell.from(e.source);
-        const isScroll = !isWeapon && !isSpell && this.sp.Scroll.from(e.source);
+        const sourceId = e.source ? e.source.getFormID() : 0;
+        const beastRace = this.sp.Game.getFormFromFile(0xcdd84, 'Skyrim.esm');
+        const werewolf = !!beastRace && this.sp.Game.getPlayer()?.getRace()?.getFormID() === beastRace.getFormID();
+        const claws = aggressor === 0x14 && werewolf && (!sourceId || sourceId === 0x1f4);
+        const isWeapon = e.source && this.sp.Weapon.from(e.source);
+        const isSpell = e.source && !isWeapon && this.sp.Spell.from(e.source);
+        const isScroll = e.source && !isWeapon && !isSpell && this.sp.Scroll.from(e.source);
 
-        if (!isWeapon && !isSpell && !isScroll) {
+        if (!isWeapon && !isSpell && !isScroll && !claws) {
             return;
         }
 
@@ -122,14 +126,15 @@ export class HitService extends ClientListener {
 
         const data = this.getHitData(e);
         const swing = this.swing;
-        if (aggressor === 0x14 && isWeapon && data.target > 0 && data.target < 0xff000000 &&
+        if (aggressor === 0x14 && (isWeapon || claws) && data.target > 0 && data.target < 0xff000000 &&
             !data.projectile && !data.isBashAttack && !data.isPowerAttack && !data.isSneakAttack &&
             this.meleeSession && swing && !swing.target && Date.now() <= swing.until &&
             this.controller.lookupListener(RemoteServer).getMyRemoteRefrId() % 0x100000000 === this.meleeOwner) {
             swing.target = data.target;
             this.sendMeleePacket({ action: "impact", session: this.meleeSession,
-                actionId: swing.id, targetId: swing.target });
+                actionId: swing.id, targetId: swing.target, ...(claws ? { power: 'werewolfClaws' } : {}) });
         }
+        if (claws) return;
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.OnHit, data },
             reliability: "reliable"

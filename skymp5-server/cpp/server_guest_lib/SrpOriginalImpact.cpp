@@ -152,9 +152,39 @@ Json Host(PartOne& server,const MpActor& target)
     {"session",server.serverState.SessionIncarnation(user)}};
 }
 struct Weapon { uint32_t source=0x1f4; double reach=0; int64_t interval=1000; };
+Json WerewolfClaws(const MpActor& actor)
+{
+  auto* world = actor.GetParent();
+  const auto race = FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(world->espmFiles);
+  Require(actor.GetRaceId() == race, "SRP_CLAWS_WEREWOLF_RACE_REQUIRED");
+  const auto& fields = actor.GetDynamicFields().GetAsJson();
+  Require(fields.contains("private.srpSupernaturalCombatV1") && fields.contains("private.srpTransformationV1"),
+    "SRP_CLAWS_CONFIRMED_CONDITION_REQUIRED");
+  const auto& state = fields.at("private.srpSupernaturalCombatV1");
+  Checksum(state, "SRP_CLAWS_STATE_CORRUPT");
+  const auto& owner = state.at("owner");
+  Require(state.value("schemaVersion",0)==1 && state.value("clawsEnabled",false) &&
+    owner.at("profileId")==std::to_string(actor.GetProfileId()) && owner.at("characterId")==fields.at("srpActiveCharacterId") &&
+    state.at("kind")=="werewolf" && state.at("form")=="werewolf" && state.at("phase")=="NONE" &&
+    state.at("reserve").is_number() && state.at("reserve").get<double>()>0 && state.at("reserve").get<double>()<=100 &&
+    state.at("expiresAtMs").get<int64_t>()>=Now(), "SRP_CLAWS_CONDITION_UNAVAILABLE");
+  const auto& ledger = fields.at("private.srpTransformationV1");
+  Checksum(ledger, "SRP_CLAWS_TRANSFORMATION_CORRUPT");
+  const auto& entry = ledger.at("operations").at(ledger.at("activeOperation").get<std::string>());
+  Require(ledger.at("owner")==owner && !SrpTransformationFenced(actor) && ledger.at("pending").is_null() &&
+    entry.at("state")=="APPLIED" && entry.at("target")=="werewolf" && entry.at("targetAppearance").at("raceId")==race &&
+    !ledger.at("restoration").is_null(), "SRP_CLAWS_TRANSFORMATION_REQUIRED");
+  return {{"power","werewolfClaws"},{"race",race},{"transformation",ledger.at("activeOperation")}};
+}
 Weapon NativeWeapon(const MpActor& actor)
 {
   auto* world=actor.GetParent();const auto& equipment=actor.GetEquipment();Weapon result;
+  if (actor.GetRaceId() == FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(world->espmFiles)) {
+    WerewolfClaws(actor);
+    result.reach = espm::GetData<espm::RACE>(actor.GetRaceId(),world).unarmedReach;
+    Require(std::isfinite(result.reach) && result.reach>0 && result.reach<=1024,"SRP_IMPACT_REACH_INVALID");
+    return result;
+  }
   Require(!equipment.rightSpell && !equipment.leftSpell,"SRP_IMPACT_MELEE_WEAPON_REQUIRED");
   size_t count=0;
   for(const auto& entry:equipment.inv.entries){
@@ -187,6 +217,14 @@ Weapon NativeWeapon(const MpActor& actor)
 }
 Json WeaponJson(const Weapon& weapon,const MpActor& actor)
 {
+  if (actor.GetRaceId() == FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(actor.GetParent()->espmFiles)) {
+    auto result = WerewolfClaws(actor);
+    result["source"] = weapon.source;
+    result["reach"] = weapon.reach;
+    result["intervalMs"] = weapon.interval;
+    result["policy"] = "NORMAL_MELEE_SEGMENT_V1";
+    return result;
+  }
   return {{"source",weapon.source},{"reach",weapon.reach},{"intervalMs",weapon.interval},
     {"equipmentDigest",Digest(actor.GetEquipment().ToJson())},
     {"policy","NORMAL_MELEE_SEGMENT_V1"}};
@@ -372,8 +410,10 @@ void HandleMeleePacket(PartOne& server, Networking::UserId userId,
         {"actorId", attacker.GetFormId()}}.dump());
       return;
     }
-    if (action != "impact" || packet.size() != 6)
+    const bool claws = packet.contains("power") && packet.at("power")=="werewolfClaws";
+    if (action != "impact" || packet.size() != (claws ? 7 : 6))
       return;
+    if (!claws && attacker.GetRaceId()==FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(server.worldState.espmFiles)) return;
     const auto actionId = packet.at("actionId").get<std::string>();
     const auto& target = packet.at("targetId");
     if (!ActionId(actionId) || !target.is_number_unsigned() ||
@@ -392,6 +432,9 @@ void HandleMeleePacket(PartOne& server, Networking::UserId userId,
     // The ledger itself binds the character. Keep the same id across session
     // renewal so a retried action cannot mint another operation on reconnect.
     const auto digest = Digest({{"protocol", "srpOriginalMelee/1"}, {"actionId", actionId}});
+    if (claws) WerewolfClaws(attacker);
+    // One nonce namespace across forms: changing from claws to a human weapon
+    // must not turn the same client swing into a second durable impact.
     SrpOriginalImpactRequestEvent event(userId, targetId, "hit-" + digest.substr(0, 32));
     event.Fire(&server.worldState);
   } catch (const std::exception& error) {
@@ -441,6 +484,7 @@ Json Begin(PartOne& server,Networking::UserId userId,uint32_t targetId,const std
   Require(SrpActorStats::Read(attacker).enabled,"SRP_IMPACT_PLAYER_STATS_REQUIRED");
   Require(SrpOriginalStats::Read(target).has_value(),"SRP_IMPACT_ORIGINAL_STATS_REQUIRED");
   const auto weapon=NativeWeapon(attacker);const auto now=Now();
+  if (requestId.rfind("claw-",0)==0) WerewolfClaws(attacker);
   for(const auto& [id,prior]:ledger.at("operations").items()){
     const auto issued=prior.at("intent").at("issuedAtMs").get<int64_t>();
     const auto interval=prior.at("intent").at("weapon").at("intervalMs").get<int64_t>();
