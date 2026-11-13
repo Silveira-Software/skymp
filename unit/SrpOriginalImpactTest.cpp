@@ -1,4 +1,5 @@
 #include "SrpOriginalImpact.h"
+#include "SrpSupernaturalCombat.h"
 #include "ActionListener.h"
 #include "CustomPacketMessage.h"
 #include "FormCallbacks.h"
@@ -303,6 +304,63 @@ TEST_CASE("Claws require the canonical condition, reserve, transformation and co
   REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(w,testUserId,op),"SRP_IMPACT_WEAPON_CHANGED");
   REQUIRE(SrpOriginalImpact::Cancel(w,testUserId,op).at("state")=="CANCELLED");
   REQUIRE(cow.GetActorValues().healthPercentage==before);
+}
+
+TEST_CASE("Vampire drain escrows one cost, applies resistance and heals once", "[srp-r48-drain]")
+{
+  const int resistance=GENERATE(0,30,103);
+  const bool lord=GENERATE(false,true);
+  auto& w=GetPartOne();AttachStorage(w);auto& target=SetupCow(w);auto& player=SetupPlayer(w,target);Isolate(w,target,player);
+  const auto source=uint32_t(lord?0x02019324:0x8d5bf);
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w,testUserId,cowId,"drain-human",source),"SRP_DRAIN_CONDITION_REQUIRED");
+  player.AddSpell(source);Equipment equipment;equipment.leftSpell=source;player.SetEquipment(equipment);
+  if(lord){
+    SetupClaws(w,player);Appearance appearance;appearance.raceId=0x0200283a;player.SetAppearance(&appearance);
+    auto ledger=player.GetDynamicFields().GetAsJson().at("private.srpTransformationV1");
+    auto& entry=ledger["operations"]["fixture-transform"];
+    entry["target"]="vampireLord";entry["targetAppearance"]["raceId"]=appearance.raceId;
+    player.SetPropertyValueDump("private.srpTransformationV1",TestSeal(ledger).dump(),false,false);
+  }
+  const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  player.SetPropertyValueDump("private.srpSupernaturalCombatV1",TestSeal({{"schemaVersion",1},
+    {"owner",{{"profileId","9191"},{"characterId","combat-PC"}}},{"kind","vampire"},{"form",lord?"vampireLord":"human"},
+    {"phase","NONE"},{"reserve",100},{"expiresAtMs",now+90000},{"drainEnabled",true},{"drainSpell",source}}).dump(),false,false);
+  player.DamageActorValue(espm::ActorValue::Health,20);
+  if(resistance==30)target.AddSpell(0x53127);
+  if(resistance==103){target.AddSpell(0x53127);target.AddSpell(0xaa01f);target.AddSpell(0xcc79a);target.AddSpell(0xf2595);}
+  WaitForSaved(w,player);WaitForSaved(w,target);
+  const auto desc=[&](uint32_t id){return FormDesc::FromFormId(id,w.worldState.espmFiles).ToString();};
+  const auto cell=target.GetCellOrWorld().ToFormId(w.worldState.espmFiles);
+  w.worldState.InstallSrpCollisionScene(CreateSyntheticScene(cell,desc(target.GetBaseId()),desc(target.GetRaceId()),target.GetPos(),
+    desc(player.GetBaseId()),desc(player.GetRaceId())),AuditConfig(cell,true));
+  const auto mana=[&]{return player.GetActorValues().magickaPercentage*player.GetMaximumValues().magicka;};
+  const auto health=[&]{return player.GetActorValues().healthPercentage*player.GetMaximumValues().health;};
+  const auto beforeMana=mana(),beforeHealth=health(),beforeTarget=target.GetActorValues().healthPercentage;
+  const auto op=SrpOriginalImpact::Begin(w,testUserId,cowId,"hit-drain-test",source).at("operationId").get<std::string>();
+  const float cost=lord?10:6;
+  WaitForSaved(w,player);REQUIRE(mana()==Catch::Approx(beforeMana-cost));
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(w,testUserId,op),"SRP_DRAIN_CHANNEL_PENDING");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(w,testUserId,op),"SRP_DRAIN_CHANNEL_PENDING");
+  const auto applied=SrpOriginalImpact::Apply(w,testUserId,op,true);REQUIRE(applied.at("state")=="TARGET_SAVE_PENDING");
+  const float expected=(lord?15.f:2.f)*(1.f-std::min(resistance,100)/100.f);
+  REQUIRE(applied.at("targetReceipt").at("damage").get<float>()==Catch::Approx(expected));
+  REQUIRE(health()==Catch::Approx(beforeHealth));
+  WaitForSaved(w,target);REQUIRE(SrpOriginalImpact::Apply(w,testUserId,op).at("state")=="APPLIED");WaitForSaved(w,player);
+  REQUIRE(health()==Catch::Approx(beforeHealth+expected));REQUIRE(mana()==Catch::Approx(beforeMana-cost));
+  const auto targetAfter=target.GetActorValues().healthPercentage;
+  REQUIRE(SrpOriginalImpact::Begin(w,testUserId,cowId,"hit-drain-test",source).at("duplicate")==true);
+  SrpOriginalImpact::Apply(w,testUserId,op);SrpOriginalImpact::Cancel(w,testUserId,op);
+  REQUIRE(health()==Catch::Approx(beforeHealth+expected));REQUIRE(mana()==Catch::Approx(beforeMana-cost));
+  REQUIRE(target.GetActorValues().healthPercentage==targetAfter);
+  if(resistance==103)REQUIRE(targetAfter==beforeTarget);
+  const auto cancelled=SrpOriginalImpact::Begin(w,testUserId,cowId,"hit-drain-cancel",source).at("operationId").get<std::string>();
+  WaitForSaved(w,player);REQUIRE(mana()==Catch::Approx(beforeMana-cost*2));
+  SrpOriginalImpact::Cancel(w,testUserId,cancelled);WaitForSaved(w,player);
+  REQUIRE(mana()==Catch::Approx(beforeMana-cost));SrpOriginalImpact::Cancel(w,testUserId,cancelled);
+  REQUIRE(mana()==Catch::Approx(beforeMana-cost));REQUIRE(target.GetActorValues().healthPercentage==targetAfter);
+  auto empty=player.GetActorValues();empty.magickaPercentage=0;player.SetPercentages(empty,nullptr);WaitForSaved(w,player);
+  REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w,testUserId,cowId,"drain-no-mana",source),"SRP_DRAIN_INSUFFICIENT_MAGICKA");
 }
 
 TEST_CASE("Collision pose rejects bone overrides and reads authoritative actor sex", "[srp-original-impact]")

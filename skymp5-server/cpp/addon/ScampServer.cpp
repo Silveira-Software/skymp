@@ -5,6 +5,7 @@
 #include "SrpOriginalEncounter.h"
 #include "SrpCollisionLoader.h"
 #include "SrpOriginalImpact.h"
+#include "SrpSupernaturalCombat.h"
 
 #include "AtomicActorSpawnV16.h"
 #include "Bot.h"
@@ -1994,11 +1995,12 @@ Napi::Value ScampServer::BeginSrpOriginalImpact(const Napi::CallbackInfo& info)
 {
   const auto env = info.Env();
   try {
-    if (info.Length() != 3) throw std::runtime_error("SRP_IMPACT_NATIVE_INPUT_ONLY");
+    if (info.Length() != 3 && info.Length() != 4) throw std::runtime_error("SRP_IMPACT_NATIVE_INPUT_ONLY");
     const auto userId = NapiHelper::ExtractUInt32(info[0], "userId");
     const auto targetId = NapiHelper::ExtractUInt32(info[1], "target");
     const auto requestId = NapiHelper::ExtractString(info[2], "requestId");
-    return NapiHelper::ParseJson(env, SrpOriginalImpact::Begin(*partOne, userId, targetId, requestId).dump());
+    const auto spellId = info.Length()==4 ? NapiHelper::ExtractUInt32(info[3], "spellId") : 0;
+    return NapiHelper::ParseJson(env, SrpOriginalImpact::Begin(*partOne, userId, targetId, requestId, spellId).dump());
   } catch (const std::exception& e) {
     Napi::Error::New(env, e.what()).ThrowAsJavaScriptException(); return env.Undefined();
   }
@@ -2008,10 +2010,12 @@ Napi::Value ScampServer::ApplySrpOriginalImpact(const Napi::CallbackInfo& info)
 {
   const auto env = info.Env();
   try {
-    if (info.Length() != 2) throw std::runtime_error("SRP_IMPACT_NATIVE_INPUT_ONLY");
+    if (info.Length() != 2 && (info.Length() != 3 || !info[2].IsBoolean()))
+      throw std::runtime_error("SRP_IMPACT_NATIVE_INPUT_ONLY");
     const auto userId = NapiHelper::ExtractUInt32(info[0], "userId");
     const auto operationId = NapiHelper::ExtractString(info[1], "operationId");
-    return NapiHelper::ParseJson(env, SrpOriginalImpact::Apply(*partOne, userId, operationId).dump());
+    const bool channelObserved=info.Length()==3 && info[2].As<Napi::Boolean>().Value();
+    return NapiHelper::ParseJson(env, SrpOriginalImpact::Apply(*partOne, userId, operationId,channelObserved).dump());
   } catch (const std::exception& e) {
     Napi::Error::New(env, e.what()).ThrowAsJavaScriptException(); return env.Undefined();
   }

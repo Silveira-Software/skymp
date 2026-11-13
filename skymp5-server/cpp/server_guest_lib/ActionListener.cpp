@@ -1,5 +1,6 @@
 #include "ActionListener.h"
 #include "SrpOriginalImpact.h"
+#include "SrpSupernaturalCombat.h"
 #include "SrpOriginalLifecycle.h"
 #include "SrpTransformationFence.h"
 #include "AnimationSystem.h"
@@ -875,11 +876,16 @@ void ActionListener::OnChangeValues(const RawMessageData& rawMsgData,
   ChangeValuesMessage outMsg;
   outMsg.idx = actor->GetIdx();
   bool sendOutMsg = false;
+  const bool drainResources=SrpOriginalImpact::OwnsDrainResources(*actor);
 
   auto process = [&](espm::ActorValue av, std::optional<float> inputVal,
                      float currentVal, std::optional<float>& outVal) {
     if (!inputVal.has_value()) {
       return;
+    }
+
+    if(drainResources && (av==espm::ActorValue::Health||av==espm::ActorValue::Magicka)) {
+      outVal=currentVal;sendOutMsg=true;return;
     }
 
     if (MathUtils::IsNearlyEqual(currentVal, *inputVal)) {
@@ -1124,6 +1130,8 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   // A race switch may reset local AVs/equipment. It must not borrow either the
   // previous or the next form's combat while its durable handshake is pending.
   if (SrpTransformationFenced(*aggressor)) return;
+  if (SrpOriginalImpact::IsDrainSpell(partOne.worldState,hitData.source) &&
+      SrpOriginalImpact::OwnsDrainResources(*aggressor)) return;
   // Claws use the durable CustomPacket action, including on older clients.
   // A legacy hit must not bypass condition or per-action receipt validation.
   if (aggressor->GetRaceId() == FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(partOne.worldState.espmFiles)) return;
@@ -1296,6 +1304,9 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   if (spellCastData.target == 0x14) {
     spellCastData.target = myActor->GetFormId();
   }
+
+  if (SrpOriginalImpact::IsDrainSpell(partOne.worldState,spellCastData.spell) &&
+      SrpOriginalImpact::OwnsDrainResources(*caster)) return;
 
   const auto observedTarget =
     partOne.worldState.LookupFormByIdNoLoad(spellCastData.target);

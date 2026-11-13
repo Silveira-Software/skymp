@@ -3,8 +3,8 @@
 #include <utility>
 
 SrpOriginalImpactRequestEvent::SrpOriginalImpactRequestEvent(
-  uint32_t userId_, uint32_t targetId_, std::string requestId_)
-  : userId(userId_), targetId(targetId_), requestId(std::move(requestId_))
+  uint32_t userId_, uint32_t targetId_, std::string requestId_, uint32_t spellId_)
+  : userId(userId_), targetId(targetId_), requestId(std::move(requestId_)), spellId(spellId_)
 {
 }
 
@@ -19,7 +19,7 @@ std::string SrpOriginalImpactRequestEvent::GetArgumentsJsonArray() const
   // key; the gamemode passes it straight to beginSrpOriginalImpact without
   // trusting any client field.
   return "[" + std::to_string(userId) + "," + std::to_string(targetId) +
-         ",\"" + requestId + "\"]";
+         ",\"" + requestId + "\"," + std::to_string(spellId) + "]";
 }
 
 void SrpOriginalImpactRequestEvent::OnFireSuccess(WorldState*)

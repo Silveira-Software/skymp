@@ -11,7 +11,7 @@ class SrpOriginalImpactRequestEvent : public GameModeEvent
 {
 public:
   SrpOriginalImpactRequestEvent(uint32_t userId_, uint32_t targetId_,
-                                std::string requestId_);
+                                std::string requestId_, uint32_t spellId_ = 0);
 
   const char* GetName() const override;
   std::string GetArgumentsJsonArray() const override;
@@ -22,4 +22,5 @@ private:
   uint32_t userId;
   uint32_t targetId;
   std::string requestId;
+  uint32_t spellId;
 };
