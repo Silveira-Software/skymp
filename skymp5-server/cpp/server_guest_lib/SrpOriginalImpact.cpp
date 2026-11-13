@@ -484,7 +484,7 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
   auto ledger=Ledger(attacker,"OUTBOX",identity);
   Require(ledger.at("operations").contains(operationId),"SRP_IMPACT_OPERATION_NOT_ISSUED");
   auto entry=ledger.at("operations").at(operationId);const auto intent=entry.at("intent");
-  if(entry.at("state")=="APPLIED")return TerminalResponse(attacker,ledger,entry);
+  if(entry.at("state")!="ISSUED")return TerminalResponse(attacker,ledger,entry);
   Require(entry.at("state")=="ISSUED" && ledger.at("pending")==operationId,"SRP_IMPACT_OPERATION_NOT_PENDING");
   auto& target=Loaded(server.worldState,intent.at("targetId").get<uint32_t>());
   const auto targetIdentity=TargetIdentity(target);

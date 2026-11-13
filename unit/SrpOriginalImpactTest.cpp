@@ -956,6 +956,21 @@ TEST_CASE("Original melee refuses expired hosts and scopes receipts across chara
     .at(id).at("state") == "CANCELLED");
   REQUIRE(SrpOriginalImpact::Cancel(server, testUserId, nextId).at("state") == "CANCELLED");
   REQUIRE(target.GetActorValues().healthPercentage == before);
+  REQUIRE(SrpOriginalImpact::Apply(server, testUserId, nextId).at("state") == "CANCELLED");
+  WaitForSaved(server, other);
+  const auto image = other.GetChangeForm();
+  auto& restarted = GetPartOne();
+  AttachStorage(restarted);
+  restarted.worldState.LoadChangeForm(image, restarted.CreateFormCallbacks());
+  auto& restored = restarted.worldState.GetFormAt<MpActor>(secondPlayerId);
+  restarted.serverState.Connect(testUserId, "cancelled-retry-session");
+  restarted.serverState.actorsMap.Set(testUserId, &restored);
+  const auto retry = SrpOriginalImpact::Apply(restarted, testUserId, nextId);
+  REQUIRE(retry.at("state") == "CANCELLED");
+  REQUIRE(retry.at("saved") == false);
+  WaitForSaved(restarted, restored);
+  REQUIRE(SrpOriginalImpact::Apply(restarted, testUserId, nextId).at("saved") == true);
+  REQUIRE_FALSE(restarted.worldState.LookupFormByIdNoLoad(cowId));
 }
 
 TEST_CASE("Impact serialises two attackers without double damage", "[srp-original-impact]")
