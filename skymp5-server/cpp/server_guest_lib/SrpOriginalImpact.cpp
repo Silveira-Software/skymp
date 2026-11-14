@@ -759,8 +759,19 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
   const auto frame=Capture(server.worldState,attacker,target);
   const auto grip=AttackerGripHeight(frame,attacker);
   Require(grip.has_value(),"SRP_IMPACT_ATTACKER_PROXY_REQUIRED");
+  if(drain) {
+    const auto& admitted=intent.at("proof").at("frame");
+    Require(frame.scene->Id()==admitted.at("sceneId").get<std::string>() && frame.worldOrCell==admitted.at("worldOrCell").get<uint32_t>() &&
+      frame.movementPolicy==admitted.at("movementPolicy").get<std::string>() &&
+      frame.hitRepresentation==admitted.at("hitRepresentation").get<std::string>(),
+      "SRP_DRAIN_SCENE_CHANGED");
+  }
   const auto proof=Contact(frame,weapon,*grip);
-  Require(proof==intent.at("proof"),"SRP_IMPACT_FRAME_CHANGED");
+  // Aimed drain is observed again after its durable cost reservation. Re-prove
+  // contact from the current accepted poses, retaining the immutable admission
+  // proof in the intent and recording this applied proof in the target receipt.
+  // Melee and claws still bind the exact admission frame.
+  if(!drain)Require(proof==intent.at("proof"),"SRP_IMPACT_FRAME_CHANGED");
   Require(SrpActorStats::Read(attacker).enabled && SrpOriginalStats::Read(target).has_value(),
     "SRP_IMPACT_STATS_REQUIRED");
   Require(targetLedger.at("operations").size()<capacity,"SRP_IMPACT_CAPACITY_REQUIRES_RECONCILIATION");

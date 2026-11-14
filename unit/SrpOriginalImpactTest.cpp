@@ -363,6 +363,91 @@ TEST_CASE("Vampire drain escrows one cost, applies resistance and heals once", "
   REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w,testUserId,cowId,"drain-no-mana",source),"SRP_DRAIN_INSUFFICIENT_MAGICKA");
 }
 
+TEST_CASE("Aimed drain validates current contact after its admission frame moves", "[srp-r49-moving-drain]")
+{
+  const int change = GENERATE(0, 1, 2, 3, 4, 5, 6, 7);
+  auto& server = GetPartOne(); AttachStorage(server);
+  auto& target = SetupCow(server); auto& player = SetupPlayer(server, target);
+  Isolate(server, target, player);
+  const uint32_t source = 0x8d5bf;
+  player.AddSpell(source);
+  Equipment equipment; equipment.leftSpell = source; player.SetEquipment(equipment);
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  player.SetPropertyValueDump("private.srpSupernaturalCombatV1", TestSeal({{"schemaVersion",1},
+    {"owner",{{"profileId","9191"},{"characterId","combat-PC"}}},{"kind","vampire"},{"form","human"},
+    {"phase","NONE"},{"reserve",100},{"expiresAtMs",now+90000},{"drainEnabled",true},{"drainSpell",source}}).dump(),false,false);
+  player.DamageActorValue(espm::ActorValue::Health, 20);
+  WaitForSaved(server, player); WaitForSaved(server, target);
+  const auto descriptor = [&](uint32_t id) { return FormDesc::FromFormId(id, server.worldState.espmFiles).ToString(); };
+  const auto cell = target.GetCellOrWorld().ToFormId(server.worldState.espmFiles);
+  const auto originalPosition = target.GetPos();
+  const auto scene = [&](bool wall) { return CreateSyntheticScene(cell, descriptor(target.GetBaseId()),
+    descriptor(target.GetRaceId()), originalPosition, descriptor(player.GetBaseId()), descriptor(player.GetRaceId()), true, wall); };
+  server.worldState.InstallSrpCollisionScene(scene(false), AuditConfig(cell, true));
+  const auto mana = [&] { return player.GetActorValues().magickaPercentage * player.GetMaximumValues().magicka; };
+  const auto health = [&] { return player.GetActorValues().healthPercentage * player.GetMaximumValues().health; };
+  const float beforeMana = mana(), beforeHealth = health(), targetHealth = target.GetActorValues().healthPercentage;
+  const auto operation = SrpOriginalImpact::Begin(server, testUserId, cowId, "moving-drain", source).at("operationId").get<std::string>();
+  WaitForSaved(server, player);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  if (change == 0 || change == 2 || change == 5 || change == 6) {
+    auto position = target.GetPos(); position.x += change == 2 ? 500.f : 5.f;
+    target.SetPos(position, SetPosMode::CalledByUpdateMovement);
+  }
+  if (change == 1) {
+    auto position = player.GetPos(); position.x += 5.f;
+    player.SetPos(position, SetPosMode::CalledByUpdateMovement);
+  }
+  if (change == 3) server.worldState.InstallSrpCollisionScene(scene(true), AuditConfig(cell, true));
+  if (change == 4) server.worldState.InstallSrpCollisionScene(scene(false), AuditConfig(cell, false));
+  if (change == 5) {
+    target.SetPropertyValueDump("private.r49SaveChange", "true", false, false);
+    WaitForSaved(server, target);
+  }
+  if (change == 6) {
+    auto identity = target.GetDynamicFields().GetAsJson().at("private.srpOriginalReferenceV1");
+    identity["instanceId"] = "r49-different-original-instance";
+    target.SetPropertyValueDump("private.srpOriginalReferenceV1", identity.dump(), false, false);
+    WaitForSaved(server, target);
+  }
+  if (change == 7) {
+    auto position = originalPosition; position.y -= 25.f;
+    server.CreateActor(0xff000092, position, 0, cell, 9192);
+  }
+  if (std::getenv("SRP_R49_EXPECT_LEGACY_FRAME_REJECTION")) {
+    if (change < 2)
+      REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(server, testUserId, operation, true), "SRP_IMPACT_FRAME_CHANGED");
+    return;
+  }
+  if (change >= 2) {
+    const std::string expected = change == 2 ? "SRP_IMPACT_SERVER_SEGMENT_MISSES_TARGET" :
+      change == 3 ? "SRP_DRAIN_SCENE_CHANGED" :
+      change == 4 ? "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE" :
+      change == 5 ? "SRP_IMPACT_GENERATION_CHANGED" :
+      change == 6 ? "SRP_IMPACT_TARGET_IDENTITY_MISMATCH" : "SRP_IMPACT_SERVER_COLLISION_NOT_CLEAR";
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(server, testUserId, operation, true), expected);
+    REQUIRE(target.GetActorValues().healthPercentage == targetHealth);
+    REQUIRE(health() == Catch::Approx(beforeHealth));
+    return;
+  }
+  const auto applied = SrpOriginalImpact::Apply(server, testUserId, operation, true);
+  REQUIRE(applied.at("state") == "TARGET_SAVE_PENDING");
+  const auto receipt = applied.at("targetReceipt");
+  REQUIRE(receipt.at("proof") != receipt.at("intent").at("proof"));
+  REQUIRE(receipt.at("proof").at("collision") == "CLEAR");
+  REQUIRE(receipt.at("damage").get<float>() == Catch::Approx(2.f));
+  WaitForSaved(server, target);
+  REQUIRE(SrpOriginalImpact::Apply(server, testUserId, operation, true).at("state") == "APPLIED");
+  WaitForSaved(server, player);
+  REQUIRE(mana() == Catch::Approx(beforeMana - 6.f));
+  REQUIRE(health() == Catch::Approx(beforeHealth + 2.f));
+  const auto after = target.GetActorValues().healthPercentage;
+  SrpOriginalImpact::Apply(server, testUserId, operation, true);
+  REQUIRE(target.GetActorValues().healthPercentage == after);
+  REQUIRE(health() == Catch::Approx(beforeHealth + 2.f));
+}
+
 TEST_CASE("Collision pose rejects bone overrides and reads authoritative actor sex", "[srp-original-impact]")
 {
   auto& w=GetPartOne();AttachStorage(w);

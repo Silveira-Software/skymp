@@ -1,0 +1,14 @@
+{
+  "status": "PASS",
+  "baselineFailure": "SRP_IMPACT_FRAME_CHANGED",
+  "baselineAssertions": 60,
+  "directedAssertions": 106,
+  "supernaturalAssertions": 391,
+  "supernaturalCases": 4,
+  "regressionAssertions": 35541,
+  "regressionCases": 75,
+  "nativeSha256": "3540e4a7b8f93b773015b5c148fc5468366ac654c7097803abcc207ace270980",
+  "addonLoad": "PASS",
+  "skyrimDamage": "NOT_TESTED",
+  "producer": "LOCKED_OFFLINE_CONTAINER_NO_HOST_PORTS"
+}
