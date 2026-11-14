@@ -1,5 +1,6 @@
 #include "Hook.h"
 #include "Handler.h"
+#include "HookHandlerBlocker.h"
 #include "SkyrimPlatform.h"
 
 Hook::Hook(std::string hookName_, std::string eventNameVariableName_,
@@ -12,6 +13,7 @@ Hook::Hook(std::string hookName_, std::string eventNameVariableName_,
 
 uint32_t Hook::AddHandler(const std::shared_ptr<Handler>& handler)
 {
+  const std::lock_guard lock(handlersMutex);
   if (addRemoveBlocker) {
     throw std::runtime_error("Trying to add hook inside hook context");
   }
@@ -21,6 +23,7 @@ uint32_t Hook::AddHandler(const std::shared_ptr<Handler>& handler)
 
 void Hook::RemoveHandler(const uint32_t& id)
 {
+  const std::lock_guard lock(handlersMutex);
   if (addRemoveBlocker) {
     throw std::runtime_error("Trying to remove hook inside hook context");
   }
@@ -34,17 +37,20 @@ std::string Hook::GetName() const
 
 void Hook::Enter(uint32_t selfId, std::string& eventName)
 {
-  addRemoveBlocker++;
+  const HookHandlerBlocker block(addRemoveBlocker);
   DWORD owningThread = GetCurrentThreadId();
 
   if (hookName == "sendPapyrusEvent") {
     // If there are no handlers, do not do g_taskQueue
     bool anyMatch = false;
-    for (auto& hp : handlers) {
-      auto* h = hp.second.get();
-      if (h->Matches(selfId, eventName)) {
-        anyMatch = true;
-        break;
+    {
+      const std::lock_guard lock(handlersMutex);
+      for (auto& hp : handlers) {
+        auto* h = hp.second.get();
+        if (h->Matches(selfId, eventName)) {
+          anyMatch = true;
+          break;
+        }
       }
     }
     if (!anyMatch) {
@@ -53,6 +59,7 @@ void Hook::Enter(uint32_t selfId, std::string& eventName)
 
     return SkyrimPlatform::GetSingleton()->AddUpdateTask(
       [this, owningThread, selfId, eventName](Napi::Env env) {
+        const HookHandlerBlocker callbackBlock(addRemoveBlocker);
         std::string s = eventName;
         HandleEnter(owningThread, selfId, s, env);
       });
@@ -72,12 +79,11 @@ void Hook::Enter(uint32_t selfId, std::string& eventName)
     }
   };
   SkyrimPlatform::GetSingleton()->PushAndWait(f);
-  addRemoveBlocker--;
 }
 
 void Hook::Leave(bool succeeded)
 {
-  addRemoveBlocker++;
+  const HookHandlerBlocker block(addRemoveBlocker);
   DWORD owningThread = GetCurrentThreadId();
 
   if (hookName == "sendPapyrusEvent") {
@@ -99,7 +105,6 @@ void Hook::Leave(bool succeeded)
     }
   };
   SkyrimPlatform::GetSingleton()->PushAndWait(f);
-  addRemoveBlocker--;
 }
 
 void Hook::HandleEnter(DWORD owningThread, uint32_t selfId,

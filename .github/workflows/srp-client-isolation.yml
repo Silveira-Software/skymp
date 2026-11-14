@@ -4,8 +4,13 @@ on:
     paths:
       - skyrim-platform/src/platform_se/skyrim_platform/FlowManager.*
       - skyrim-platform/src/platform_se/skyrim_platform/main.cpp
+      - skyrim-platform/src/platform_se/skyrim_platform/Hook.cpp
+      - skyrim-platform/src/platform_se/skyrim_platform/Hook.h
+      - skyrim-platform/src/platform_se/skyrim_platform/HookHandlerBlocker.h
       - skyrim-platform/tests/FlowManagerWindowsTests.cpp
+      - skyrim-platform/tests/HookScopeWindowsTests.cpp
       - tools/test-flow-manager-windows.py
+      - tools/test-hook-scope-windows.py
       - .github/workflows/srp-client-isolation.yml
   workflow_dispatch:
 permissions:
@@ -27,6 +32,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -34,6 +40,8 @@ jobs:
         run: npm install --global yarn@1.22.22
       - name: Test actual Windows process isolation
         run: python tools/test-flow-manager-windows.py "${{ runner.temp }}/srp-process-test"
+      - name: Test Papyrus hook registration lifetime
+        run: python tools/test-hook-scope-windows.py "${{ runner.temp }}/srp-hook-test"
       - name: Bootstrap pinned official vcpkg
         run: ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
       - name: Configure private client candidate without game installation
@@ -58,6 +66,11 @@ jobs:
         with:
           name: srp-process-isolation-proof
           path: ${{ runner.temp }}/srp-process-test/result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: srp-hook-scope-proof
+          path: ${{ runner.temp }}/srp-hook-test/result.json
       - uses: actions/upload-artifact@v4
         with:
           name: srp-platform-private-candidate
