@@ -34,3 +34,19 @@ Install through the official LAB transaction after game/launcher closure.
 Acceptance requires a real fresh race event, two loaded frames, durable world
 confirmation and resource ACK; only then request a new human transformation.
 Rollback restores the previous client package and keeps the current saved data.
+
+The Windows workflow 43541714554 passed for commit
+67101f8af5d81582c50c972c138e576082ca1102. Both the eight hook cases and the
+seven process cases passed. The previous source failed with the same hook
+context error. The three outputs were rehashed after download.
+
+- SkyrimPlatform.dll `21e0d13f9b116bcc85ead88d6c9e2a5126ad0cc08498c0bdd257e0e135ad63d5`
+- SkyrimPlatformImpl.dll `977a19adab247f2ec1ced634541071ab579371f0d06392dc3236f921ed24f77e`
+- SkyrimPlatformCEF.exe.hidden `c19323e5898c72ec4cf85faa51ba78bebcc2ab7e2df5b1377202f374449219ef`
+
+The private launcher transaction installed the two platform packages, restored
+the previous package and installed R4 again. Each round verified 5,675 managed
+files and 46 plugins. The installed R4 manifest is
+`bc9721010eaa90d02901247ee182fda58f029c16ec92699eb75895f7d513d809`.
+The same LAB resumed GeladoRun from its current database and world. Engine
+recovery and the subsequent transformation still await human re-entry.
