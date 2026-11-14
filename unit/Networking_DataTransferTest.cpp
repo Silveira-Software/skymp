@@ -11,10 +11,10 @@ using namespace std::chrono_literals;
 TEST_CASE("Data transfer", "[Networking]")
 {
   auto promRegistry = std::make_shared<prometheus::Registry>();
-  static auto server = Networking::CreateServer("127.0.0.1", 7778, MAX_PLAYERS,
+  static auto server = Networking::CreateServer("127.0.0.1", 58172, MAX_PLAYERS,
                                                 "password", promRegistry);
   static auto client =
-    Networking::CreateClient("127.0.0.1", 7778, 4000, "password");
+    Networking::CreateClient("127.0.0.1", 58172, 4000, "password");
 
   std::string res;
 

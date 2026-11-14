@@ -11,10 +11,10 @@ using namespace std::chrono_literals;
 TEST_CASE("Handler destroys the client", "[Networking]")
 {
   auto server =
-    Networking::CreateServer("127.0.0.1", 7778, MAX_PLAYERS, "password",
+    Networking::CreateServer("127.0.0.1", 58171, MAX_PLAYERS, "password",
                              std::make_shared<prometheus::Registry>());
   static auto client =
-    Networking::CreateClient("127.0.0.1", 7778, 500, "password");
+    Networking::CreateClient("127.0.0.1", 58171, 500, "password");
 
   static bool reset = false;
 
@@ -37,9 +37,9 @@ TEST_CASE("Handler destroys the client", "[Networking]")
 TEST_CASE("Connect/disconnect", "[Networking]")
 {
   auto server =
-    Networking::CreateServer("127.0.0.1", 7778, MAX_PLAYERS, "password",
+    Networking::CreateServer("127.0.0.1", 58171, MAX_PLAYERS, "password",
                              std::make_shared<prometheus::Registry>());
-  auto client = Networking::CreateClient("127.0.0.1", 7778, 500, "password");
+  auto client = Networking::CreateClient("127.0.0.1", 58171, 500, "password");
 
   REQUIRE(!client->IsConnected());
   for (int i = 0; i < 100; ++i) {
@@ -59,12 +59,12 @@ TEST_CASE("Connect/disconnect", "[Networking]")
 TEST_CASE("Ctors", "[Networking]")
 {
   auto server =
-    Networking::CreateServer("127.0.0.1", 7778, MAX_PLAYERS, "password",
+    Networking::CreateServer("127.0.0.1", 58171, MAX_PLAYERS, "password",
                              std::make_shared<prometheus::Registry>());
-  auto client = Networking::CreateClient("127.0.0.1", 7778, 4000, "password");
+  auto client = Networking::CreateClient("127.0.0.1", 58171, 4000, "password");
 
   try {
-    Networking::CreateServer("127.0.0.1", 7778, MAX_PLAYERS, "password",
+    Networking::CreateServer("127.0.0.1", 58171, MAX_PLAYERS, "password",
                              std::make_shared<prometheus::Registry>());
     REQUIRE(false);
   } catch (std::exception& e) {

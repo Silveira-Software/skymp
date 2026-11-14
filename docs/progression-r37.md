@@ -207,3 +207,20 @@ still need AE 1170 proof, missing final-cost/geometry/NPC contracts and durable
 outbox ACK recovery. Controlled resource callbacks and bots are storage evidence,
 not Skyrim impact acceptance. No Windows Platform hook was built or installed.
 PUBLIC remains R35/R3; API/Mongo/CDN/launcher untouched; allocation and SPEL OFF.
+
+## R38 offline validation: preserve retired ports
+
+The Networking unit tests used the retired operational port 7778. Their isolated
+loopback transport now uses test-only ports 58171 and 58172, with the same
+connect/disconnect, duplicate-bind and data-transfer assertions. No game-server
+instance on 7778/7789 is created. Tests run in a disposable network-none container
+with no published ports. This changes only two unit files, not native runtime.
+
+The official isolated native build was executed again from the R37.4 sources;
+runtime addon SHA-256 remains
+`2fbeafe315ab95bc3fae7f11b696222835ac60ab45a74a7499edf4db522871d5`.
+The full registered native unit suite passed without excluding Networking; its
+XML and the matching test-binary hash are recorded by the R38 operation. The
+focused 50 cases/381 assertions and 168-case runtime regression set also pass.
+No pre-cast hook, final cost or collision authority is claimed by these tests.
+R38 remains RELEASE_BLOCKED; no public installation or human acceptance occurred.

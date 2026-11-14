@@ -1,0 +1,858 @@
+#include "SrpOriginalImpact.h"
+#include "SrpSupernaturalCombat.h"
+#include "HitData.h"
+#include "MpActor.h"
+#include "PartOne.h"
+#include "ServerState.h"
+#include "SrpActorStats.h"
+#include "SrpActorModifiers.h"
+#include "SrpOriginalLifecycle.h"
+#include "SrpOriginalStats.h"
+#include "SrpTransformationFence.h"
+#include "WorldState.h"
+#include "gamemode_events/SrpOriginalImpactRequestEvent.h"
+#include "libespm/espm.h"
+#include "libespm/RecordHeaderAccess.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <sodium.h>
+#include <spdlog/spdlog.h>
+#include <stdexcept>
+
+namespace SrpOriginalImpact {
+namespace {
+using Json = nlohmann::json;
+using Vec = SrpCollision::Vec3;
+constexpr size_t capacity = 4096;
+constexpr int64_t lifetimeMs = 5000;
+constexpr int64_t meleeSessionWindowMs = 15000;
+void Require(bool accepted, const char* message)
+{
+  if (!accepted) throw std::runtime_error(message);
+}
+bool Token(const std::string& s)
+{
+  return !s.empty() && s.size() <= 128 && s.find_first_not_of(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-") == std::string::npos;
+}
+std::string NewId()
+{
+  unsigned char bytes[32]; char out[65];
+  randombytes_buf(bytes,sizeof(bytes));
+  sodium_bin2hex(out,sizeof(out),bytes,sizeof(bytes));return out;
+}
+std::string Digest(Json value)
+{
+  if(value.is_object())value.erase("checksum");
+  const auto text=value.dump();
+  unsigned char bytes[crypto_hash_sha256_BYTES];char out[crypto_hash_sha256_BYTES*2+1];
+  crypto_hash_sha256(bytes,reinterpret_cast<const unsigned char*>(text.data()),text.size());
+  sodium_bin2hex(out,sizeof(out),bytes,sizeof(bytes));return out;
+}
+Json Seal(Json value) { value["checksum"]=Digest(value);return value; }
+void Checksum(const Json& value,const char* error)
+{
+  Require(value.is_object() && value.value("checksum",std::string())==Digest(value),error);
+}
+int64_t Now()
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+}
+bool Saved(const MpActor& actor)
+{
+  auto* world=actor.GetParent();const auto generation=world->GetChangeFormGeneration(actor.GetFormId());
+  return generation && world->IsChangeFormSaved(actor.GetFormId(),generation);
+}
+MpActor& Loaded(WorldState& world,uint32_t id)
+{
+  const auto form=world.LookupFormByIdNoLoad(id);auto* actor=form?form->AsActor():nullptr;
+  Require(actor,"SRP_IMPACT_ACTOR_NOT_LOADED");return *actor;
+}
+MpActor& Authenticated(PartOne& server,Networking::UserId user)
+{
+  Require(server.serverState.IsConnected(user) &&
+    !server.serverState.SessionIncarnation(user).empty(),"SRP_IMPACT_SESSION_REQUIRED");
+  auto* actor=server.serverState.ActorByUser(user);
+  Require(actor && actor->GetParent()==&server.worldState,"SRP_IMPACT_AUTHENTICATED_ACTOR_REQUIRED");
+  Require(!SrpOriginalLifecycle::Managed(*actor),"SRP_IMPACT_NATIVE_NPC_ATTACK_PRODUCER_REQUIRED");
+  Require(!SrpTransformationFenced(*actor),"SRP_IMPACT_TRANSFORMATION_PENDING");
+  return *actor;
+}
+void Active(const MpActor& actor)
+{
+  Require(!actor.IsDead() && !actor.IsRespawning() && !actor.IsDisabled() && !actor.IsDeleted(),
+    "SRP_IMPACT_ACTOR_INACTIVE");
+}
+Json PlayerIdentity(const MpActor& actor,bool allowMissing=false)
+{
+  const auto& fields=actor.GetDynamicFields().GetAsJson();
+  Require(actor.GetProfileId()>0 && fields.contains("srpActiveCharacterId") &&
+    fields.at("srpActiveCharacterId").is_string() &&
+    Token(fields.at("srpActiveCharacterId").get<std::string>()),"SRP_IMPACT_CHARACTER_REQUIRED");
+  Json expected={{"schemaVersion",1},{"reference",FormDesc::FromFormId(actor.GetFormId(),actor.GetParent()->espmFiles).ToString()},
+    {"profileId",std::to_string(actor.GetProfileId())},{"characterId",fields.at("srpActiveCharacterId")}};
+  if(!fields.contains(kIdentityProperty)){
+    Require(allowMissing,"SRP_IMPACT_PERSISTENT_IDENTITY_REQUIRED");return expected;
+  }
+  const auto identity=fields.at(kIdentityProperty);
+  Checksum(identity,"SRP_IMPACT_IDENTITY_CORRUPT");
+  Require(identity.value("incarnation",std::string()).size()==64,"SRP_IMPACT_IDENTITY_CORRUPT");
+  auto comparable=identity;comparable.erase("checksum");comparable.erase("incarnation");
+  Require(comparable==expected,"SRP_IMPACT_CHARACTER_IDENTITY_MISMATCH");return identity;
+}
+Json TargetIdentity(const MpActor& actor)
+{
+  Require(SrpOriginalLifecycle::Managed(actor),"SRP_IMPACT_ORIGINAL_TARGET_REQUIRED");
+  return SrpOriginalLifecycle::Inspect(actor).at("identity");
+}
+Json Ledger(const MpActor& actor,const char* kind,const Json& identity)
+{
+  const auto& fields=actor.GetDynamicFields().GetAsJson();
+  if(!fields.contains(kProperty))return {{"schemaVersion",1},{"kind",kind},{"owner",identity},
+    {"pending",nullptr},{"requests",Json::object()},{"operations",Json::object()}};
+  const auto ledger=fields.at(kProperty);Checksum(ledger,"SRP_IMPACT_LEDGER_CORRUPT");
+  Require(ledger.value("schemaVersion",0)==1 && ledger.value("kind",std::string())==kind &&
+    ledger.at("owner")==identity && ledger.at("operations").is_object() &&
+    ledger.at("requests").is_object() && ledger.at("operations").size()<=capacity &&
+    ledger.at("requests").size()<=capacity,"SRP_IMPACT_LEDGER_CORRUPT");
+  for(const auto& [id,entry]:ledger.at("operations").items()){
+    Checksum(entry,"SRP_IMPACT_RECEIPT_CORRUPT");
+    Require(Token(id) && entry.at("operationId")==id,"SRP_IMPACT_RECEIPT_CORRUPT");
+    if(std::string(kind)=="OUTBOX"){
+      const auto& intent=entry.at("intent");Checksum(intent,"SRP_IMPACT_INTENT_CORRUPT");
+      Require(intent.at("attacker")==identity && intent.at("operationId")==id &&
+        Token(intent.at("requestId").get<std::string>()) &&
+        (entry.at("state")=="ISSUED" || entry.at("state")=="APPLIED" || entry.at("state")=="CANCELLED"),
+        "SRP_IMPACT_INTENT_CORRUPT");
+      Require(ledger.at("requests").contains(intent.at("requestId").get<std::string>()) &&
+        ledger.at("requests").at(intent.at("requestId").get<std::string>())==id,
+        "SRP_IMPACT_REQUEST_INDEX_CORRUPT");
+    }else Require(entry.at("target")==identity && entry.at("state")=="APPLIED",
+      "SRP_IMPACT_RECEIPT_CORRUPT");
+  }
+  for(const auto& [request,id]:ledger.at("requests").items())
+    Require(Token(request) && id.is_string() && ledger.at("operations").contains(id.get<std::string>()),
+      "SRP_IMPACT_REQUEST_INDEX_CORRUPT");
+  if(!ledger.at("pending").is_null())Require(ledger.at("pending").is_string() &&
+    ledger.at("operations").contains(ledger.at("pending").get<std::string>()) &&
+    ledger.at("operations").at(ledger.at("pending").get<std::string>()).at("state")=="ISSUED",
+    "SRP_IMPACT_PENDING_CORRUPT");
+  return ledger;
+}
+Json Host(PartOne& server,const MpActor& target)
+{
+  auto it=server.worldState.hosters.find(target.GetFormId());
+  if(it==server.worldState.hosters.end())return {{"actorId",0},{"session",nullptr}};
+  auto& actor=Loaded(server.worldState,it->second);
+  const auto user=server.serverState.UserByActor(&actor);
+  Require(server.serverState.IsConnected(user) && !server.serverState.SessionIncarnation(user).empty(),
+    "SRP_IMPACT_TARGET_HOST_SESSION_REQUIRED");
+  return {{"actorId",actor.GetFormId()},{"userId",user},
+    {"profileId",actor.GetProfileId()},{"characterId",actor.GetDynamicFields().GetAsJson().value("srpActiveCharacterId",std::string())},
+    {"session",server.serverState.SessionIncarnation(user)}};
+}
+struct Weapon { uint32_t source=0x1f4; double reach=0; int64_t interval=1000; Json drain=nullptr; };
+
+Weapon DrainWeapon(const MpActor& actor, uint32_t spellId)
+{
+  auto* world=actor.GetParent(); const auto& fields=actor.GetDynamicFields().GetAsJson();
+  Require(fields.contains("private.srpSupernaturalCombatV1"),"SRP_DRAIN_CONDITION_REQUIRED");
+  const auto& state=fields.at("private.srpSupernaturalCombatV1");Checksum(state,"SRP_DRAIN_STATE_CORRUPT");
+  Require(state.value("schemaVersion",0)==1 && state.at("owner").at("profileId")==std::to_string(actor.GetProfileId()) &&
+    state.at("owner").at("characterId")==fields.at("srpActiveCharacterId") && state.value("drainEnabled",false) &&
+    state.at("kind")=="vampire" && state.at("phase")=="NONE" && state.at("expiresAtMs").get<int64_t>()>=Now() &&
+    state.at("reserve").get<double>()>0&&state.at("reserve").get<double>()<=100,"SRP_DRAIN_CONDITION_REQUIRED");
+  const bool lord=state.at("form")=="vampireLord";
+  Require(lord||state.at("form")=="human","SRP_DRAIN_FORM_UNSUPPORTED");
+  const double reserve=state.at("reserve").get<double>();
+  const uint32_t tier=reserve>75?0:reserve>50?1:reserve>25?2:3;
+  const auto expected=lord ? FormDesc::FromString("19324:Dawnguard.esm").ToFormId(world->espmFiles) :
+    FormDesc::FromString("8d5bf:Skyrim.esm").ToFormId(world->espmFiles)+tier;
+  Require(spellId==expected && state.at("drainSpell")==spellId,"SRP_DRAIN_STAGE_SPELL_MISMATCH");
+  const auto& equipment=actor.GetEquipment();
+  Require(actor.IsSpellLearned(spellId) && (lord||((equipment.leftSpell==spellId)!=(equipment.rightSpell==spellId))),
+    "SRP_DRAIN_SPELL_NOT_AVAILABLE");
+  if(lord) {
+    const auto race=FormDesc::FromString("283a:Dawnguard.esm").ToFormId(world->espmFiles);
+    Require(actor.GetRaceId()==race && fields.contains("private.srpTransformationV1"),"SRP_DRAIN_TRANSFORMATION_REQUIRED");
+    const auto& ledger=fields.at("private.srpTransformationV1");Checksum(ledger,"SRP_DRAIN_TRANSFORMATION_REQUIRED");
+    const auto& entry=ledger.at("operations").at(ledger.at("activeOperation").get<std::string>());
+    Require(ledger.at("owner")==state.at("owner") && ledger.at("pending").is_null() && !SrpTransformationFenced(actor) &&
+      entry.at("state")=="APPLIED" && entry.at("target")=="vampireLord" && entry.at("targetAppearance").at("raceId")==race,
+      "SRP_DRAIN_TRANSFORMATION_REQUIRED");
+  }
+  const auto source=world->GetEspm().GetBrowser().LookupById(spellId);
+  Require(source.rec && source.rec->GetType()==espm::SPEL::kType,"SRP_DRAIN_SPEL_REQUIRED");
+  const auto spell=espm::GetData<espm::SPEL>(spellId,world);
+  const auto castType=lord?espm::SPEL::CastType::FireAndForget:espm::SPEL::CastType::Concentration;
+  Require(spell.spellItem && spell.spellItem->castType==castType &&
+    spell.spellItem->delivery==espm::SPEL::Delivery::Aimed,"SRP_DRAIN_CAST_UNSUPPORTED");
+  Weapon result;result.source=spellId;
+  int effectIndex=-1;
+  for(const auto& effect:spell.effects) {
+    ++effectIndex;
+    const auto effectId=source.ToGlobalId(effect.effectFormId);
+    const auto mgef=espm::GetData<espm::MGEF>(effectId,world);
+    if(mgef.data.primaryAV!=espm::ActorValue::Health || mgef.data.effectType!=espm::MGEF::EffectType::Absorb)continue;
+    Require(result.drain.is_null() && effect.effectItem && effect.effectItem->duration==1 &&
+      effect.effectItem->areaOfEffect==(lord?10:0) && effect.effectItem->magnitude>0,"SRP_DRAIN_HEALTH_EFFECT_UNSUPPORTED");
+    const auto owner=world->GetEspm().GetBrowser().LookupById(effectId);uint32_t projectile=0;
+    espm::RecordHeaderAccess::IterateFields(owner.rec,[&](const char* type,uint32_t size,const char* bytes){
+      if(!memcmp(type,"DATA",4)&&size>=76)memcpy(&projectile,bytes+72,4);
+    },world->GetEspmCache());
+    // Lord health-absorb MGEF shares the projectile with the original damage
+    // effect. Only its single-target health absorption is admitted here.
+    const auto projectileId=lord ? FormDesc::FromString("1a30c:Dawnguard.esm").ToFormId(world->espmFiles) : owner.ToGlobalId(projectile);
+    const auto proj=world->GetEspm().GetBrowser().LookupById(projectileId);
+    Require(proj.rec && proj.rec->GetType()=="PROJ","SRP_DRAIN_PROJECTILE_REQUIRED");
+    float range=0;espm::RecordHeaderAccess::IterateFields(proj.rec,[&](const char* type,uint32_t size,const char* bytes){
+      if(!memcmp(type,"DATA",4)&&size>=16)memcpy(&range,bytes+12,4);
+    },world->GetEspmCache());
+    Require(std::isfinite(range)&&range>0&&range<=16384,"SRP_DRAIN_RANGE_UNSUPPORTED");result.reach=range;
+    result.drain={{"power","vampireDrain"},{"mgef",effectId},{"effectIndex",effectIndex},{"magnitude",effect.effectItem->magnitude},
+      {"cost",spell.spellItem->spellCost},{"durationMs",1000},{"concentration",!lord},
+      {"costPolicy",lord?"RECORD_BASE_PER_CAST_V1":"RECORD_BASE_PER_SECOND_V1"},
+      {"healPolicy","ACTUAL_HEALTH_LOSS_ONE_TO_ONE_V1"},{"equipmentDigest",Digest(actor.GetEquipment().ToJson())}};
+  }
+  Require(!result.drain.is_null()&&spell.spellItem->spellCost>0,"SRP_DRAIN_HEALTH_EFFECT_REQUIRED");return result;
+}
+
+float DrainDamage(const Weapon& weapon,const MpActor& caster,const MpActor& target)
+{
+  auto* world=target.GetParent();const auto owner=world->GetEspm().GetBrowser().LookupById(weapon.drain.at("mgef").get<uint32_t>());
+  std::vector<espm::CTDA> conditions;
+  espm::RecordHeaderAccess::IterateFields(owner.rec,[&](const char* type,uint32_t size,const char* bytes){
+    if(memcmp(type,"CTDA",4))return;Require(size==sizeof(espm::CTDA),"SRP_DRAIN_CONDITIONS_UNSUPPORTED");
+    espm::CTDA value{};memcpy(&value,bytes,sizeof(value));conditions.push_back(value);
+  },world->GetEspmCache());
+  // Managed placed originals have no native command/summon producer. Preserve
+  // the original IsCommandedActor==0 predicate only within that exact domain.
+  // Unknown/active command effects keep the operation closed.
+  for(auto it=conditions.begin();it!=conditions.end();) {
+    if(it->functionIndex!=700){++it;continue;}
+    const auto args=it->GetDefaultData();
+    Require(SrpOriginalLifecycle::Managed(target) && target.GetFormId()<0xff000000 &&
+      it->operatorFlag==0 && it->comparisonValue==0 && it->runOnType==espm::CTDA::RunOnTypeFlags::Subject &&
+      it->reference==0 && args.firstParameter==0 && args.secondParameter==0,"SRP_DRAIN_CONDITIONS_UNSUPPORTED");
+    for(const auto& effect:target.GetActiveMagicEffects().GetEntries()) {
+      const auto type=espm::GetData<espm::MGEF>(effect.data.effectId,world).data.effectType;
+      Require(type!=espm::MGEF::EffectType::CommandSummoned&&type!=espm::MGEF::EffectType::SummonCreature,
+        "SRP_DRAIN_CONDITIONS_UNSUPPORTED");
+    }
+    it=conditions.erase(it);
+  }
+  const auto allowed=SrpActorModifiers::EvaluateConditions(target,owner,conditions,&caster);
+  const auto source=world->GetEspm().GetBrowser().LookupById(weapon.source);
+  int index=-1;conditions.clear();
+  espm::RecordHeaderAccess::IterateFields(source.rec,[&](const char* type,uint32_t size,const char* bytes){
+    if(!memcmp(type,"EFID",4))++index;
+    if(memcmp(type,"CTDA",4)||index!=weapon.drain.at("effectIndex").get<int>())return;
+    Require(size==sizeof(espm::CTDA),"SRP_DRAIN_CONDITIONS_UNSUPPORTED");
+    espm::CTDA value{};memcpy(&value,bytes,sizeof(value));conditions.push_back(value);
+  },world->GetEspmCache());
+  using Result=SrpActorModifiers::ConditionResult;
+  const auto sourceAllowed=SrpActorModifiers::EvaluateConditions(target,source,conditions,&caster);
+  Require(allowed!=Result::Unknown&&sourceAllowed!=Result::Unknown,"SRP_DRAIN_CONDITIONS_UNSUPPORTED");
+  const auto modifiers=SrpActorModifiers::Read(target,true);
+  Require(modifiers.complete,"SRP_DRAIN_RESISTANCE_UNPROVEN");
+  const float resistance=modifiers.Sum(espm::ActorValue::MagicResist);
+  Require(std::isfinite(resistance),"SRP_DRAIN_RESISTANCE_UNPROVEN");
+  return allowed==Result::Inactive||sourceAllowed==Result::Inactive ? 0 :
+    weapon.drain.at("magnitude").get<float>()*(1.f-std::clamp(resistance,-100.f,100.f)/100.f);
+}
+Json WerewolfClaws(const MpActor& actor)
+{
+  auto* world = actor.GetParent();
+  const auto race = FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(world->espmFiles);
+  Require(actor.GetRaceId() == race, "SRP_CLAWS_WEREWOLF_RACE_REQUIRED");
+  const auto& fields = actor.GetDynamicFields().GetAsJson();
+  Require(fields.contains("private.srpSupernaturalCombatV1") && fields.contains("private.srpTransformationV1"),
+    "SRP_CLAWS_CONFIRMED_CONDITION_REQUIRED");
+  const auto& state = fields.at("private.srpSupernaturalCombatV1");
+  Checksum(state, "SRP_CLAWS_STATE_CORRUPT");
+  const auto& owner = state.at("owner");
+  Require(state.value("schemaVersion",0)==1 && state.value("clawsEnabled",false) &&
+    owner.at("profileId")==std::to_string(actor.GetProfileId()) && owner.at("characterId")==fields.at("srpActiveCharacterId") &&
+    state.at("kind")=="werewolf" && state.at("form")=="werewolf" && state.at("phase")=="NONE" &&
+    state.at("reserve").is_number() && state.at("reserve").get<double>()>0 && state.at("reserve").get<double>()<=100 &&
+    state.at("expiresAtMs").get<int64_t>()>=Now(), "SRP_CLAWS_CONDITION_UNAVAILABLE");
+  const auto& ledger = fields.at("private.srpTransformationV1");
+  Checksum(ledger, "SRP_CLAWS_TRANSFORMATION_CORRUPT");
+  const auto& entry = ledger.at("operations").at(ledger.at("activeOperation").get<std::string>());
+  Require(ledger.at("owner")==owner && !SrpTransformationFenced(actor) && ledger.at("pending").is_null() &&
+    entry.at("state")=="APPLIED" && entry.at("target")=="werewolf" && entry.at("targetAppearance").at("raceId")==race &&
+    !ledger.at("restoration").is_null(), "SRP_CLAWS_TRANSFORMATION_REQUIRED");
+  return {{"power","werewolfClaws"},{"race",race},{"transformation",ledger.at("activeOperation")}};
+}
+Weapon NativeWeapon(const MpActor& actor)
+{
+  auto* world=actor.GetParent();const auto& equipment=actor.GetEquipment();Weapon result;
+  if (actor.GetRaceId() == FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(world->espmFiles)) {
+    WerewolfClaws(actor);
+    result.reach = espm::GetData<espm::RACE>(actor.GetRaceId(),world).unarmedReach;
+    Require(std::isfinite(result.reach) && result.reach>0 && result.reach<=1024,"SRP_IMPACT_REACH_INVALID");
+    return result;
+  }
+  Require(!equipment.rightSpell && !equipment.leftSpell,"SRP_IMPACT_MELEE_WEAPON_REQUIRED");
+  size_t count=0;
+  for(const auto& entry:equipment.inv.entries){
+    if(entry.GetWorn()==Inventory::Worn::None)continue;
+    const auto lookup=world->GetEspm().GetBrowser().LookupById(entry.baseId);
+    Require(lookup.rec,"SRP_IMPACT_EQUIPMENT_RECORD_MISSING");
+    if(lookup.rec->GetType()!=espm::WEAP::kType)continue;
+    Require(entry.GetWorn()==Inventory::Worn::Right && entry.count==1 &&
+      actor.GetInventory().GetItemCount(entry.baseId)>0,"SRP_IMPACT_RIGHT_HAND_WEAPON_REQUIRED");
+    result.source=entry.baseId;++count;
+  }
+  Require(count<=1,"SRP_IMPACT_SINGLE_WEAPON_REQUIRED");
+  if(!count){
+    result.reach=espm::GetData<espm::RACE>(actor.GetRaceId(),world).unarmedReach;
+  }else{
+    const auto record=espm::GetData<espm::WEAP>(result.source,world);
+    Require(record.weapDNAM && record.weapData,"SRP_IMPACT_WEAPON_RECORD_INCOMPLETE");
+    const auto& data=*record.weapDNAM;
+    Require(data.animType>=espm::WEAP::AnimType::OneHandSword &&
+      data.animType<=espm::WEAP::AnimType::TwoHandAxe,"SRP_IMPACT_MELEE_ONLY");
+    const auto distance=espm::GetData<espm::GMST>(espm::GMST::kFCombatDistance,world).value;
+    Require(std::isfinite(data.speed) && data.speed>0 && data.speed<=10 &&
+      std::isfinite(distance) && distance>0,"SRP_IMPACT_WEAPON_RECORD_INVALID");
+    result.reach=data.reach*distance;
+    // Explicit normal-melee server policy; no animation packet proves a swing.
+    result.interval=static_cast<int64_t>(std::ceil(1100.0/data.speed));
+  }
+  Require(std::isfinite(result.reach) && result.reach>0 && result.reach<=1024,
+    "SRP_IMPACT_REACH_INVALID");return result;
+}
+Json WeaponJson(const Weapon& weapon,const MpActor& actor)
+{
+  if(!weapon.drain.is_null()) {auto value=weapon.drain;value["source"]=weapon.source;value["reach"]=weapon.reach;
+    value["intervalMs"]=weapon.interval;value["policy"]="AIMED_DRAIN_SEGMENT_V1";return value;}
+  if (actor.GetRaceId() == FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(actor.GetParent()->espmFiles)) {
+    auto result = WerewolfClaws(actor);
+    result["source"] = weapon.source;
+    result["reach"] = weapon.reach;
+    result["intervalMs"] = weapon.interval;
+    result["policy"] = "NORMAL_MELEE_SEGMENT_V1";
+    return result;
+  }
+  return {{"source",weapon.source},{"reach",weapon.reach},{"intervalMs",weapon.interval},
+    {"equipmentDigest",Digest(actor.GetEquipment().ToJson())},
+    {"policy","NORMAL_MELEE_SEGMENT_V1"}};
+}
+Vec Sub(Vec a,Vec b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
+Vec Cross(Vec a,Vec b){return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};}
+double Dot(Vec a,Vec b){return a.x*b.x+a.y*b.y+a.z*b.z;}
+bool Finite(Vec a){return std::isfinite(a.x)&&std::isfinite(a.y)&&std::isfinite(a.z)&&
+  std::abs(a.x)<=1e8&&std::abs(a.y)<=1e8&&std::abs(a.z)<=1e8;}
+bool Intersection(const SrpCollision::Triangle& t,Vec from,Vec to,double& fraction)
+{
+  Require(Finite(t.a)&&Finite(t.b)&&Finite(t.c),"SRP_IMPACT_TARGET_MESH_INVALID");
+  const auto e1=Sub(t.b,t.a),e2=Sub(t.c,t.a),direction=Sub(to,from),p=Cross(direction,e2);
+  const auto n=Cross(e1,e2);Require(Dot(n,n)>1e-18,"SRP_IMPACT_TARGET_MESH_INVALID");
+  const double determinant=Dot(e1,p);
+  // A coplanar/degenerate attack cannot positively establish target contact.
+  if(std::abs(determinant)<1e-9)return false;
+  const auto offset=Sub(from,t.a);const double u=Dot(offset,p)/determinant;
+  if(u<0||u>1)return false;
+  const auto q=Cross(offset,e1);const double v=Dot(direction,q)/determinant;
+  if(v<0||u+v>1)return false;
+  fraction=Dot(e2,q)/determinant;return fraction>1e-6&&fraction<=1;
+}
+Json Vector(const NiPoint3& v){return Json::array({v.x,v.y,v.z});}
+Json Vector(Vec v){return Json::array({v.x,v.y,v.z});}
+Json FrameIdentity(const Frame& frame,double gripHeight)
+{
+  Require(frame.scene && frame.revision && frame.worldOrCell &&
+    frame.movementPolicy=="SERVER_BOUNDED_MOVEMENT_V1" &&
+    frame.hitRepresentation=="SERVER_MESH_PROXY_V1" &&
+    frame.dynamics.complete && frame.dynamics.worldOrCell==frame.worldOrCell &&
+    frame.dynamics.revision && !frame.targetTriangles.empty() && frame.targetTriangles.size()<=100000,
+    "SRP_IMPACT_COMPLETE_SERVER_FRAME_REQUIRED");
+  Json mesh=Json::array();for(const auto& triangle:frame.targetTriangles)
+    mesh.push_back(Json::array({Vector(triangle.a),Vector(triangle.b),Vector(triangle.c)}));
+  return {{"revision",frame.revision},{"sceneId",frame.scene->Id()},
+    {"dynamicRevision",frame.dynamics.revision},{"dynamicStateDigest",frame.dynamicStateDigest},
+    {"worldOrCell",frame.worldOrCell},
+    {"movementPolicy",frame.movementPolicy},{"hitRepresentation",frame.hitRepresentation},
+    {"attackerPosition",Vector(frame.attackerPosition)},{"attackerAngle",Vector(frame.attackerAngle)},
+    {"targetPosition",Vector(frame.targetPosition)},{"targetAngle",Vector(frame.targetAngle)},
+    {"targetMeshDigest",Digest(mesh)},{"gripHeight",gripHeight}};
+}
+// The grip height is read from the attacker's own collision proxy instead of a
+// fixed offset. A missing or incoherent proxy refuses the attack: the server
+// must never invent a reach origin for an actor it cannot place.
+std::optional<double> AttackerGripHeight(const Frame& frame,const MpActor& attacker)
+{
+  auto* world=attacker.GetParent();
+  if(!world)return {};
+  const auto baseDesc=FormDesc::FromFormId(attacker.GetBaseId(),world->espmFiles).ToString();
+  const auto raceDesc=FormDesc::FromFormId(attacker.GetRaceId(),world->espmFiles).ToString();
+  const auto pos=attacker.GetPos(),angle=attacker.GetAngle();
+  if(!Finite(Vec{pos.x,pos.y,pos.z})||!std::isfinite(angle.z))return {};
+  const auto pose=world->CaptureSrpActorCollisionPose(attacker);
+  if(!pose)return {};
+  const auto mesh=frame.scene->ActorTriangles(baseDesc,raceDesc,*pose,attacker.IsFemale());
+  if(!mesh||mesh->empty())return {};
+  double minZ=1e300,maxZ=-1e300,sumX=0,sumY=0;size_t count=0;
+  for(const auto& triangle:*mesh)for(const auto& v:{triangle.a,triangle.b,triangle.c}){
+    minZ=std::min(minZ,v.z);maxZ=std::max(maxZ,v.z);sumX+=v.x;sumY+=v.y;++count;
+  }
+  if(!count)return {};
+  const double height=maxZ-minZ;
+  // A proxy thinner than a hand or taller than a giant cannot describe an
+  // attacker, and a proxy centred far from the accepted position is desynced.
+  if(!(height>=16.0&&height<=512.0))return {};
+  if(std::hypot(sumX/count-pos.x,sumY/count-pos.y)>256.0)return {};
+  const double grip=minZ+height*0.55;
+  return std::isfinite(grip)?std::optional<double>(grip):std::nullopt;
+}
+Json Contact(const Frame& frame,const Weapon& weapon,double gripHeight)
+{
+  const auto identity=FrameIdentity(frame,gripHeight);
+  // The segment starts at the attacker proxy's grip height and runs along the
+  // accepted facing. Neither origin, direction nor hit point is supplied by an
+  // impact report, and no engine animation pose is claimed.
+  const double yaw=frame.attackerAngle.z*std::acos(-1.0)/180.0;
+  Vec from{frame.attackerPosition.x,frame.attackerPosition.y,gripHeight};
+  Vec to{from.x+std::sin(yaw)*weapon.reach,from.y+std::cos(yaw)*weapon.reach,from.z};
+  Require(Finite(from)&&Finite(to),"SRP_IMPACT_ATTACK_TRANSFORM_INVALID");
+  double nearest=2;
+  for(const auto& triangle:frame.targetTriangles){double fraction;
+    if(Intersection(triangle,from,to,fraction))nearest=std::min(nearest,fraction);
+  }
+  Require(nearest<=1,"SRP_IMPACT_SERVER_SEGMENT_MISSES_TARGET");
+  Vec contact{from.x+(to.x-from.x)*nearest,from.y+(to.y-from.y)*nearest,from.z+(to.z-from.z)*nearest};
+  SrpCollision::Query query;query.worldOrCell=frame.worldOrCell;query.from=from;
+  query.to=contact;query.dynamics=frame.dynamics;
+  const auto trace=frame.scene->Trace(query);
+  Require(trace.verdict==SrpCollision::Verdict::Clear,"SRP_IMPACT_SERVER_COLLISION_NOT_CLEAR");
+  return {{"frame",identity},{"from",Vector(from)},{"contact",Vector(contact)},
+    {"targetFraction",nearest},{"collision","CLEAR"},{"enginePoseParity",false}};
+}
+Frame Capture(WorldState& world,const MpActor& attacker,const MpActor& target)
+{
+  auto frame=world.CaptureSrpOriginalImpactFrame(attacker,target);
+  Require(frame.has_value(),"SRP_IMPACT_SERVER_FRAME_UNAVAILABLE");return *frame;
+}
+
+std::string MeleeSession(PartOne& server, Networking::UserId userId,
+                         const MpActor& attacker, int64_t window)
+{
+  return Digest({{"protocol", "srpOriginalMelee/1"},
+                 {"session", server.serverState.SessionIncarnation(userId)},
+                 {"window", window},
+                 {"actor", PlayerIdentity(attacker, true).at("reference")},
+                 {"profileId", attacker.GetProfileId()},
+                 {"characterId", attacker.GetDynamicFields().GetAsJson().at(
+                   "srpActiveCharacterId")}});
+}
+
+bool ActionId(const std::string& id)
+{
+  return id.size() == 32 &&
+    id.find_first_not_of("0123456789abcdef") == std::string::npos;
+}
+void Write(MpActor& actor,const Json& ledger)
+{
+  actor.SetPropertyValueDump(kProperty,Seal(ledger).dump(),false,false);
+}
+Json Response(const MpActor& actor,const Json& entry,bool duplicate)
+{
+  return {{"operationId",entry.at("operationId")},{"state",entry.at("state")},
+    {"entry",entry},{"duplicate",duplicate},{"saved",Saved(actor)},
+    {"generation",actor.GetParent()->GetChangeFormGeneration(actor.GetFormId())},
+    {"enginePoseParity",false},{"lootEnabled",false},{"xpEnabled",false}};
+}
+Json TerminalResponse(MpActor& actor, const Json& ledger, const Json& entry)
+{
+  // A loaded terminal receipt is durable on disk but has no save generation
+  // in this process. Reaffirm the same ledger before acknowledging its retry.
+  if (actor.GetParent()->GetChangeFormGeneration(actor.GetFormId()) == 0)
+    actor.RunChangeFormTransaction([&] { Write(actor, ledger); return true; });
+  return Response(actor, entry, true);
+}
+Json Reconcile(MpActor& attacker,MpActor& target,Json ledger,Json entry,const Json& receipt)
+{
+  Require(receipt.at("intent")==entry.at("intent"),"SRP_IMPACT_RECEIPT_INTENT_CONFLICT");
+  // Apply and Cancel share recovery of a committed lethal hit. A cancellation
+  // after restart must finish its saved death request before closing the outbox.
+  if(SrpOriginalLifecycle::AwaitingCorpse(target)){
+    const auto pending = SrpOriginalLifecycle::Inspect(target).at("lifecycle").at("pendingDeath");
+    Require(pending.at("operationId")==entry.at("operationId"),
+      "SRP_IMPACT_DEATH_RECEIPT_CONFLICT");
+    target.Kill(&attacker,false);
+    Require(!SrpOriginalLifecycle::AwaitingCorpse(target),"SRP_IMPACT_DEATH_INCOMPLETE");
+  }
+  // An image restored from storage has no in-process save generation. Re-save
+  // its SAME receipt/health before acknowledging; never repeat the damage.
+  if(target.GetParent()->GetChangeFormGeneration(target.GetFormId())==0){
+    const auto persisted=target.GetDynamicFields().GetAsJson().at(kProperty);
+    target.RunChangeFormTransaction([&]{target.SetPropertyValueDump(kProperty,persisted.dump(),false,false);return true;});
+  }
+  if(!Saved(target)){
+    auto response=Response(attacker,entry,true);response["state"]="TARGET_SAVE_PENDING";
+    response["targetReceipt"]=receipt;response["saved"]=false;return response;
+  }
+  auto casterValues=attacker.GetActorValues();float healing=0;
+  if(receipt.contains("healing")&&!attacker.IsDead()&&casterValues.healthPercentage>0) {
+    const auto maximum=attacker.GetMaximumValues().health;
+    Require(std::isfinite(maximum)&&maximum>0,"SRP_DRAIN_RESOURCE_INVALID");
+    healing=std::min(receipt.at("healing").get<float>(),std::max(0.f,(1.f-casterValues.healthPercentage)*maximum));
+    casterValues.healthPercentage=std::clamp(casterValues.healthPercentage+healing/maximum,0.f,1.f);
+  }
+  entry["state"]="APPLIED";entry["targetReceipt"]=receipt;
+  if(receipt.contains("healing"))entry["healingApplied"]=healing;
+  entry=Seal(entry);
+  ledger["operations"][entry.at("operationId").get<std::string>()]=entry;ledger["pending"]=nullptr;
+  attacker.RunChangeFormTransaction([&]{
+    if(healing>0)attacker.SetPercentages(casterValues,nullptr);
+    Write(attacker,ledger);return true;
+  });
+  if(receipt.contains("healing"))attacker.NetSendChangeValues(attacker.GetActorValues(),std::vector<espm::ActorValue>{espm::ActorValue::Health,espm::ActorValue::Magicka});
+  target.NetSendChangeValues(target.GetActorValues(),std::vector<espm::ActorValue>{espm::ActorValue::Health});
+  return Response(attacker,entry,true);
+}
+}
+
+bool IsDrainSpell(WorldState& world,uint32_t source)
+{
+  if(!source||!world.HasEspm()||source/0x01000000>=world.espmFiles.size())return false;
+  const auto descriptor=FormDesc::FromFormId(source,world.espmFiles).ToString();
+  return descriptor=="8d5bf:Skyrim.esm" || descriptor=="8d5c0:Skyrim.esm" ||
+    descriptor=="8d5c1:Skyrim.esm" || descriptor=="8d5c2:Skyrim.esm" || descriptor=="19324:Dawnguard.esm";
+}
+
+bool OwnsDrainResources(const MpActor& actor)
+{
+  const auto& fields=actor.GetDynamicFields().GetAsJson();
+  if(fields.contains(kProperty)) {
+    const auto& ledger=fields.at(kProperty);
+    for(const auto& [id,entry]:ledger.at("operations").items()) {
+      const auto& intent=entry.at("intent");
+      if(intent.at("weapon").value("power",std::string())=="vampireDrain" &&
+         (entry.at("state")=="ISSUED" || Now()-intent.at("issuedAtMs").get<int64_t>()<5000))return true;
+    }
+  }
+  const auto it=fields.find("private.srpSupernaturalCombatV1");
+  if(it==fields.end()||!it->value("drainEnabled",false))return false;
+  Checksum(*it,"SRP_DRAIN_STATE_CORRUPT");
+  if(it->at("kind")=="vampire"&&it->at("form")=="vampireLord")return true;
+  const auto& equipment=actor.GetEquipment();
+  return IsDrainSpell(*actor.GetParent(),equipment.leftSpell.value_or(0)) ||
+    IsDrainSpell(*actor.GetParent(),equipment.rightSpell.value_or(0));
+}
+
+void HandleMeleePacket(PartOne& server, Networking::UserId userId,
+                       const std::string& content)
+{
+  // Bound this extension independently from other SkyMP custom packets.
+  if (content.size() > 512) return;
+  try {
+    const auto packet = Json::parse(content);
+    if (packet.at("version") != 1 || !packet.at("version").is_number_integer())
+      return;
+    auto& attacker = Authenticated(server, userId);
+    const auto& action = packet.at("action");
+    const auto window = Now() / meleeSessionWindowMs;
+    if (action == "hello" && packet.size() == 3) {
+      const auto session = MeleeSession(server, userId, attacker, window);
+      server.SendCustomPacket(userId, Json{{"customPacketType", "srpOriginalMelee"},
+        {"version", 1}, {"action", "ready"}, {"session", session},
+        {"actorId", attacker.GetFormId()}}.dump());
+      return;
+    }
+    const bool drain = action=="drain" || action=="interruptDrain";
+    const bool claws = packet.contains("power") && packet.at("power")=="werewolfClaws";
+    if ((!drain && action != "impact") || packet.size() != ((claws||drain) ? 7 : 6))
+      return;
+    if (!claws && attacker.GetRaceId()==FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(server.worldState.espmFiles)) return;
+    const auto actionId = packet.at("actionId").get<std::string>();
+    const auto& target = packet.at("targetId");
+    if (!ActionId(actionId) || !target.is_number_unsigned() ||
+        target.get<uint64_t>() > std::numeric_limits<uint32_t>::max())
+      return;
+    const auto targetId = target.get<uint32_t>();
+    const auto form = server.worldState.LookupFormByIdNoLoad(targetId);
+    if (!form || !form->AsActor() || !SrpOriginalLifecycle::Managed(*form->AsActor()))
+      return;
+    const auto& session = packet.at("session");
+    if (session != MeleeSession(server, userId, attacker, window) &&
+        session != MeleeSession(server, userId, attacker, window - 1))
+      return;
+    // Keep target outside the key. Reusing a swing for a different target
+    // must conflict with its existing outbox entry.
+    // The ledger itself binds the character. Keep the same id across session
+    // renewal so a retried action cannot mint another operation on reconnect.
+    const auto digest = Digest({{"protocol", "srpOriginalMelee/1"}, {"actionId", actionId}});
+    const auto requestId="hit-"+digest.substr(0,32);
+    const uint32_t spellId=drain ? packet.at("spellId").get<uint32_t>() : 0;
+    if(drain && (!packet.at("spellId").is_number_unsigned() ||
+       packet.at("spellId").get<uint64_t>()>std::numeric_limits<uint32_t>::max() || !IsDrainSpell(server.worldState,spellId)))return;
+    if(action=="interruptDrain") {
+      const auto ledger=Ledger(attacker,"OUTBOX",PlayerIdentity(attacker));
+      if(ledger.at("requests").contains(requestId)) {
+        const auto id=ledger.at("requests").at(requestId).get<std::string>();
+        const auto& held=ledger.at("operations").at(id).at("intent").at("weapon");
+        Require(held.value("power",std::string())=="vampireDrain"&&held.at("source")==spellId,"SRP_DRAIN_INTERRUPT_CONFLICT");
+        Cancel(server,userId,id);
+      }
+      return;
+    }
+    if (claws) WerewolfClaws(attacker);
+    // One nonce namespace across forms: changing from claws to a human weapon
+    // must not turn the same client swing into a second durable impact.
+    SrpOriginalImpactRequestEvent event(userId, targetId, requestId,spellId);
+    event.Fire(&server.worldState);
+    if(drain) {
+      const auto ledger=Ledger(attacker,"OUTBOX",PlayerIdentity(attacker,true));
+      std::string state="REFUSED";
+      if(ledger.at("requests").contains(requestId))
+        state=ledger.at("operations").at(ledger.at("requests").at(requestId).get<std::string>()).at("state").get<std::string>();
+      if((state=="APPLIED"||state=="CANCELLED")&&!Saved(attacker))state="PENDING";
+      server.SendCustomPacket(userId,Json{{"customPacketType","srpOriginalMelee"},{"version",1},{"action","drainAck"},
+        {"actionId",actionId},{"state",state},{"actorId",attacker.GetFormId()}}.dump());
+    }
+  } catch (const std::exception& error) {
+    spdlog::debug("SRP original melee packet refused: {}", error.what());
+  }
+}
+
+void RequireDynamicMeleeContact(WorldState& world, const MpActor& attacker,
+                                const MpActor& target, uint32_t source)
+{
+  Require(&attacker != &target && attacker.GetParent() == &world &&
+            target.GetParent() == &world,
+          "SRP_IMPACT_DYNAMIC_ACTOR_INVALID");
+  Active(attacker);
+  Active(target);
+  Require(!SrpTransformationFenced(attacker) && !SrpTransformationFenced(target),
+          "SRP_IMPACT_TRANSFORMATION_PENDING");
+  const auto weapon = NativeWeapon(attacker);
+  Require(source == weapon.source, "SRP_IMPACT_WEAPON_SOURCE_MISMATCH");
+  const auto elapsed = std::chrono::steady_clock::now() -
+    attacker.GetLastHitTime(std::nullopt);
+  Require(elapsed >= std::chrono::milliseconds(weapon.interval),
+          "SRP_IMPACT_ATTACK_INTERVAL_PENDING");
+  const auto frame = Capture(world, attacker, target);
+  const auto grip = AttackerGripHeight(frame, attacker);
+  Require(grip.has_value(), "SRP_IMPACT_ATTACKER_PROXY_REQUIRED");
+  Contact(frame, weapon, *grip);
+}
+
+Json Begin(PartOne& server,Networking::UserId userId,uint32_t targetId,const std::string& requestId,uint32_t spellId)
+{
+  Require(Token(requestId),"SRP_IMPACT_REQUEST_ID_INVALID");
+  auto& attacker=Authenticated(server,userId);auto identity=PlayerIdentity(attacker,true);
+  const bool hasIdentity=identity.contains("incarnation");
+  auto ledger=Ledger(attacker,"OUTBOX",identity);
+  if(ledger.at("requests").contains(requestId)){
+    const auto& entry=ledger.at("operations").at(ledger.at("requests").at(requestId).get<std::string>());
+    Require(entry.at("intent").at("targetId")==targetId,"SRP_IMPACT_REQUEST_ID_CONFLICT");
+    return entry.at("state") == "ISSUED" ? Response(attacker,entry,true) :
+      TerminalResponse(attacker,ledger,entry);
+  }
+  Require(ledger.at("pending").is_null(),"SRP_IMPACT_PENDING_SWING_EXISTS");
+  Require(ledger.at("operations").size()<capacity,"SRP_IMPACT_CAPACITY_REQUIRES_RECONCILIATION");
+  auto& target=Loaded(server.worldState,targetId);Require(&target!=&attacker,"SRP_IMPACT_SELF_FORBIDDEN");
+  Active(attacker);Active(target);const auto targetIdentity=TargetIdentity(target);
+  Require(Saved(attacker)&&Saved(target),"SRP_IMPACT_PRIOR_SAVE_PENDING");
+  Require(SrpActorStats::Read(attacker).enabled,"SRP_IMPACT_PLAYER_STATS_REQUIRED");
+  Require(SrpOriginalStats::Read(target).has_value(),"SRP_IMPACT_ORIGINAL_STATS_REQUIRED");
+  const auto weapon=spellId ? DrainWeapon(attacker,spellId) : NativeWeapon(attacker);const auto now=Now();
+  auto resources=attacker.GetActorValues();
+  const auto maximumMagicka=attacker.GetMaximumValues().magicka;
+  if(!weapon.drain.is_null()) {
+    const float cost=weapon.drain.at("cost").get<float>();
+    Require(std::isfinite(maximumMagicka)&&maximumMagicka>0 && std::isfinite(resources.magickaPercentage) &&
+      resources.magickaPercentage>=0 && resources.magickaPercentage<=1 &&
+      resources.magickaPercentage*maximumMagicka>=cost,"SRP_DRAIN_INSUFFICIENT_MAGICKA");
+    resources.magickaPercentage=std::max(0.f,resources.magickaPercentage-cost/maximumMagicka);
+  }
+  if (requestId.rfind("claw-",0)==0) WerewolfClaws(attacker);
+  for(const auto& [id,prior]:ledger.at("operations").items()){
+    const auto issued=prior.at("intent").at("issuedAtMs").get<int64_t>();
+    const auto interval=prior.at("intent").at("weapon").at("intervalMs").get<int64_t>();
+    Require(now>=issued && now-issued>=interval,"SRP_IMPACT_ATTACK_RATE_LIMIT");
+  }
+  const auto frame=Capture(server.worldState,attacker,target);
+  const auto grip=AttackerGripHeight(frame,attacker);
+  Require(grip.has_value(),"SRP_IMPACT_ATTACKER_PROXY_REQUIRED");
+  const auto proof=Contact(frame,weapon,*grip),host=Host(server,target);
+  // Identity is created only after all admission checks, in the same durable
+  // outbox transaction. A denied request cannot mint a combat incarnation.
+  if(!hasIdentity){identity["incarnation"]=NewId();identity=Seal(identity);ledger["owner"]=identity;}
+  const auto before=server.worldState.GetChangeFormGeneration(attacker.GetFormId());
+  Require(before<std::numeric_limits<uint64_t>::max(),"SRP_IMPACT_GENERATION_OVERFLOW");
+  const auto operationId=NewId();
+  const auto intent=Seal({{"schemaVersion",1},{"operationId",operationId},{"requestId",requestId},
+    {"attacker",identity},{"target",targetIdentity},{"targetId",targetId},
+    {"attackerGeneration",before+1},{"targetGeneration",server.worldState.GetChangeFormGeneration(targetId)},
+    {"session",server.serverState.SessionIncarnation(userId)},{"userId",userId},{"host",host},
+    {"issuedAtMs",now},{"expiresAtMs",now+lifetimeMs},{"weapon",WeaponJson(weapon,attacker)},
+    {"readyAtMs",now+(!weapon.drain.is_null()&&weapon.drain.at("concentration")==true?1000:0)},
+    {"proof",proof}});
+  const auto entry=Seal({{"operationId",operationId},{"state","ISSUED"},{"intent",intent}});
+  ledger["operations"][operationId]=entry;ledger["requests"][requestId]=operationId;ledger["pending"]=operationId;
+  attacker.RunChangeFormTransaction([&]{
+    if(!hasIdentity)attacker.SetPropertyValueDump(kIdentityProperty,identity.dump(),false,false);
+    if(!weapon.drain.is_null())attacker.SetPercentages(resources,nullptr);
+    Write(attacker,ledger);return true;
+  });
+  // Save generations come from one global monotonic counter, so this form's
+  // next generation is not necessarily before+1: any other form that requested
+  // a save in between consumes a number. What must hold is that this write was
+  // accepted and advanced past the generation we captured.
+  const auto after=server.worldState.GetChangeFormGeneration(attacker.GetFormId());
+  Require(after>before,"SRP_IMPACT_UNEXPECTED_SAVE_GENERATION");
+  if(!weapon.drain.is_null())attacker.NetSendChangeValues(attacker.GetActorValues(),std::vector<espm::ActorValue>{espm::ActorValue::Magicka});
+  return Response(attacker,entry,false);
+}
+
+Json Begin(PartOne& server,Networking::UserId userId,uint32_t targetId,const std::string& requestId)
+{
+  return Begin(server,userId,targetId,requestId,0);
+}
+
+Json Apply(PartOne& server,Networking::UserId userId,const std::string& operationId,bool channelObserved)
+{
+  Require(Token(operationId),"SRP_IMPACT_OPERATION_ID_INVALID");
+  auto& attacker=Authenticated(server,userId);const auto identity=PlayerIdentity(attacker);
+  auto ledger=Ledger(attacker,"OUTBOX",identity);
+  Require(ledger.at("operations").contains(operationId),"SRP_IMPACT_OPERATION_NOT_ISSUED");
+  auto entry=ledger.at("operations").at(operationId);const auto intent=entry.at("intent");
+  if(entry.at("state")!="ISSUED")return TerminalResponse(attacker,ledger,entry);
+  Require(entry.at("state")=="ISSUED" && ledger.at("pending")==operationId,"SRP_IMPACT_OPERATION_NOT_PENDING");
+  auto& target=Loaded(server.worldState,intent.at("targetId").get<uint32_t>());
+  const auto targetIdentity=TargetIdentity(target);
+  Require(targetIdentity==intent.at("target"),"SRP_IMPACT_TARGET_IDENTITY_MISMATCH");
+  auto targetLedger=Ledger(target,"TARGET_RECEIPTS",targetIdentity);
+  // A durable target-side receipt always wins over replay/reconnect/stale
+  // snapshots. Reconciliation can acknowledge it but cannot damage again.
+  if(targetLedger.at("operations").contains(operationId)){
+    return Reconcile(attacker,target,ledger,entry,targetLedger.at("operations").at(operationId));
+  }
+  Active(attacker);Active(target);
+  Require(intent.at("session")==server.serverState.SessionIncarnation(userId) && intent.at("userId")==userId,
+    "SRP_IMPACT_SESSION_CHANGED");
+  Require(Host(server,target)==intent.at("host"),"SRP_IMPACT_TARGET_HOST_CHANGED");
+  // Save generations come from one global counter, so the attacker's own intent
+  // write lands at or past the number its intent recorded (never below it). The
+  // target is pinned exactly: any target write between admission and application
+  // invalidates the frame the proof was built from.
+  const auto attackerGeneration=server.worldState.GetChangeFormGeneration(attacker.GetFormId());
+  const auto targetGeneration=server.worldState.GetChangeFormGeneration(target.GetFormId());
+  Require(attackerGeneration>=intent.at("attackerGeneration").get<uint64_t>(),
+    "SRP_IMPACT_GENERATION_CHANGED");
+  Require(targetGeneration==intent.at("targetGeneration").get<uint64_t>(),
+    "SRP_IMPACT_GENERATION_CHANGED");
+  Require(Saved(attacker)&&Saved(target),"SRP_IMPACT_INTENT_SAVE_PENDING");
+  const auto now=Now();Require(now>=intent.at("issuedAtMs").get<int64_t>() &&
+    now<=intent.at("expiresAtMs").get<int64_t>(),"SRP_IMPACT_INTENT_EXPIRED");
+  const bool drain=intent.at("weapon").value("power",std::string())=="vampireDrain";
+  if(drain)Require(channelObserved&&now>=intent.at("readyAtMs").get<int64_t>(),"SRP_DRAIN_CHANNEL_PENDING");
+  const auto weapon=drain ? DrainWeapon(attacker,intent.at("weapon").at("source").get<uint32_t>()) : NativeWeapon(attacker);
+  Require(WeaponJson(weapon,attacker)==intent.at("weapon"),"SRP_IMPACT_WEAPON_CHANGED");
+  const auto frame=Capture(server.worldState,attacker,target);
+  const auto grip=AttackerGripHeight(frame,attacker);
+  Require(grip.has_value(),"SRP_IMPACT_ATTACKER_PROXY_REQUIRED");
+  const auto proof=Contact(frame,weapon,*grip);
+  Require(proof==intent.at("proof"),"SRP_IMPACT_FRAME_CHANGED");
+  Require(SrpActorStats::Read(attacker).enabled && SrpOriginalStats::Read(target).has_value(),
+    "SRP_IMPACT_STATS_REQUIRED");
+  Require(targetLedger.at("operations").size()<capacity,"SRP_IMPACT_CAPACITY_REQUIRES_RECONCILIATION");
+  HitData hit;hit.aggressor=attacker.GetFormId();hit.target=target.GetFormId();hit.source=weapon.source;
+  // The single existing damage formula owns native weapon/armor/SRP scaling.
+  // Power, bash, sneak, projectile and client block flags are never copied.
+  const float damage=drain ? DrainDamage(weapon,attacker,target) : server.CalculateDamage(attacker,target,hit);
+  const float maximum=target.GetMaximumValues().health;auto values=target.GetActorValues();
+  Require(std::isfinite(damage)&&damage>=0 && std::isfinite(maximum)&&maximum>0 &&
+    std::isfinite(values.healthPercentage)&&values.healthPercentage>0&&values.healthPercentage<=1,
+    "SRP_IMPACT_RESOURCE_INVALID");
+  const float beforeHealth=values.healthPercentage;
+  values.healthPercentage=beforeHealth-damage/maximum;
+  // Lethal damage is completed here, not deferred: the health write, the engine
+  // death state with the corpse drops, and the authoritative life receipt.
+  const bool lethal=!(std::isfinite(values.healthPercentage)&&values.healthPercentage>0);
+  if(lethal)values.healthPercentage=0.0f;
+  auto receipt=Json{{"schemaVersion",1},{"operationId",operationId},{"state","APPLIED"},
+    {"attacker",identity},{"target",targetIdentity},{"intent",intent},{"proof",proof},
+    {"damage",damage},{"maximumHealth",maximum},{"beforeHealth",beforeHealth},
+    {"afterHealth",values.healthPercentage},{"lethal",lethal},{"appliedAtMs",now},
+    {"enginePoseParity",false},{"lootEnabled",false},{"xpEnabled",false}};
+  if(drain) { receipt["healing"]=std::min(damage,beforeHealth*maximum);receipt["cost"]=weapon.drain.at("cost"); }
+  receipt=Seal(receipt);
+  targetLedger["operations"][operationId]=receipt;
+  if(lethal){
+    // Lethal cannot write health through SetPercentages: a zero percentage calls
+    // Kill, and Kill opens its own ChangeForm transaction. The durable unit is
+    // therefore the receipt plus the death request; the corpse transaction then
+    // finalises that same request. If the process dies in between, the request
+    // stays DYING and the next Apply resumes it instead of repeating the death.
+    target.RunChangeFormTransaction([&]{
+      Write(target,targetLedger);
+      SrpOriginalLifecycle::BeginAuthoritativeDeath(target,attacker,operationId,damage);
+      return true;
+    });
+    target.Kill(&attacker,false);
+    Require(!SrpOriginalLifecycle::AwaitingCorpse(target),"SRP_IMPACT_DEATH_INCOMPLETE");
+    const auto death=SrpOriginalLifecycle::Inspect(target);
+    auto response=Response(attacker,entry,false);
+    response["state"]="TARGET_SAVE_PENDING";response["lethal"]=true;
+    response["death"]=death;response["targetReceipt"]=receipt;
+    response["saved"]=false;return response;
+  }
+  target.RunChangeFormTransaction([&]{
+    target.SetPercentages(values,nullptr);Write(target,targetLedger);return true;
+  });
+  auto response=Response(attacker,entry,false);response["state"]="TARGET_SAVE_PENDING";
+  response["targetReceipt"]=receipt;response["saved"]=false;return response;
+}
+
+Json Apply(PartOne& server,Networking::UserId userId,const std::string& operationId)
+{
+  return Apply(server,userId,operationId,false);
+}
+
+Json Cancel(PartOne& server,Networking::UserId userId,const std::string& operationId)
+{
+  Require(Token(operationId),"SRP_IMPACT_OPERATION_ID_INVALID");
+  auto& attacker=Authenticated(server,userId);auto ledger=Ledger(attacker,"OUTBOX",PlayerIdentity(attacker));
+  Require(ledger.at("operations").contains(operationId),"SRP_IMPACT_OPERATION_NOT_ISSUED");
+  auto entry=ledger.at("operations").at(operationId);
+  if(entry.at("state")!="ISSUED")return TerminalResponse(attacker,ledger,entry);
+  auto& target=Loaded(server.worldState,entry.at("intent").at("targetId").get<uint32_t>());
+  auto targetLedger=Ledger(target,"TARGET_RECEIPTS",TargetIdentity(target));
+  if(targetLedger.at("operations").contains(operationId))
+    return Reconcile(attacker,target,ledger,entry,targetLedger.at("operations").at(operationId));
+  entry["state"]="CANCELLED";entry=Seal(entry);ledger["operations"][operationId]=entry;ledger["pending"]=nullptr;
+  const auto& weapon=entry.at("intent").at("weapon");
+  const bool refund=weapon.value("power",std::string())=="vampireDrain";
+  attacker.RunChangeFormTransaction([&]{
+    if(refund) {
+      Require(!attacker.IsDead()&&!attacker.IsRespawning(),"SRP_DRAIN_REFUND_WAITING_FOR_RESPAWN");
+      auto values=attacker.GetActorValues();const auto maximum=attacker.GetMaximumValues().magicka;
+      Require(std::isfinite(maximum)&&maximum>0,"SRP_DRAIN_RESOURCE_INVALID");
+      values.magickaPercentage=std::clamp(values.magickaPercentage+weapon.at("cost").get<float>()/maximum,0.f,1.f);
+      attacker.SetPercentages(values,nullptr);
+    }
+    Write(attacker,ledger);return true;
+  });
+  if(refund)attacker.NetSendChangeValues(attacker.GetActorValues(),std::vector<espm::ActorValue>{espm::ActorValue::Magicka});
+  return Response(attacker,entry,false);
+}
+
+Json Inspect(const MpActor& actor)
+{
+  const auto& fields=actor.GetDynamicFields().GetAsJson();
+  if(!fields.contains(kProperty))return {{"present",false},{"enginePoseParity",false},
+    {"legacyHitAuthority",false},{"lootEnabled",false},{"xpEnabled",false}};
+  const bool original=SrpOriginalLifecycle::Managed(actor);
+  const auto ledger=Ledger(actor,original?"TARGET_RECEIPTS":"OUTBOX",original?TargetIdentity(actor):PlayerIdentity(actor));
+  return {{"present",true},{"ledger",ledger},{"saved",Saved(actor)},
+    {"enginePoseParity",false},{"legacyHitAuthority",false},{"lootEnabled",false},{"xpEnabled",false}};
+}
+}

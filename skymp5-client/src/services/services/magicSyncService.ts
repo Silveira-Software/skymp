@@ -9,6 +9,7 @@ import { logTrace } from '../../logging';
 import { MsgType } from "../../messages";
 import { SpellCastMsgData, SpellCastMessage } from "../messages/spellCastMessage";
 import { UpdateAnimVariablesMessageMsgData } from "../messages/updateAnimVariablesMessage";
+import { HitService } from './hitService';
 
 export class MagicSyncService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -59,6 +60,10 @@ export class MagicSyncService extends ClientListener {
         const isInterruptCast = false;
 
         const msg: SpellCastMsgData = this.getSpellCastEventData(event, isInterruptCast);
+        if (msg.isDualCasting && this.controller.lookupListener(HitService).isDrainSpell(msg.spell)) return;
+        if (event.caster.getFormID() === 0x14 && this.controller.lookupListener(HitService).beginDrain(
+            msg.target || (Game.getCurrentCrosshairRef() ? localIdToRemoteId(Game.getCurrentCrosshairRef()!.getFormID(), true) : 0),
+            msg.spell, msg.castingSource)) return;
 
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.SpellCast, data: msg },
@@ -69,6 +74,8 @@ export class MagicSyncService extends ClientListener {
     }
 
     private onSendAnimationEventLeave(ctx: { animEventName: string, animationSucceeded: boolean }) {
+        if (ctx.animationSucceeded && this.isInteraptSpellCastAnim(ctx.animEventName))
+            this.controller.lookupListener(HitService).interruptDrain();
 
         if (!this.lastSpellCastEventMsg || !this.isInteraptSpellCastAnim(ctx.animEventName)) {
             return;

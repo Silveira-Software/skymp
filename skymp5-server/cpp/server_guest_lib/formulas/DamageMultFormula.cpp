@@ -51,7 +51,8 @@ float DamageMultFormula::CalculateDamage(const MpActor& aggressor,
     return baseDamage;
   }
 
-  if (IsNonPlayerBaseId(aggressor) && !IsNonPlayerBaseId(target)) {
+  if (IsNonPlayerBaseId(aggressor) && !IsNonPlayerBaseId(target) &&
+      !worldState->GetSrpCreatureBalance(aggressor)) {
     baseDamage *= settings.multiplier;
   }
 
@@ -70,7 +71,8 @@ float DamageMultFormula::CalculateDamage(
     return baseDamage;
   }
 
-  if (IsNonPlayerBaseId(aggressor) && !IsNonPlayerBaseId(target)) {
+  if (IsNonPlayerBaseId(aggressor) && !IsNonPlayerBaseId(target) &&
+      !worldState->GetSrpCreatureBalance(aggressor)) {
     baseDamage *= settings.multiplier;
   }
 

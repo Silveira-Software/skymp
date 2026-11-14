@@ -1,4 +1,5 @@
 #include "MpObjectReference.h"
+#include "SrpOriginalLifecycle.h"
 #include <unordered_set>
 static thread_local std::unordered_set<const MpObjectReference*> srpConsumptionTransactions;
 #include "ChangeFormGuard.h"
@@ -17,6 +18,7 @@ static thread_local std::unordered_set<const MpObjectReference*> srpConsumptionT
 #include "UpdatePropertyMessage.h"
 #include "WorldState.h"
 #include "gamemode_events/ActivateEvent.h"
+#include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/PutItemEvent.h"
 #include "gamemode_events/TakeItemEvent.h"
 #include "libespm/CompressedFieldsCache.h"
@@ -369,6 +371,20 @@ FormCallbacks MpObjectReference::GetCallbacks() const
   return *callbacks;
 }
 
+bool MpObjectReference::HasSrpUnloadDependencies() const
+{
+  // Merely observing nearby trigger volumes is not an active script use.
+  // Unsubscribe detaches false/outside entries without an enter/leave event.
+  // Inside volumes and any previously acquired VM handle remain pinned.
+  const bool activeTrigger = emittersWithPrimitives && std::any_of(
+    emittersWithPrimitives->begin(), emittersWithPrimitives->end(),
+    [](const auto& entry) { return entry.second; });
+  return HasSrpVmReferences() || !ListActivePexInstances().empty() || GetSingleUpdateTimerId() ||
+    pImpl->scriptState || pImpl->primitive || occupant ||
+    occupantDestroySink || occupantDisableSink ||
+    (primitivesWeAreInside && !primitivesWeAreInside->empty()) || activeTrigger;
+}
+
 bool MpObjectReference::HasScript(const char* name) const
 {
   return ToGameObject()->HasScript(name);
@@ -456,6 +472,19 @@ void MpObjectReference::Activate(MpObjectReference& activationSource,
                                  bool defaultProcessingOnly,
                                  bool isSecondActivation)
 {
+  if (AsActor() && SrpOriginalLifecycle::Managed(*AsActor())) {
+    auto* player = activationSource.AsActor();
+    if (AsActor()->IsDead() && player && player->GetProfileId() > 0 &&
+        !defaultProcessingOnly && !isSecondActivation) {
+      CheckInteractionAbility(activationSource);
+      // Inspection request only. The durable loot bridge owns delivery and
+      // receipt acknowledgement. Default Activate/TakeItem remain blocked.
+      CustomEvent request(GetFormId(), "onSrpOriginalLootOpen",
+        nlohmann::json::array({player->GetFormId()}).dump());
+      request.Fire(GetParent());
+    }
+    return;
+  }
   if (spdlog::should_log(spdlog::level::trace)) {
     for (auto& script : ListActivePexInstances()) {
       spdlog::trace("MpObjectReference::Activate {:x} - found script {}",
@@ -549,6 +578,7 @@ void MpObjectReference::Enable()
 
 void MpObjectReference::SetPos(const NiPoint3& newPos, SetPosMode setPosMode)
 {
+  if(GetParent()&&AsActor())GetParent()->CheckSrpNpcMovement(GetFormId(),GetCellOrWorld(),newPos);
   auto oldGridPos = GetGridPos(ChangeForm().position);
   auto newGridPos = GetGridPos(newPos);
 
@@ -600,7 +630,7 @@ void MpObjectReference::SetPos(const NiPoint3& newPos, SetPosMode setPosMode)
       }
     }
 
-    if (primitivesWeAreInside) {
+    if (primitivesWeAreInside && !primitivesWeAreInside->empty()) {
       auto me = ToVarValue();
 
       // May be modified inside loop, so copying
@@ -646,6 +676,8 @@ void MpObjectReference::SetOpen(bool open)
 
 void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 {
+  if(AsActor()&&SrpOriginalLifecycle::Managed(*AsActor()))
+    throw std::runtime_error("SRP_ORIGINAL_INVENTORY_LIFECYCLE_NOT_APPROVED");
   CheckInteractionAbility(ac);
   if (this->occupant != &ac) {
     std::stringstream err;
@@ -660,6 +692,8 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 
 void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 {
+  if(AsActor()&&SrpOriginalLifecycle::Managed(*AsActor()))
+    throw std::runtime_error("SRP_ORIGINAL_LOOT_LIFECYCLE_NOT_APPROVED");
   CheckInteractionAbility(ac);
   if (this->occupant != &ac) {
     std::stringstream err;
@@ -1289,6 +1323,7 @@ void MpObjectReference::SetCellOrWorldObsolete(const FormDesc& newWorldOrCell)
   if (!worldState) {
     return;
   }
+  if(AsActor())worldState->CheckSrpNpcMovement(GetFormId(),newWorldOrCell,GetPos());
 
   auto worldOrCell =
     ChangeForm().worldOrCellDesc.ToFormId(worldState->espmFiles);
@@ -1953,10 +1988,30 @@ std::vector<espm::CONT::ContainerObject> GetInventoryObjects(
   const espm::LookupResult& lookupRes)
 {
   auto& compressedFieldsCache = worldState->GetEspmCache();
+  auto resolveObjects = [&](const espm::LookupResult& owner,
+                            std::vector<espm::CONT::ContainerObject> objects) {
+    // CNTO FormIDs are relative to the plugin that owns the winning field.
+    // For a templated NPC, that plugin may differ from the actor's base.
+    const auto& browser = worldState->GetEspm().GetBrowser();
+    std::vector<espm::CONT::ContainerObject> resolved;
+    resolved.reserve(objects.size());
+    for (auto entry : objects) {
+      if (!entry.formId || !entry.count) {
+        continue;
+      }
+      entry.formId = owner.ToGlobalId(entry.formId);
+      if (entry.formId && (entry.formId >> 24) != 0xff &&
+          browser.LookupById(entry.formId).rec) {
+        resolved.push_back(entry);
+      }
+    }
+    return resolved;
+  };
 
   auto baseContainer = espm::Convert<espm::CONT>(lookupRes.rec);
   if (baseContainer) {
-    return baseContainer->GetData(compressedFieldsCache).objects;
+    return resolveObjects(lookupRes,
+                          baseContainer->GetData(compressedFieldsCache).objects);
   }
 
   auto baseNpc = espm::Convert<espm::NPC_>(lookupRes.rec);
@@ -1964,7 +2019,9 @@ std::vector<espm::CONT::ContainerObject> GetInventoryObjects(
     auto baseId = lookupRes.ToGlobalId(lookupRes.rec->GetId());
     return EvaluateTemplate<espm::NPC_::UseInventory>(
       worldState, baseId, templateChain,
-      [](const auto&, const auto& npcData) { return npcData.objects; });
+      [&](const auto& owner, const auto& npcData) {
+        return resolveObjects(owner, npcData.objects);
+      });
   }
 
   return {};

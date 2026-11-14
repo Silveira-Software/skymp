@@ -144,7 +144,9 @@ float TES5DamageFormulaImpl::CalcArmorDamagePenalty() const
 
 float TES5DamageFormulaImpl::CalculateDamage() const
 {
-  const float incomingDamage = DetermineDamageFromSource(hitData.source);
+  float incomingDamage = DetermineDamageFromSource(hitData.source);
+  if (const auto* balance = espmProvider->GetSrpCreatureBalance(aggressor))
+    incomingDamage = std::min(incomingDamage, balance->physicalHitCap);
 
   // TODO(#461): add difficulty multiplier
   // TODO(#463): add sneak modifier
@@ -228,7 +230,9 @@ float TES5SpellDamageFormulaImpl::GetBaseSpellDamage() const
 
 float TES5SpellDamageFormulaImpl::CalculateDamage() const
 {
-  return GetBaseSpellDamage();
+  const float damage = GetBaseSpellDamage();
+  const auto* balance = espmProvider->GetSrpCreatureBalance(aggressor);
+  return balance ? std::min(damage, balance->magicHitCap) : damage;
 }
 
 }

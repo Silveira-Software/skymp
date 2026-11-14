@@ -9,3 +9,8 @@ node_modules
 # vim
 .*.swp
 skyrim_data_files/
+
+# Python bytecode (never commit tool caches)
+__pycache__/
+*.pyc
+
