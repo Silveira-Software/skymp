@@ -50,3 +50,10 @@ files and 46 plugins. The installed R4 manifest is
 `bc9721010eaa90d02901247ee182fda58f029c16ec92699eb75895f7d513d809`.
 The same LAB resumed GeladoRun from its current database and world. Engine
 recovery and the subsequent transformation still await human re-entry.
+
+
+## Preparação física de combate R49
+
+A produção schema2 recusava os dois RACE de transformação por não terem flag Playable. Commit d47aa24 admite para basePlayer apenas cdd84:Skyrim.esm/WerewolfBeastRace e283a:Dawnguard.esm/DLC1VampireBeastRace, com os demais vínculos e hashes existentes.29testesPASS e NIFs instalados produziram controladores reais de Nord, Lobisomem e Lorde.
+
+O produtor adicionava marcadores sem Havok ao conjunto de bloqueadores. O AutoLoadMarker6459:Dawnguard.esm foi classificado non-colliding-model e simultaneamente bloqueava o frame. Corrigida a seleção para descartar apenas os registros/modelos cuja leitura confirmou ausência de corpo físico. Referências desconhecidas conservam os gates e objetos móveis continuam auditados. A cena regenerada conserva a mesma geometria, perfis e classificação por referência e retira somente esse marcador. O mesmo addon final passou de frame indisponível a contato CLEAR com o original7a4b:Dawnguard.esm, guardando outbox e cancelando antes de dano. Não houve reconstrução do addon nem homologação humana de impacto. Prova docs/r49-physical-target-regression.json.

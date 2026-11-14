@@ -1,0 +1,157 @@
+{
+  "scope": "OFFLINE_REAL_ASSET_PHYSICS_REGRESSION",
+  "priorScene": "SoulCairnZCell01-with-controllers",
+  "fixedScene": "SoulCairnZCell01-classified",
+  "nativeAddonSha256": "2c8156a7f3c3e240690aa9328e1a982589a0e69e6fce2d0e38ce6d2fac6a90ff",
+  "previousResult": "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE",
+  "excludedNonPhysicalReference": "6459:Dawnguard.esm",
+  "originalAuditReason": "parsed-nif-has-no-havok-body",
+  "retainedPhysicalBlockers": [
+    "7a47:Dawnguard.esm",
+    "7a49:Dawnguard.esm",
+    "7a4a:Dawnguard.esm"
+  ],
+  "staticGeometryUnchanged": true,
+  "actorShapesUnchanged": true,
+  "unknownGeometryRetained": true,
+  "nativeResult": {
+    "nativeContact": {
+      "collision": "CLEAR",
+      "contact": [
+        892.322509765625,
+        1475.045665823186,
+        -64.08090233257758
+      ],
+      "enginePoseParity": false,
+      "frame": {
+        "attackerAngle": [
+          0,
+          0,
+          0
+        ],
+        "attackerPosition": [
+          892.322509765625,
+          1394.330078125,
+          -140.0948944091797
+        ],
+        "dynamicRevision": 6,
+        "dynamicStateDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "gripHeight": -64.08090233257758,
+        "hitRepresentation": "SERVER_MESH_PROXY_V1",
+        "movementPolicy": "SERVER_BOUNDED_MOVEMENT_V1",
+        "revision": 6,
+        "sceneId": "b8eb35fbf317d758b12b60e1ac22b2db61d81ca8a78dfe8c10e787289f66b6b4",
+        "targetAngle": [
+          0,
+          0,
+          0
+        ],
+        "targetMeshDigest": "efba8b0868c762adf2db1340704350bc25937eca343b558ec73143f1db82a649",
+        "targetPosition": [
+          892.322509765625,
+          1459.330078125,
+          -140.0948944091797
+        ],
+        "worldOrCell": 33580089
+      },
+      "from": [
+        892.322509765625,
+        1394.330078125,
+        -64.08090233257758
+      ],
+      "targetFraction": 0.6208891361398922
+    },
+    "offlinePlayerStart": {
+      "distance": 65,
+      "yaw": 0,
+      "accepted": true,
+      "pos": [
+        892.322509765625,
+        1394.330078125,
+        -140.0948944091797
+      ],
+      "angle": [
+        0,
+        0,
+        0
+      ]
+    },
+    "status": "PASS",
+    "cell": "6439:Dawnguard.esm",
+    "reference": "7a4b:Dawnguard.esm",
+    "position": [
+      892.322509765625,
+      1459.330078125,
+      -140.0948944091797
+    ],
+    "originalIdentity": {
+      "base": "71aa:Dawnguard.esm",
+      "instanceId": "a1faf0cae013c96f663e4903f08bccfd",
+      "lifecycleEpoch": 0,
+      "originalPosition": [
+        892.322509765625,
+        1459.330078125,
+        -140.0948944091797
+      ],
+      "policyRevision": "r49-physical-v1",
+      "reference": "7a4b:Dawnguard.esm",
+      "rewardsEnabled": false,
+      "schemaVersion": 1,
+      "speciesId": "r49-test-boneman",
+      "worldOrCellDesc": "6439:Dawnguard.esm"
+    },
+    "stats": {
+      "attributeWeights": [
+        3,
+        0,
+        3
+      ],
+      "autoCalcStats": true,
+      "checksum": "62e31cedbe57e03453d65814d1b53d6905d80668b8a3de6a0e0e22f93009873a",
+      "class": "23c0c:Skyrim.esm",
+      "engineParity": "HUMAN_PENDING",
+      "gameplayEnabled": false,
+      "healthLevelBonus": 5,
+      "healthLevelBonusSource": "23bb9:Skyrim.esm",
+      "identity": {
+        "base": "71aa:Dawnguard.esm",
+        "instanceId": "a1faf0cae013c96f663e4903f08bccfd",
+        "lifecycleEpoch": 0,
+        "originalPosition": [
+          892.322509765625,
+          1459.330078125,
+          -140.0948944091797
+        ],
+        "policyRevision": "r49-physical-v1",
+        "reference": "7a4b:Dawnguard.esm",
+        "rewardsEnabled": false,
+        "schemaVersion": 1,
+        "speciesId": "r49-test-boneman",
+        "worldOrCellDesc": "6439:Dawnguard.esm"
+      },
+      "level": 13,
+      "maximums": {
+        "health": 290,
+        "magicka": 0,
+        "stamina": 340
+      },
+      "race": "19fd3:Dawnguard.esm",
+      "resourceLevelUp": 10,
+      "resourceLevelUpSource": "21a73:Skyrim.esm",
+      "schemaVersion": 1,
+      "statsSource": "3b549:Skyrim.esm"
+    },
+    "sceneSha256": "b8eb35fbf317d758b12b60e1ac22b2db61d81ca8a78dfe8c10e787289f66b6b4",
+    "unresolved": 0,
+    "untrackedPhysics": 0,
+    "actorShapes": 4,
+    "nativeAdmissionAndStats": "PASS",
+    "nativeDurability": "PASS",
+    "skyrim": "NOT TESTED",
+    "impact": "CONTACT_PREFLIGHT_PASS_CANCELLED_BEFORE_DAMAGE"
+  },
+  "pythonTests": {
+    "passed": 29
+  },
+  "humanCombat": "NOT TESTED"
+}

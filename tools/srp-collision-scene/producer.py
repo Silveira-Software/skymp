@@ -201,7 +201,7 @@ def main():
     used_assets = {}
     all_points = []
     imported = 0
-    dynamic_blockers = []
+    dynamic_blockers = set()
     untracked_physics = []
     for reference_id, source_index, ref in refs:
         reference = '%x:%s' % (reference_id & 0xFFFFFF, order.plugin_name(reference_id))
@@ -214,7 +214,7 @@ def main():
         base_id = order.to_global(source_index, local_base)
         record = order.resolve(base_id)
         if record is not None and record.sig in DYNAMIC_BASES:
-            dynamic_blockers.append(reference_id)
+            dynamic_blockers.add(reference_id)
         base_desc = '%x:%s' % (base_id & 0xFFFFFF, order.plugin_name(base_id))
         entry = {'reference': reference, 'base': base_desc}
         entry.update({'position': [round(v, 3) for v in pos]})
@@ -223,6 +223,7 @@ def main():
                                    record.sig in {b'STAT', b'IDLM', b'LIGH', b'ACTI'} and not record.zstring(b'MODL')):
             entry['decision'] = 'non-colliding-record'
             entry['reason'] = 'sound-decal-or-model-free-record'
+            dynamic_blockers.discard(reference_id)
             audit_refs.append(entry)
             continue
         if record is None or record.sig not in MODEL_BASES:
@@ -254,6 +255,7 @@ def main():
             if not any(name.startswith('bhk') for name, _, _ in doc.blocks):
                 entry['decision'] = 'non-colliding-model'
                 entry['reason'] = 'parsed-nif-has-no-havok-body'
+                dynamic_blockers.discard(reference_id)
                 audit_refs.append(entry)
                 continue
             entry['decision'] = 'unresolved'
