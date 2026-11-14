@@ -87,6 +87,29 @@ class ActorShapesTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,message):
                 self.produce(row)
 
+    def test_only_original_transformation_races_extend_player_controller_admission(self):
+        records = self.order.plugins[0].records
+        template = bytearray(records[0x10].data)
+        struct.pack_into('<I', template, 6 + 32, 0)
+        self.order.names.append('Dawnguard.esm')
+        dawnguard = FixturePlugin('Dawnguard.esm', ['Skyrim.esm'], {})
+        self.order.plugins[1] = dawnguard
+        for plugin_records, form, descriptor, editor_id in (
+            (records, 0xcdd84, 'cdd84:Skyrim.esm', 'WerewolfBeastRace'),
+            (dawnguard.records, 0x0100283a, '283a:Dawnguard.esm', 'DLC1VampireBeastRace'),
+        ):
+            with self.subTest(race=descriptor):
+                race = esm.Record(b'RACE', form, 0, bytes(template) +
+                                  field(b'EDID', editor_id.encode() + b'\0'))
+                plugin_records[form] = race
+                row = {'baseDesc': '7:Skyrim.esm', 'raceDesc': descriptor, 'model': self.model,
+                       'sha256': hashlib.sha256(self.raw).hexdigest(), 'sex': 0}
+                shapes, _, _ = self.produce(row)
+                self.assertEqual(shapes[0]['raceDesc'], descriptor)
+                race.data = bytes(template) + field(b'EDID', b'OtherRace\0')
+                with self.assertRaisesRegex(ValueError, 'not playable'):
+                    self.produce(row)
+
     def test_deterministic_traits_are_followed_but_cycles_are_not_guessed(self):
         plugin = self.order.plugins[0]
         npc = plugin.records[0x20]

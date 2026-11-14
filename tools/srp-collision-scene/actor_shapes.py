@@ -15,6 +15,10 @@ import actor_controller
 
 DESC = re.compile(r'^([0-9a-fA-F]{1,6}):([^:/\\]+\.(?:esm|esp|esl))$', re.I)
 IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
+PLAYER_TRANSFORMATION_RACES = {
+    'cdd84:skyrim.esm': 'WerewolfBeastRace',
+    '283a:dawnguard.esm': 'DLC1VampireBeastRace',
+}
 
 
 def _record(order, descriptor, signature):
@@ -123,7 +127,9 @@ def produce_actor_shapes(manifest_path, order, assets, assets_root, collision_tr
             if race_data is None or len(race_data) < 36:
                 raise ValueError('actor proxy race DATA incomplete')
             if player:
-                if not struct.unpack_from('<I', race_data, 32)[0] & 1:
+                playable = bool(struct.unpack_from('<I', race_data, 32)[0] & 1)
+                transformation = PLAYER_TRANSFORMATION_RACES.get(race.lower())
+                if not playable and (not transformation or race_record.zstring(b'EDID') != transformation):
                     raise ValueError('actor proxy player race not playable')
                 female = bool(row['sex'])
             elif female != bool(row['sex']):
