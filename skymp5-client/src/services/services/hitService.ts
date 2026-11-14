@@ -66,6 +66,8 @@ export class HitService extends ClientListener {
             if (packet?.customPacketType === 'srpOriginalMelee' && packet.version === 1 &&
                 packet.action === 'drainAck' && packet.actorId === this.meleeOwner &&
                 this.drain && this.drain.id === packet.actionId) {
+                this.traceCombat('DRAIN_ACK', { state: packet.state,
+                    errorCode: typeof packet.error === 'string' && /^SRP_[A-Z0-9_]+$/.test(packet.error) ? packet.error : undefined });
                 if (packet.state === 'APPLIED') {
                     if (!this.drain.concentration) { this.drain = null; return; }
                     this.drain.id = randomBytes(16).toString('hex'); this.drain.created = Date.now(); this.drain.next = Date.now();
@@ -76,6 +78,7 @@ export class HitService extends ClientListener {
                 packet.action !== "ready" || !this.meleeOwner || packet.actorId !== this.meleeOwner ||
                 typeof packet.session !== "string" || !/^[0-9a-f]{64}$/.test(packet.session)) return;
             this.meleeSession = packet.session;
+            this.traceCombat('READY', { actorId: this.meleeOwner });
         } catch {
             // Other custom packets belong to their respective services.
         }
@@ -175,6 +178,8 @@ export class HitService extends ClientListener {
 
     beginDrain(target: number, spell: number, source: number) {
         if (!this.isDrainSpell(spell)) return false;
+        this.traceCombat('DRAIN_REQUEST', { target, spell, source,
+            ownerReady: !!this.meleeOwner, sessionReady: !!this.meleeSession });
         if (!this.meleeSession || !this.meleeOwner || target <= 0 || target >= 0xff000000 || ![0, 1].includes(source)) return true;
         if (this.drain && this.drain.spell === spell && this.drain.target === target && this.drain.source === source) return true;
         this.interruptDrain();
@@ -200,6 +205,8 @@ export class HitService extends ClientListener {
         const equipped = player.getEquippedSpell(action.source)?.getFormID();
         const casting = !action.concentration || player.getAnimationVariableBool(action.source === 1 ? 'IsCastingRight' : 'IsCastingLeft');
         if (equipped !== action.spell || (!casting && now - action.created > 250) || now - action.created > 5000) {
+            this.traceCombat('DRAIN_STOP', { equippedMatches: equipped === action.spell, casting,
+                expired: now - action.created > 5000 });
             this.interruptDrain(); return;
         }
         if (!casting || now < action.next) return;
@@ -209,6 +216,10 @@ export class HitService extends ClientListener {
     }
 
     private recentMagicHits: Map<number, number> = new Map();
+    private traceCombat(kind: string, data: Record<string, unknown>) {
+        try { this.sp.writeLogs('srp-original-combat', JSON.stringify({ at: new Date().toISOString(), kind, ...data })); } catch (_) {}
+    }
+
     private meleeOwner = 0;
     private meleeSession: string | null = null;
     private nextMeleeHello = 0;
