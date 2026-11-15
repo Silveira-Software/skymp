@@ -23,8 +23,9 @@ export class HitService extends ClientListener {
             this.meleeOwner = Number(e.message.refrId) >>> 0;
         });
         controller.on("update", () => {
-            if (this.meleeOwner && Date.now() >= this.nextMeleeHello &&
-                (this.meleeSession || this.meleeHelloAttempts < 3)) {
+            // Recovery may keep the native actor fenced beyond the first
+            // three attempts. Keep the normal bounded heartbeat until ready.
+            if (this.meleeOwner && Date.now() >= this.nextMeleeHello) {
                 this.nextMeleeHello = Date.now() + 5000;
                 this.meleeHelloAttempts++;
                 this.sendMeleePacket({ action: "hello" });
