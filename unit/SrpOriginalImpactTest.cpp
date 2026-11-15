@@ -144,7 +144,7 @@ std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
   uint32_t cellId, const std::string& baseDesc, const std::string& raceDesc,
   const NiPoint3& center, const std::string& attackerBase,
   const std::string& attackerRace, bool controllerEnvelope = false,
-  bool wall = false)
+  bool wall = false, double wallDistance = 25., double wallPadding = 0.)
 {
   const std::string dummyHash(64, 'a');
   // The audited coverage box must actually contain the real fixture position.
@@ -180,15 +180,15 @@ std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
     {"actorShapes", shapes}
   };
   if (wall) {
-    const auto wallY = y - 25.0;
+    const auto wallY = y - wallDistance;
     doc["geometry"].push_back({
       {"worldOrCell", cellId}, {"reference", "1:fixture.esm"},
       {"base", "2:fixture.esm"}, {"asset", "cow-proxy.nif"},
       {"representation", "havok-triangles"},
       {"worldTransform", {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
       {"referenceTransform", {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}},
-      {"vertices", {{x-50, wallY, z}, {x+50, wallY, z},
-                    {x+50, wallY, z+128}, {x-50, wallY, z+128}}},
+      {"vertices", {{x-50, wallY, z-wallPadding}, {x+50, wallY, z-wallPadding},
+                    {x+50, wallY, z+128+wallPadding}, {x-50, wallY, z+128+wallPadding}}},
       {"triangles", {{0, 1, 2}, {0, 2, 3}}}
     });
   }
@@ -338,7 +338,7 @@ TEST_CASE("Vampire drain escrows one cost, applies resistance and heals once", "
   const auto beforeMana=mana(),beforeHealth=health(),beforeTarget=target.GetActorValues().healthPercentage;
   const auto op=SrpOriginalImpact::Begin(w,testUserId,cowId,"hit-drain-test",source).at("operationId").get<std::string>();
   const auto weapon=SrpOriginalImpact::Inspect(player).at("ledger").at("operations").at(op).at("intent").at("weapon");
-  REQUIRE(weapon.at("policy")=="AIMED_DRAIN_SPHERE_V2");
+  REQUIRE(weapon.at("policy")=="AIMED_DRAIN_SPHERE_V3");
   REQUIRE(weapon.at("projectile").get<uint32_t>()>0);
   REQUIRE(weapon.at("collisionRadius").get<double>()>=0);
   if(lord)REQUIRE(weapon.at("collisionRadius")==24);
@@ -367,6 +367,75 @@ TEST_CASE("Vampire drain escrows one cost, applies resistance and heals once", "
   REQUIRE(mana()==Catch::Approx(beforeMana-cost));REQUIRE(target.GetActorValues().healthPercentage==targetAfter);
   auto empty=player.GetActorValues();empty.magickaPercentage=0;player.SetPercentages(empty,nullptr);WaitForSaved(w,player);
   REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w,testUserId,cowId,"drain-no-mana",source),"SRP_DRAIN_INSUFFICIENT_MAGICKA");
+}
+
+TEST_CASE("Aimed drains follow accepted pitch and retain their physical guards", "[srp-r49-drain-pitch]")
+{
+  const int height = GENERATE(-160, 160);
+  const bool lord = GENERATE(false, true);
+  const int scenario = GENERATE(0, 1, 2, 3, 4);
+  const bool legacy = std::getenv("SRP_R49_EXPECT_HORIZONTAL_REFUSAL") != nullptr;
+  if (legacy && scenario != 0) return;
+  auto& server = GetPartOne(); AttachStorage(server);
+  auto& target = SetupCow(server); auto& player = SetupPlayer(server, target);
+  Isolate(server, target, player);
+  const uint32_t source = lord ? 0x02019324 : 0x8d5bf;
+  player.AddSpell(source);
+  Equipment equipment; equipment.leftSpell = source; player.SetEquipment(equipment);
+  if (lord) {
+    SetupClaws(server, player);
+    Appearance appearance; appearance.raceId = 0x0200283a; player.SetAppearance(&appearance);
+    auto ledger = player.GetDynamicFields().GetAsJson().at("private.srpTransformationV1");
+    auto& entry = ledger["operations"]["fixture-transform"];
+    entry["target"] = "vampireLord"; entry["targetAppearance"]["raceId"] = appearance.raceId;
+    player.SetPropertyValueDump("private.srpTransformationV1", TestSeal(ledger).dump(), false, false);
+  }
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  player.SetPropertyValueDump("private.srpSupernaturalCombatV1", TestSeal({{"schemaVersion",1},
+    {"owner",{{"profileId","9191"},{"characterId","combat-PC"}}},{"kind","vampire"},
+    {"form",lord?"vampireLord":"human"},{"phase","NONE"},{"reserve",100},
+    {"expiresAtMs",now+90000},{"drainEnabled",true},{"drainSpell",source}}).dump(), false, false);
+  auto position = target.GetPos();
+  player.SetPos({position.x, position.y - 200.f, position.z});
+  position.z += height; target.SetPos(position); target.SetAngle({0,0,0});
+  const double pitch = std::atan2(70.4 - (height + 64.), 200.) * 180. / std::acos(-1.);
+  CAPTURE(height, lord, scenario, pitch);
+  player.SetAngle({static_cast<float>(scenario == 1 ? -pitch : scenario == 3 ? 120. : pitch),
+    0, scenario == 4 ? 180.f : 0.f});
+  player.DamageActorValue(espm::ActorValue::Health, 20);
+  WaitForSaved(server, player); WaitForSaved(server, target);
+  const auto descriptor = [&](uint32_t id) { return FormDesc::FromFormId(id, server.worldState.espmFiles).ToString(); };
+  const auto cell = target.GetCellOrWorld().ToFormId(server.worldState.espmFiles);
+  server.worldState.InstallSrpCollisionScene(CreateSyntheticScene(cell, descriptor(target.GetBaseId()),
+    descriptor(target.GetRaceId()), target.GetPos(), descriptor(player.GetBaseId()), descriptor(player.GetRaceId()),
+    // Keep the barrier ahead of the entire target. A wall inside its slanted
+    // proxy can legitimately lie after the wide Lord projectile first touches.
+    true, scenario == 2, 100., 256.), AuditConfig(cell, true));
+  const auto before = player.GetActorValues();
+  if (legacy || scenario != 0) {
+    const std::string expected = legacy || scenario == 1 || scenario == 4 ? "SRP_IMPACT_SERVER_SEGMENT_MISSES_TARGET" :
+      scenario == 2 ? "SRP_IMPACT_SERVER_COLLISION_NOT_CLEAR" : "SRP_DRAIN_AIM_PITCH_UNSUPPORTED";
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(server, testUserId, cowId, "inclined-drain", source), expected);
+    REQUIRE(player.GetActorValues().magickaPercentage == before.magickaPercentage);
+    REQUIRE_FALSE(SrpOriginalImpact::Inspect(player).at("present").get<bool>());
+    return;
+  }
+  const auto operation = SrpOriginalImpact::Begin(server, testUserId, cowId, "inclined-drain", source).at("operationId").get<std::string>();
+  WaitForSaved(server, player);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  const auto applied = SrpOriginalImpact::Apply(server, testUserId, operation, true);
+  REQUIRE(applied.at("state") == "TARGET_SAVE_PENDING");
+  const auto& receipt = applied.at("targetReceipt");
+  REQUIRE(receipt.at("damage").get<float>() > 0);
+  REQUIRE((receipt.at("proof").at("aimDirection").at(2).get<double>() > 0) == (height > 0));
+  WaitForSaved(server, target);
+  REQUIRE(SrpOriginalImpact::Apply(server, testUserId, operation).at("state") == "APPLIED");
+  WaitForSaved(server, player);
+  const auto after = player.GetActorValues();
+  SrpOriginalImpact::Apply(server, testUserId, operation);
+  REQUIRE(player.GetActorValues().healthPercentage == after.healthPercentage);
+  REQUIRE(player.GetActorValues().magickaPercentage == after.magickaPercentage);
 }
 
 TEST_CASE("Aimed drain validates current contact after its admission frame moves", "[srp-r49-moving-drain]")

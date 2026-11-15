@@ -332,7 +332,7 @@ Weapon NativeWeapon(const MpActor& actor)
 Json WeaponJson(const Weapon& weapon,const MpActor& actor)
 {
   if(!weapon.drain.is_null()) {auto value=weapon.drain;value["source"]=weapon.source;value["reach"]=weapon.reach;
-    value["intervalMs"]=weapon.interval;value["policy"]="AIMED_DRAIN_SPHERE_V2";return value;}
+    value["intervalMs"]=weapon.interval;value["policy"]="AIMED_DRAIN_SPHERE_V3";return value;}
   if (actor.GetRaceId() == FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(actor.GetParent()->espmFiles)) {
     auto result = WerewolfClaws(actor);
     result["source"] = weapon.source;
@@ -419,8 +419,12 @@ Json Contact(const Frame& frame,const Weapon& weapon,double gripHeight)
   // accepted facing. Neither origin, direction nor hit point is supplied by an
   // impact report, and no engine animation pose is claimed.
   const double yaw=frame.attackerAngle.z*std::acos(-1.0)/180.0;
+  const bool drain=!weapon.drain.is_null();
+  const double pitch=drain ? std::remainder(frame.attackerAngle.x,360.)*std::acos(-1.0)/180.0 : 0.;
+  Require(std::isfinite(pitch)&&std::abs(pitch)<=std::acos(-1.0)*.5+1e-9,"SRP_DRAIN_AIM_PITCH_UNSUPPORTED");
+  const Vec direction{std::sin(yaw)*std::cos(pitch),std::cos(yaw)*std::cos(pitch),-std::sin(pitch)};
   Vec from{frame.attackerPosition.x,frame.attackerPosition.y,gripHeight};
-  Vec to{from.x+std::sin(yaw)*weapon.reach,from.y+std::cos(yaw)*weapon.reach,from.z};
+  Vec to{from.x+direction.x*weapon.reach,from.y+direction.y*weapon.reach,from.z+direction.z*weapon.reach};
   Require(Finite(from)&&Finite(to),"SRP_IMPACT_ATTACK_TRANSFORM_INVALID");
   double nearest=2;
   if(weapon.radius>0){
@@ -428,6 +432,19 @@ Json Contact(const Frame& frame,const Weapon& weapon,double gripHeight)
     if(swept.verdict==SrpCollision::Verdict::Blocked)nearest=swept.hitFraction;
   }else for(const auto& triangle:frame.targetTriangles){double fraction;
     if(Intersection(triangle,from,to,fraction))nearest=std::min(nearest,fraction);
+  }
+  if(nearest>1&&drain){
+    // Capture the refused server frame, not a later save-file approximation.
+    // A bounded diagnostic cannot turn a refused contact into an accepted hit.
+    static auto nextDiagnostic=std::chrono::steady_clock::time_point::min();
+    const auto observed=std::chrono::steady_clock::now();
+    if(observed>=nextDiagnostic){
+      nextDiagnostic=observed+std::chrono::seconds(2);
+      try {
+        spdlog::warn("SRP_DRAIN_AIM_REFUSED {}",Json{{"frame",identity},{"from",Vector(from)},
+          {"to",Vector(to)},{"radius",weapon.radius},{"source",weapon.source}}.dump());
+      } catch (...) {}
+    }
   }
   Require(nearest<=1,"SRP_IMPACT_SERVER_SEGMENT_MISSES_TARGET");
   Vec contact{from.x+(to.x-from.x)*nearest,from.y+(to.y-from.y)*nearest,from.z+(to.z-from.z)*nearest};
@@ -437,7 +454,7 @@ Json Contact(const Frame& frame,const Weapon& weapon,double gripHeight)
   Require(trace.verdict==SrpCollision::Verdict::Clear,"SRP_IMPACT_SERVER_COLLISION_NOT_CLEAR");
   Json result={{"frame",identity},{"from",Vector(from)},{"contact",Vector(contact)},
     {"targetFraction",nearest},{"collision","CLEAR"},{"enginePoseParity",false}};
-  if(!weapon.drain.is_null())result["projectileRadius"]=weapon.radius;
+  if(drain){result["projectileRadius"]=weapon.radius;result["aimDirection"]=Vector(direction);}
   return result;
 }
 Frame Capture(WorldState& world,const MpActor& attacker,const MpActor& target)
