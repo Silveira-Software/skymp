@@ -337,12 +337,18 @@ TEST_CASE("Vampire drain escrows one cost, applies resistance and heals once", "
   const auto health=[&]{return player.GetActorValues().healthPercentage*player.GetMaximumValues().health;};
   const auto beforeMana=mana(),beforeHealth=health(),beforeTarget=target.GetActorValues().healthPercentage;
   const auto op=SrpOriginalImpact::Begin(w,testUserId,cowId,"hit-drain-test",source).at("operationId").get<std::string>();
+  const auto weapon=SrpOriginalImpact::Inspect(player).at("ledger").at("operations").at(op).at("intent").at("weapon");
+  REQUIRE(weapon.at("policy")=="AIMED_DRAIN_SPHERE_V2");
+  REQUIRE(weapon.at("projectile").get<uint32_t>()>0);
+  REQUIRE(weapon.at("collisionRadius").get<double>()>=0);
+  if(lord)REQUIRE(weapon.at("collisionRadius")==24);
   const float cost=lord?10:6;
   WaitForSaved(w,player);REQUIRE(mana()==Catch::Approx(beforeMana-cost));
   REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(w,testUserId,op),"SRP_DRAIN_CHANNEL_PENDING");
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
   REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(w,testUserId,op),"SRP_DRAIN_CHANNEL_PENDING");
   const auto applied=SrpOriginalImpact::Apply(w,testUserId,op,true);REQUIRE(applied.at("state")=="TARGET_SAVE_PENDING");
+  REQUIRE(applied.at("targetReceipt").at("proof").at("projectileRadius")==weapon.at("collisionRadius"));
   const float expected=(lord?15.f:2.f)*(1.f-std::min(resistance,100)/100.f);
   REQUIRE(applied.at("targetReceipt").at("damage").get<float>()==Catch::Approx(expected));
   REQUIRE(health()==Catch::Approx(beforeHealth));

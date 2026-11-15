@@ -52,12 +52,12 @@ double PointTriangle2(Vec3 p, const Triangle& t)
   if(sum<=0)return 0; // ill-conditioned geometry cannot prove clear
   return Distance2(p,Add(t.a,Add(Mul(ab,vb/sum),Mul(ac,vc/sum))));
 }
-double Segments2(Vec3 p,Vec3 q,Vec3 r,Vec3 s)
+double Segments2(Vec3 p,Vec3 q,Vec3 r,Vec3 s,double* firstFraction=nullptr)
 {
   const auto d1=Sub(q,p),d2=Sub(s,r),v=Sub(p,r);
   const double a=Dot(d1,d1),e=Dot(d2,d2),f=Dot(d2,v);
   double x=0,y=0;
-  if(a<=epsilon&&e<=epsilon)return Distance2(p,r);
+  if(a<=epsilon&&e<=epsilon){if(firstFraction)*firstFraction=0;return Distance2(p,r);}
   if(a<=epsilon)y=std::clamp(f/e,0.,1.);
   else {
     const double c=Dot(d1,v);
@@ -70,6 +70,7 @@ double Segments2(Vec3 p,Vec3 q,Vec3 r,Vec3 s)
       else if(y>1){y=1;x=std::clamp((b-c)/a,0.,1.);}
     }
   }
+  if(firstFraction)*firstFraction=x;
   return Distance2(Add(p,Mul(d1,x)),Add(r,Mul(d2,y)));
 }
 double Axis(Vec3 a, size_t i) { return i==0?a.x:(i==1?a.y:a.z); }
@@ -180,6 +181,45 @@ void Include(Aabb& box,Vec3 p)
 {
   box.min={std::min(box.min.x,p.x),std::min(box.min.y,p.y),std::min(box.min.z,p.z)};
   box.max={std::max(box.max.x,p.x),std::max(box.max.y,p.y),std::max(box.max.z,p.z)};
+}
+Aabb Expand(Aabb box,double radius)
+{
+  box.min=Sub(box.min,{radius,radius,radius});
+  box.max=Add(box.max,{radius,radius,radius});return box;
+}
+// Distance to a convex triangle along a segment is convex. Its minimum is at
+// an endpoint, an edge/segment closest pair, or a face crossing. Find that
+// minimum analytically, then bracket the FIRST sphere contact before it.
+bool SphereHit(const Triangle& triangle,Vec3 from,Vec3 to,double radius,double& fraction)
+{
+  if(radius==0)return Hit(triangle,from,to,fraction);
+  const double limit=radius*radius+epsilon;
+  const auto direction=Sub(to,from);
+  double nearest=PointTriangle2(from,triangle),at=0;
+  if(nearest<=limit){fraction=0;return true;}
+  const auto consider=[&](double distance,double position){
+    if(distance<nearest){nearest=distance;at=position;}
+  };
+  consider(PointTriangle2(to,triangle),1);
+  for(const auto& edge:std::array<std::pair<Vec3,Vec3>,3>{
+        std::make_pair(triangle.a,triangle.b),std::make_pair(triangle.b,triangle.c),
+        std::make_pair(triangle.c,triangle.a)}){
+    double position=0;
+    const auto distance=Segments2(from,to,edge.first,edge.second,&position);
+    consider(distance,position);
+  }
+  double crossing;
+  if(Hit(triangle,from,to,crossing))consider(0,crossing);
+  if(nearest>limit)return false;
+  double lo=0,hi=at;
+  // Require an actual point within the sphere, not just a broadphase overlap.
+  if(PointTriangle2(Add(from,Mul(direction,hi)),triangle)>limit)return false;
+  for(int i=0;i<64;++i){
+    const double mid=(lo+hi)*.5;
+    if(PointTriangle2(Add(from,Mul(direction,mid)),triangle)<=limit)hi=mid;
+    else lo=mid;
+  }
+  fraction=hi;return true;
 }
 uint32_t Location(const nlohmann::json& value)
 {
@@ -436,6 +476,23 @@ Result IntersectMesh(Vec3 from, Vec3 to, const std::vector<Triangle>& triangles)
   }
   return result;
 }
+Result SweepSphereMesh(Vec3 from,Vec3 to,double radius,const std::vector<Triangle>& triangles)
+{
+  if(radius==0)return IntersectMesh(from,to,triangles);
+  Result result;result.reason="SRP_COLLISION_TARGET_INVALID";
+  if(!Finite(from)||!Finite(to)||!std::isfinite(radius)||radius<0||radius>1e6||
+      triangles.empty()||triangles.size()>triangleLimit)return result;
+  for(const auto& triangle:triangles)if(!Valid(triangle))return result;
+  result.verdict=Verdict::Clear;result.reason="SRP_COLLISION_TARGET_MISSED";
+  for(const auto& triangle:triangles){
+    double fraction;
+    if(SphereHit(triangle,from,to,radius,fraction)){
+      result.verdict=Verdict::Blocked;result.reason="SRP_COLLISION_TARGET_HIT";
+      result.hitFraction=std::min(result.hitFraction,fraction);
+    }
+  }
+  return result;
+}
 std::optional<std::vector<Triangle>> Scene::ActorTriangles(const std::string& baseDesc,
   const std::string& raceDesc,const std::array<double,12>& serverPose,
   std::optional<bool> female) const
@@ -474,37 +531,41 @@ Result Scene::Trace(const Query& query) const
   Result result;result.sceneId=id;result.dynamicRevision=query.dynamics.revision;
   result.reason="SRP_COLLISION_QUERY_INVALID";
   if(!query.worldOrCell || !Finite(query.from) || !Finite(query.to) ||
-    Dot(Sub(query.to,query.from),Sub(query.to,query.from))<=epsilon*epsilon)return result;
+    !std::isfinite(query.radius)||query.radius<0||query.radius>1e6||
+    (query.radius==0&&Dot(Sub(query.to,query.from),Sub(query.to,query.from))<=epsilon*epsilon))return result;
   const auto hit=[&](const Triangle& triangle){
     double fraction;
-    if(Hit(triangle,query.from,query.to,fraction)) {
+    if(SphereHit(triangle,query.from,query.to,query.radius,fraction)) {
       result.verdict=Verdict::Blocked;result.hitFraction=std::min(result.hitFraction,fraction);
     }
   };
   for(const auto& batch:batches) {
     double lo,hi;
-    if(batch.worldOrCell!=query.worldOrCell || !Interval(batch.bounds,query.from,query.to,lo,hi))continue;
+    if(batch.worldOrCell!=query.worldOrCell || !Interval(Expand(batch.bounds,query.radius),query.from,query.to,lo,hi))continue;
     for(const auto& triangle:batch.triangles){
       hit(triangle);
       if(batch.margin>0){
         const double distance=std::min({PointTriangle2(query.from,triangle),PointTriangle2(query.to,triangle),
           Segments2(query.from,query.to,triangle.a,triangle.b),Segments2(query.from,query.to,triangle.b,triangle.c),
           Segments2(query.from,query.to,triangle.c,triangle.a)});
-        if(distance<=batch.margin*batch.margin+epsilon)result.verdict=Verdict::Blocked;
+        const double margin=batch.margin+query.radius;
+        if(distance<=margin*margin+epsilon)result.verdict=Verdict::Blocked;
       }
     }
     for(const auto& volume:batch.volumes){
       bool intersects=false;
       if(volume.radius>0){
         const auto direction=Sub(query.to,query.from);
-        const double t=std::clamp(Dot(Sub(volume.center,query.from),direction)/Dot(direction,direction),0.,1.);
-        intersects=Distance2(Add(query.from,Mul(direction,t)),volume.center)<=volume.radius*volume.radius+epsilon;
+        const auto length2=Dot(direction,direction);
+        const double t=length2>0?std::clamp(Dot(Sub(volume.center,query.from),direction)/length2,0.,1.):0;
+        const double radius=volume.radius+query.radius;
+        intersects=Distance2(Add(query.from,Mul(direction,t)),volume.center)<=radius*radius+epsilon;
       }else{
         double enter=0,leave=1;
         intersects=true;
         for(const auto& plane:volume.planes){
           const Vec3 n{plane[0],plane[1],plane[2]};
-          const double a=Dot(n,query.from)+plane[3],delta=Dot(n,Sub(query.to,query.from));
+          const double a=Dot(n,query.from)+plane[3]-query.radius*std::sqrt(Dot(n,n)),delta=Dot(n,Sub(query.to,query.from));
           if(std::abs(delta)<epsilon){if(a>epsilon){intersects=false;break;}continue;}
           const double crossing=-a/delta;
           if(delta>0)leave=std::min(leave,crossing);else enter=std::max(enter,crossing);
@@ -529,13 +590,13 @@ Result Scene::Trace(const Query& query) const
   if(!query.dynamics.complete) { result.reason="SRP_COLLISION_DYNAMIC_COVERAGE_INCOMPLETE";return result; }
   for(const auto& box:query.dynamics.unresolvedBlockers) {
     double lo,hi;
-    if(!Valid(box) || Interval(box,query.from,query.to,lo,hi)) {
+    if(!Valid(box) || Interval(Expand(box,query.radius),query.from,query.to,lo,hi)) {
       result.reason="SRP_COLLISION_DYNAMIC_UNRESOLVED";return result;
     }
   }
   for(const auto& unknown:unresolved) {
     double lo,hi;
-    if(unknown.first==query.worldOrCell && Interval(unknown.second,query.from,query.to,lo,hi)) {
+    if(unknown.first==query.worldOrCell && Interval(Expand(unknown.second,query.radius),query.from,query.to,lo,hi)) {
       result.reason="SRP_COLLISION_STATIC_UNRESOLVED";return result;
     }
   }
@@ -544,8 +605,15 @@ Result Scene::Trace(const Query& query) const
   std::vector<std::pair<double,double>> intervals;
   for(const auto& region:regions) {
     double lo,hi;
-    if(region.worldOrCell!=query.worldOrCell || !Interval(region.bounds,query.from,query.to,lo,hi))continue;
-    if(!region.complete) { result.reason="SRP_COLLISION_STATIC_COVERAGE_INCOMPLETE";return result; }
+    if(region.worldOrCell!=query.worldOrCell)continue;
+    if(!region.complete){
+      if(Interval(Expand(region.bounds,query.radius),query.from,query.to,lo,hi)){
+        result.reason="SRP_COLLISION_STATIC_COVERAGE_INCOMPLETE";return result;
+      }
+      continue;
+    }
+    const auto inner=Expand(region.bounds,-query.radius);
+    if(!Valid(inner)||!Interval(inner,query.from,query.to,lo,hi))continue;
     intervals.emplace_back(lo,hi);
   }
   std::sort(intervals.begin(),intervals.end());

@@ -28,6 +28,8 @@ struct Query {
   uint32_t worldOrCell = 0;
   Vec3 from, to;
   DynamicSnapshot dynamics;
+  // Server-read projectile radius. Zero preserves the existing segment query.
+  double radius = 0;
 };
 struct Result {
   Verdict verdict = Verdict::Unknown;
@@ -39,6 +41,8 @@ struct Result {
 // Clear means the segment missed every triangle; Blocked means a physical
 // surface intersection. Empty, malformed and nonfinite inputs yield Unknown.
 Result IntersectMesh(Vec3 from, Vec3 to, const std::vector<Triangle>& triangles);
+Result SweepSphereMesh(Vec3 from, Vec3 to, double radius,
+                       const std::vector<Triangle>& triangles);
 
 struct ReferenceBinding {
   std::string reference, base, asset;

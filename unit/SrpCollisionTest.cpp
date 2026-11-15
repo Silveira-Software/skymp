@@ -1,6 +1,9 @@
 #include "SrpCollision.h"
 #include <catch2/catch_all.hpp>
 #include <limits>
+#include <fstream>
+#include <cstdlib>
+#include <cmath>
 
 using namespace SrpCollision;
 namespace {
@@ -33,6 +36,123 @@ Query Ray(Vec3 from={0,0,0},Vec3 to={10,0,0})
 {
   Query q;q.worldOrCell=60;q.from=from;q.to=to;
   q.dynamics.worldOrCell=60;q.dynamics.revision=7;q.dynamics.complete=true;return q;
+}
+
+TEST_CASE("Observed R49 controller gap is inside the original Lord projectile radius", "[srp-r49-projectile-radius-real]")
+{
+  const auto path=std::getenv("SRP_R49_RADIUS_SCENE");
+  if(!path){SKIP("Actual pinned scene is supplied by the isolated R49 build runner");}
+  std::ifstream stream(path);nlohmann::json doc;stream>>doc;
+  REQUIRE(Scene::Digest(doc)=="b8eb35fbf317d758b12b60e1ac22b2db61d81ca8a78dfe8c10e787289f66b6b4");
+  const auto scene=Load(doc);
+  const auto pose=[](Vec3 p,double degrees){
+    const double a=degrees*std::acos(-1.)/180.,c=std::cos(a),s=std::sin(a);
+    return std::array<double,12>{c,-s,0,p.x,s,c,0,p.y,0,0,1,p.z};
+  };
+  // Saved samples AFTER the close-range refusal, not an exact cast frame.
+  const Vec3 player{369.1265563964844,10.46597957611084,-200.85382080078125};
+  const Vec3 target{436.9781188964844,121.23995208740234,-175.3435821533203};
+  const double yaw=35.30030059814453;
+  const auto caster=scene->ActorTriangles("7:Skyrim.esm","283a:Dawnguard.esm",pose(player,yaw),false);
+  const auto victim=scene->ActorTriangles("71aa:Dawnguard.esm","19fd3:Dawnguard.esm",pose(target,206.664306640625),false);
+  REQUIRE(caster.has_value());REQUIRE(victim.has_value());
+  double minZ=1e300,maxZ=-1e300;
+  for(const auto& t:*caster)for(const auto& v:{t.a,t.b,t.c}){minZ=std::min(minZ,v.z);maxZ=std::max(maxZ,v.z);}
+  const Vec3 from{player.x,player.y,minZ+.55*(maxZ-minZ)};
+  const double a=yaw*std::acos(-1.)/180.;
+  const Vec3 to{from.x+std::sin(a)*10000,from.y+std::cos(a)*10000,from.z};
+  REQUIRE(IntersectMesh(from,to,*victim).verdict==Verdict::Clear);
+  REQUIRE(SweepSphereMesh(from,to,21,*victim).verdict==Verdict::Clear);
+  const auto swept=SweepSphereMesh(from,to,24,*victim);
+  REQUIRE(swept.verdict==Verdict::Blocked);
+  REQUIRE(swept.hitFraction>0);REQUIRE(swept.hitFraction<.02);
+  Query query;query.worldOrCell=33580089;query.from=from;query.radius=24;
+  query.to={from.x+(to.x-from.x)*swept.hitFraction,from.y+(to.y-from.y)*swept.hitFraction,from.z};
+  query.dynamics.worldOrCell=query.worldOrCell;query.dynamics.revision=1;query.dynamics.complete=true;
+  const auto trace=scene->Trace(query);
+  INFO(trace.reason);REQUIRE(trace.verdict==Verdict::Clear);
+}
+
+TEST_CASE("Projectile spheres touch faces edges and vertices at their first contact", "[srp-r49-projectile-radius]")
+{
+  const std::vector<Triangle> mesh={{{5,0,0},{5,10,0},{5,0,10}}};
+  auto hit=SweepSphereMesh({0,2,2},{10,2,2},1,mesh);
+  REQUIRE(hit.verdict==Verdict::Blocked);
+  REQUIRE(hit.hitFraction==Catch::Approx(.4).margin(1e-8));
+  REQUIRE(SweepSphereMesh({0,2,2},{10000,2,2},1,mesh).hitFraction==Catch::Approx(.0004).margin(1e-8));
+  REQUIRE(SweepSphereMesh({0,2,2},{10,2,2},0,mesh).hitFraction==Catch::Approx(.5));
+  for(const auto offset:std::vector<Vec3>{{0,5,-1},{0,11,0}}){
+    Vec3 to=offset;to.x=10;
+    REQUIRE(IntersectMesh(offset,to,mesh).verdict==Verdict::Clear);
+    REQUIRE(SweepSphereMesh(offset,to,.99,mesh).verdict==Verdict::Clear);
+    hit=SweepSphereMesh(offset,to,1,mesh);
+    REQUIRE(hit.verdict==Verdict::Blocked);
+    REQUIRE(hit.hitFraction==Catch::Approx(.5).margin(1e-5));
+  }
+  REQUIRE(SweepSphereMesh({4.5,2,2},{10,2,2},1,mesh).hitFraction==0);
+  REQUIRE(SweepSphereMesh({4.5,2,2},{4.5,2,2},1,mesh).verdict==Verdict::Blocked);
+  REQUIRE(SweepSphereMesh({0,2,2},{3,2,2},1,mesh).verdict==Verdict::Clear);
+  REQUIRE(SweepSphereMesh({0,2,2},{10,2,2},-1,mesh).verdict==Verdict::Unknown);
+  REQUIRE(SweepSphereMesh({0,2,2},{10,2,2},std::numeric_limits<double>::quiet_NaN(),mesh).verdict==Verdict::Unknown);
+  REQUIRE(SweepSphereMesh({0,2,2},{10,2,2},1,{}).verdict==Verdict::Unknown);
+  auto invalid=mesh;invalid[0].c=invalid[0].a;
+  REQUIRE(SweepSphereMesh({0,2,2},{10,2,2},1,invalid).verdict==Verdict::Unknown);
+}
+
+TEST_CASE("Projectile volume retains static dynamic and unknown collision guards", "[srp-r49-projectile-radius]")
+{
+  auto doc=Fixture();auto ray=Ray({0,5.5,0},{10,5.5,0});
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Clear);
+  ray.radius=.6;
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Blocked);
+  ray.radius=.49;
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Clear);
+  auto point=Ray({5,5.5,0},{5,5.5,0});point.radius=.6;
+  REQUIRE(Load(doc)->Trace(point).verdict==Verdict::Blocked);
+  point.radius=.49;REQUIRE(Load(doc)->Trace(point).verdict==Verdict::Clear);
+  ray.radius=.6;doc["geometry"]=nlohmann::json::array();
+  ray.dynamics.triangles={{{5,-5,-5},{5,5,-5},{5,5,5}}};
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Blocked);
+  ray.dynamics.triangles.clear();ray.dynamics.complete=false;
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Unknown);
+  ray.dynamics.complete=true;
+  ray.dynamics.unresolvedBlockers={{{4,6,-1},{6,7,1}}};
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Unknown);
+  ray.dynamics.unresolvedBlockers.clear();
+  doc["unresolved"].push_back({{"worldOrCell",60},{"min",{4,6,-1}},{"max",{6,7,1}}});
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Unknown);
+  doc["unresolved"]=nlohmann::json::array();
+  doc["coverage"].push_back({{"worldOrCell",60},{"min",{4,6,-1}},{"max",{6,7,1}},{"complete",false}});
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Unknown);
+  doc["coverage"].erase(1);
+  auto boundary=Ray({-9.8,10,10},{-8,10,10});
+  REQUIRE(Load(doc)->Trace(boundary).verdict==Verdict::Clear);
+  boundary.radius=.6;
+  REQUIRE(Load(doc)->Trace(boundary).verdict==Verdict::Unknown);
+  ray.radius=-1;REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Unknown);
+  ray.radius=std::numeric_limits<double>::infinity();
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Unknown);
+}
+
+TEST_CASE("Projectile volume also expands existing physical spheres hulls and mesh margins", "[srp-r49-projectile-radius]")
+{
+  auto doc=Fixture();auto& g=doc["geometry"][0];g["representation"]="havok-physical-v2";
+  g["margin"]=0;g["vertices"]=nlohmann::json::array();g["triangles"]=nlohmann::json::array();
+  g["volumes"]=nlohmann::json::array({{{"kind","sphere"},{"center",{5,0,0}},{"radius",2}}});
+  auto ray=Ray({0,2.5,0},{10,2.5,0});
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Clear);
+  ray.radius=.6;REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Blocked);
+  g["volumes"]=nlohmann::json::array({{{"kind","convex-envelope"},
+    {"planes",{{1,0,0,-6},{-1,0,0,4},{0,1,0,-1},{0,-1,0,-1},{0,0,1,-1},{0,0,-1,-1}}},
+    {"vertices",{{4,-1,-1},{6,1,1},{4,1,-1},{6,-1,1}}},{"boundingMargin",0}}});
+  ray=Ray({0,1.5,0},{10,1.5,0});
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Clear);
+  ray.radius=.6;REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Blocked);
+  doc=Fixture();doc["geometry"][0]["representation"]="havok-physical-v2";
+  doc["geometry"][0]["margin"]=.5;doc["geometry"][0]["volumes"]=nlohmann::json::array();
+  ray=Ray({0,5.8,0},{10,5.8,0});
+  REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Clear);
+  ray.radius=.4;REQUIRE(Load(doc)->Trace(ray).verdict==Verdict::Blocked);
 }
 
 TEST_CASE("Native physical volumes block interiors and transformed Havok envelopes", "[srp-collision]")

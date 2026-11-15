@@ -155,7 +155,7 @@ Json Host(PartOne& server,const MpActor& target)
     {"profileId",actor.GetProfileId()},{"characterId",actor.GetDynamicFields().GetAsJson().value("srpActiveCharacterId",std::string())},
     {"session",server.serverState.SessionIncarnation(user)}};
 }
-struct Weapon { uint32_t source=0x1f4; double reach=0; int64_t interval=1000; Json drain=nullptr; };
+struct Weapon { uint32_t source=0x1f4; double reach=0; int64_t interval=1000; Json drain=nullptr; double radius=0; };
 
 Weapon DrainWeapon(const MpActor& actor, uint32_t spellId)
 {
@@ -209,13 +209,15 @@ Weapon DrainWeapon(const MpActor& actor, uint32_t spellId)
     const auto projectileId=lord ? FormDesc::FromString("1a30c:Dawnguard.esm").ToFormId(world->espmFiles) : owner.ToGlobalId(projectile);
     const auto proj=world->GetEspm().GetBrowser().LookupById(projectileId);
     Require(proj.rec && proj.rec->GetType()=="PROJ","SRP_DRAIN_PROJECTILE_REQUIRED");
-    float range=0;espm::RecordHeaderAccess::IterateFields(proj.rec,[&](const char* type,uint32_t size,const char* bytes){
-      if(!memcmp(type,"DATA",4)&&size>=16)memcpy(&range,bytes+12,4);
+    float range=0,radius=-1;espm::RecordHeaderAccess::IterateFields(proj.rec,[&](const char* type,uint32_t size,const char* bytes){
+      if(!memcmp(type,"DATA",4)&&size>=76){memcpy(&range,bytes+12,4);memcpy(&radius,bytes+72,4);}
     },world->GetEspmCache());
     Require(std::isfinite(range)&&range>0&&range<=16384,"SRP_DRAIN_RANGE_UNSUPPORTED");result.reach=range;
+    Require(std::isfinite(radius)&&radius>=0&&radius<=256,"SRP_DRAIN_PROJECTILE_RADIUS_UNSUPPORTED");result.radius=radius;
     result.drain={{"power","vampireDrain"},{"mgef",effectId},{"effectIndex",effectIndex},{"magnitude",effect.effectItem->magnitude},
       {"cost",spell.spellItem->spellCost},{"durationMs",1000},{"concentration",!lord},
       {"costPolicy",lord?"RECORD_BASE_PER_CAST_V1":"RECORD_BASE_PER_SECOND_V1"},
+      {"projectile",projectileId},{"collisionRadius",radius},
       {"healPolicy","ACTUAL_HEALTH_LOSS_ONE_TO_ONE_V1"},{"equipmentDigest",Digest(actor.GetEquipment().ToJson())}};
   }
   Require(!result.drain.is_null()&&spell.spellItem->spellCost>0,"SRP_DRAIN_HEALTH_EFFECT_REQUIRED");return result;
@@ -330,7 +332,7 @@ Weapon NativeWeapon(const MpActor& actor)
 Json WeaponJson(const Weapon& weapon,const MpActor& actor)
 {
   if(!weapon.drain.is_null()) {auto value=weapon.drain;value["source"]=weapon.source;value["reach"]=weapon.reach;
-    value["intervalMs"]=weapon.interval;value["policy"]="AIMED_DRAIN_SEGMENT_V1";return value;}
+    value["intervalMs"]=weapon.interval;value["policy"]="AIMED_DRAIN_SPHERE_V2";return value;}
   if (actor.GetRaceId() == FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(actor.GetParent()->espmFiles)) {
     auto result = WerewolfClaws(actor);
     result["source"] = weapon.source;
@@ -421,17 +423,22 @@ Json Contact(const Frame& frame,const Weapon& weapon,double gripHeight)
   Vec to{from.x+std::sin(yaw)*weapon.reach,from.y+std::cos(yaw)*weapon.reach,from.z};
   Require(Finite(from)&&Finite(to),"SRP_IMPACT_ATTACK_TRANSFORM_INVALID");
   double nearest=2;
-  for(const auto& triangle:frame.targetTriangles){double fraction;
+  if(weapon.radius>0){
+    const auto swept=SrpCollision::SweepSphereMesh(from,to,weapon.radius,frame.targetTriangles);
+    if(swept.verdict==SrpCollision::Verdict::Blocked)nearest=swept.hitFraction;
+  }else for(const auto& triangle:frame.targetTriangles){double fraction;
     if(Intersection(triangle,from,to,fraction))nearest=std::min(nearest,fraction);
   }
   Require(nearest<=1,"SRP_IMPACT_SERVER_SEGMENT_MISSES_TARGET");
   Vec contact{from.x+(to.x-from.x)*nearest,from.y+(to.y-from.y)*nearest,from.z+(to.z-from.z)*nearest};
   SrpCollision::Query query;query.worldOrCell=frame.worldOrCell;query.from=from;
-  query.to=contact;query.dynamics=frame.dynamics;
+  query.to=contact;query.dynamics=frame.dynamics;query.radius=weapon.radius;
   const auto trace=frame.scene->Trace(query);
   Require(trace.verdict==SrpCollision::Verdict::Clear,"SRP_IMPACT_SERVER_COLLISION_NOT_CLEAR");
-  return {{"frame",identity},{"from",Vector(from)},{"contact",Vector(contact)},
+  Json result={{"frame",identity},{"from",Vector(from)},{"contact",Vector(contact)},
     {"targetFraction",nearest},{"collision","CLEAR"},{"enginePoseParity",false}};
+  if(!weapon.drain.is_null())result["projectileRadius"]=weapon.radius;
+  return result;
 }
 Frame Capture(WorldState& world,const MpActor& attacker,const MpActor& target)
 {
