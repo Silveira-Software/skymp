@@ -115,7 +115,10 @@ export class HitService extends ClientListener {
         }
 
         const sourceId = e.source ? e.source.getFormID() : 0;
-        if (this.isDrainSpell(sourceId)) return;
+        if (this.isDrainSpell(sourceId)) {
+            if (aggressor === 0x14) this.observeDrainHit(localIdToRemoteId(e.target.getFormID()), sourceId);
+            return;
+        }
         const beastRace = this.sp.Game.getFormFromFile(0xcdd84, 'Skyrim.esm');
         const werewolf = !!beastRace && this.sp.Game.getPlayer()?.getRace()?.getFormID() === beastRace.getFormID();
         const claws = aggressor === 0x14 && werewolf && (!sourceId || sourceId === 0x1f4);
@@ -181,8 +184,10 @@ export class HitService extends ClientListener {
         if (!this.isDrainSpell(spell)) return false;
         this.traceCombat('DRAIN_REQUEST', { target, spell, source,
             ownerReady: !!this.meleeOwner, sessionReady: !!this.meleeSession });
-        if (!this.meleeSession || !this.meleeOwner || target <= 0 || target >= 0xff000000 || ![0, 1].includes(source)) return true;
-        if (this.drain && this.drain.spell === spell && this.drain.target === target && this.drain.source === source) return true;
+        if (!this.meleeSession || !this.meleeOwner || ![0, 1].includes(source)) return true;
+        if (!this.isDrainTarget(target)) target = 0;
+        if (this.drain && this.drain.spell === spell && this.drain.source === source &&
+            (!target || this.drain.target === target)) return true;
         this.interruptDrain();
         const concentration = spell !== this.sp.Game.getFormFromFile(0x19324, 'Dawnguard.esm')?.getFormID();
         this.drain = { id: randomBytes(16).toString('hex'), target, spell, source, concentration,
@@ -190,8 +195,21 @@ export class HitService extends ClientListener {
         return true;
     }
 
+    private isDrainTarget(target: number) {
+        return Number.isInteger(target) && target > 0 && target < 0xff000000 && target !== 0x14;
+    }
+
+    private observeDrainHit(target: number, spell: number) {
+        const action = this.drain;
+        const bound = !!action && !action.target && action.spell === spell &&
+            Date.now() - action.created <= 5000 && this.isDrainTarget(target) &&
+            !!this.meleeSession && !!this.meleeOwner;
+        this.traceCombat('DRAIN_HIT', { target, spell, bound });
+        if (bound && action) action.target = target;
+    }
+
     interruptDrain() {
-        if (this.drain && this.meleeSession) this.sendMeleePacket({ action: 'interruptDrain', session: this.meleeSession,
+        if (this.drain?.target && this.meleeSession) this.sendMeleePacket({ action: 'interruptDrain', session: this.meleeSession,
             actionId: this.drain.id, targetId: this.drain.target, spellId: this.drain.spell });
         this.drain = null;
     }
@@ -210,7 +228,7 @@ export class HitService extends ClientListener {
                 expired: now - action.created > 5000 });
             this.interruptDrain(); return;
         }
-        if (!casting || now < action.next) return;
+        if (!action.target || !casting || now < action.next) return;
         action.next = now + 250;
         this.sendMeleePacket({ action: 'drain', session: this.meleeSession, actionId: action.id,
             targetId: action.target, spellId: action.spell });
