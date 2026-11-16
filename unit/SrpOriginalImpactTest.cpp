@@ -370,6 +370,95 @@ TEST_CASE("Vampire drain escrows one cost, applies resistance and heals once", "
   REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(w,testUserId,cowId,"drain-no-mana",source),"SRP_DRAIN_INSUFFICIENT_MAGICKA");
 }
 
+TEST_CASE("A live drain retries its same action after a prior save without charging twice", "[srp-r49-drain-save-ack]")
+{
+  using Json=nlohmann::json;
+  const bool dirtyTarget=GENERATE(false,true);
+  const bool legacy=std::getenv("SRP_R49_EXPECT_TERMINAL_SAVE_ACK")!=nullptr;
+  auto& server=GetPartOne();AttachStorage(server);
+  auto& target=SetupCow(server);auto& player=SetupPlayer(server,target);
+  Isolate(server,target,player);
+  const uint32_t source=0x8d5bf;
+  player.AddSpell(source);Equipment equipment;equipment.rightSpell=source;player.SetEquipment(equipment);
+  const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  player.SetPropertyValueDump("private.srpSupernaturalCombatV1",TestSeal({{"schemaVersion",1},
+    {"owner",{{"profileId","9191"},{"characterId","combat-PC"}}},{"kind","vampire"},{"form","human"},
+    {"phase","NONE"},{"reserve",100},{"expiresAtMs",now+90000},{"drainEnabled",true},{"drainSpell",source}}).dump(),false,false);
+  WaitForSaved(server,player);WaitForSaved(server,target);
+  auto& world=server.worldState;
+  const auto desc=[&](uint32_t id){return FormDesc::FromFormId(id,world.espmFiles).ToString();};
+  const auto cell=target.GetCellOrWorld().ToFormId(world.espmFiles);
+  world.InstallSrpCollisionScene(CreateSyntheticScene(cell,desc(target.GetBaseId()),desc(target.GetRaceId()),
+    target.GetPos(),desc(player.GetBaseId()),desc(player.GetRaceId())),AuditConfig(cell,true));
+  struct Listener : PartOne::Listener {
+    PartOne* server=nullptr;unsigned calls=0;Json result;std::string error;
+    void OnConnect(Networking::UserId) override {}
+    void OnDisconnect(Networking::UserId) override {}
+    void OnCustomPacket(Networking::UserId,const simdjson::dom::element&) override {}
+    bool OnMpApiEvent(const GameModeEvent& event) override {
+      if(!server||std::string(event.GetName())!="onSrpOriginalImpactRequest")return true;
+      ++calls;const auto args=Json::parse(event.GetArgumentsJsonArray());
+      try{result=SrpOriginalImpact::Begin(*server,args.at(0).get<Networking::UserId>(),
+        args.at(1).get<uint32_t>(),args.at(2).get<std::string>(),args.at(3).get<uint32_t>());}
+      catch(const std::exception& e){error=e.what();}
+      return false;
+    }
+  };
+  auto listener=std::make_shared<Listener>();server.AddListener(listener);listener->server=&server;
+  const auto send=[&](const Json& value){
+    server.Messages().clear();RawMessageData raw;raw.userId=testUserId;
+    CustomPacketMessage packet;packet.contentJsonDump=value.dump();
+    server.GetActionListener().OnCustomPacket(raw,packet);
+  };
+  send({{"customPacketType","srpOriginalMelee"},{"version",1},{"action","hello"}});
+  REQUIRE(server.Messages().size()==1);
+  const auto ready=Json::parse(server.Messages().back().j.at("contentJsonDump").get<std::string>());
+  Json packet={{"customPacketType","srpOriginalMelee"},{"version",1},{"action","drain"},
+    {"session",ready.at("session")},{"actionId",std::string(32,'d')},{"targetId",cowId},{"spellId",source}};
+  const auto ack=[&]{
+    std::vector<Json> replies;
+    for(const auto& message:server.Messages())if(message.j.contains("contentJsonDump")){
+      const auto reply=Json::parse(message.j.at("contentJsonDump").get<std::string>());
+      if(reply.value("action",std::string())=="drainAck")replies.push_back(reply);
+    }
+    // A successful Begin also publishes its native Magicka escrow update.
+    REQUIRE(replies.size()==1);
+    const auto& reply=replies.front();
+    REQUIRE(reply.at("actionId")==packet.at("actionId"));REQUIRE(reply.at("actorId")==playerId);
+    return reply.at("state").get<std::string>();
+  };
+  const auto mana=[&]{return player.GetActorValues().magickaPercentage*player.GetMaximumValues().magicka;};
+  const auto beforeMana=mana(),beforeHealth=target.GetActorValues().healthPercentage;
+  auto& dirty=dirtyTarget?target:player;
+  dirty.SetPropertyValueDump("r49-save-ack-fixture","1",false,false);
+  const auto generation=world.GetChangeFormGeneration(dirty.GetFormId());
+  REQUIRE_FALSE(world.IsChangeFormSaved(dirty.GetFormId(),generation));
+  auto stale=packet;stale["session"]=std::string(64,'0');send(stale);
+  REQUIRE(server.Messages().empty());REQUIRE(listener->calls==0);
+  send(packet);
+  REQUIRE(ack()==(legacy?"REFUSED":"PENDING"));
+  REQUIRE(listener->calls==(legacy?1:0));
+  if(legacy)REQUIRE(listener->error=="SRP_IMPACT_PRIOR_SAVE_PENDING");
+  REQUIRE_FALSE(SrpOriginalImpact::Inspect(player).at("present"));
+  REQUIRE(mana()==beforeMana);REQUIRE(target.GetActorValues().healthPercentage==beforeHealth);
+  WaitForSaved(server,dirty);send(packet);
+  REQUIRE(ack()=="ISSUED");
+  REQUIRE(listener->result.at("state")=="ISSUED");
+  const auto operation=listener->result.at("operationId").get<std::string>();
+  REQUIRE(mana()==Catch::Approx(beforeMana-6));
+  WaitForSaved(server,player);send(packet);
+  REQUIRE(ack()=="ISSUED");
+  REQUIRE(listener->result.at("duplicate")==true);
+  REQUIRE(listener->result.at("operationId")==operation);
+  REQUIRE(mana()==Catch::Approx(beforeMana-6));
+  REQUIRE(target.GetActorValues().healthPercentage==beforeHealth);
+  // Releasing the button still cancels/refunds the same durable operation.
+  packet["action"]="interruptDrain";send(packet);WaitForSaved(server,player);
+  REQUIRE(SrpOriginalImpact::Inspect(player).at("ledger").at("operations").at(operation).at("state")=="CANCELLED");
+  REQUIRE(mana()==Catch::Approx(beforeMana));REQUIRE(target.GetActorValues().healthPercentage==beforeHealth);
+  listener->server=nullptr;
+}
+
 TEST_CASE("Aimed drains follow accepted pitch and retain their physical guards", "[srp-r49-drain-pitch]")
 {
   const int height = GENERATE(-160, 160);

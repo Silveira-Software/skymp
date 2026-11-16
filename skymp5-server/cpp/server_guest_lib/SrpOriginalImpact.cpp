@@ -626,6 +626,19 @@ void HandleMeleePacket(PartOne& server, Networking::UserId userId,
       }
       return;
     }
+    const auto acknowledgeDrain = [&](const std::string& state) {
+      server.SendCustomPacket(userId,Json{{"customPacketType","srpOriginalMelee"},{"version",1},{"action","drainAck"},
+        {"actionId",actionId},{"state",state},{"actorId",attacker.GetFormId()}}.dump());
+    };
+    if(drain && (!Saved(attacker) || !Saved(*form->AsActor()))) {
+      const auto ledger=Ledger(attacker,"OUTBOX",PlayerIdentity(attacker,true));
+      if(!ledger.at("requests").contains(requestId)) {
+        // A live channel can retry this action after the outstanding save.
+        // Leave admission and escrow to the next authenticated drain packet.
+        acknowledgeDrain("PENDING");
+        return;
+      }
+    }
     if (claws) WerewolfClaws(attacker);
     // One nonce namespace across forms: changing from claws to a human weapon
     // must not turn the same client swing into a second durable impact.
@@ -637,8 +650,7 @@ void HandleMeleePacket(PartOne& server, Networking::UserId userId,
       if(ledger.at("requests").contains(requestId))
         state=ledger.at("operations").at(ledger.at("requests").at(requestId).get<std::string>()).at("state").get<std::string>();
       if((state=="APPLIED"||state=="CANCELLED")&&!Saved(attacker))state="PENDING";
-      server.SendCustomPacket(userId,Json{{"customPacketType","srpOriginalMelee"},{"version",1},{"action","drainAck"},
-        {"actionId",actionId},{"state",state},{"actorId",attacker.GetFormId()}}.dump());
+      acknowledgeDrain(state);
     }
   } catch (const std::exception& error) {
     spdlog::debug("SRP original melee packet refused: {}", error.what());
