@@ -662,7 +662,9 @@ std::optional<std::array<double,12>> WorldState::CaptureSrpActorCollisionPose(co
   for(float value:{p.x,p.y,p.z,r.x,r.y,r.z})
     if(!std::isfinite(value))return {};
   const double yaw=r.z*std::acos(-1.)/180.,c=std::cos(yaw)*scale,s=std::sin(yaw)*scale;
-  return std::array<double,12>{c,-s,0.,p.x,s,c,0.,p.y,0.,0.,scale,p.z};
+  // Skyrim NiMatrix3::SetEulerAnglesXYZ uses clockwise actor yaw: local +Y
+  // faces world +X at +90 degrees, like the accepted movement/attack facing.
+  return std::array<double,12>{c,s,0.,p.x,-s,c,0.,p.y,0.,0.,scale,p.z};
 }
 
 namespace {

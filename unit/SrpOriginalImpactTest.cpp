@@ -18,6 +18,7 @@
 #include "gamemode_events/GameModeEvent.h"
 #include <catch2/catch_all.hpp>
 #include <csignal>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -521,6 +522,73 @@ TEST_CASE("Aimed drain validates current contact after its admission frame moves
   SrpOriginalImpact::Apply(server, testUserId, operation, true);
   REQUIRE(target.GetActorValues().healthPercentage == after);
   REQUIRE(health() == Catch::Approx(beforeHealth + 2.f));
+}
+
+TEST_CASE("Actor collision yaw rotates local forward in Skyrim's clockwise convention", "[srp-r49-actor-yaw]")
+{
+  auto& w=GetPartOne();AttachStorage(w);
+  auto& cow=SetupCow(w);
+  auto& player=SetupPlayer(w,cow);
+  const auto before=player.GetChangeForm();
+  const bool legacy=std::getenv("SRP_R49_EXPECT_COUNTERCLOCKWISE_POSE")!=nullptr;
+  struct Facing { float degrees; double x,y; };
+  // Golden forward vectors from NiMatrix3::SetEulerAnglesXYZ, not a copy of
+  // CaptureSrpActorCollisionPose. In particular +90 faces +X, and -90 -X.
+  for(const auto facing:std::vector<Facing>{{0,0,1},{90,1,0},{180,0,-1},
+      {-90,-1,0},{-45,-.70710678118655,.70710678118655},
+      {148.3330078125f,.52498141586914,-.85111368981590}}){
+    CAPTURE(facing.degrees,legacy);
+    player.SetPos({10,20,-3});player.SetAngle({0,0,facing.degrees});
+    const auto pose=w.worldState.CaptureSrpActorCollisionPose(player);
+    REQUIRE(pose.has_value());
+    const auto point=[&](double x,double y,double z){return SrpCollision::Vec3{
+      pose->at(0)*x+pose->at(1)*y+pose->at(2)*z+pose->at(3),
+      pose->at(4)*x+pose->at(5)*y+pose->at(6)*z+pose->at(7),
+      pose->at(8)*x+pose->at(9)*y+pose->at(10)*z+pose->at(11)};};
+    const auto forward=point(0,1,0),right=point(1,0,0),up=point(0,0,1);
+    REQUIRE(forward.x==Catch::Approx(10+(legacy?-facing.x:facing.x)).margin(1e-6));
+    REQUIRE(forward.y==Catch::Approx(20+facing.y).margin(1e-6));
+    REQUIRE(right.x==Catch::Approx(10+facing.y).margin(1e-6));
+    REQUIRE(right.y==Catch::Approx(20+(legacy?facing.x:-facing.x)).margin(1e-6));
+    REQUIRE(up.x==10);REQUIRE(up.y==20);REQUIRE(up.z==-2);
+  }
+  player.ApplyChangeForm(before);
+}
+
+TEST_CASE("Recorded first-person R49 drain contacts the correctly rotated original controller", "[srp-r49-actor-yaw]")
+{
+  const auto path=std::getenv("SRP_R49_RADIUS_SCENE");
+  if(!path){SKIP("Pinned original R49 scene supplied by isolated build runner");}
+  std::ifstream stream(path);nlohmann::json doc;stream>>doc;
+  REQUIRE(SrpCollision::Scene::Digest(doc)=="b8eb35fbf317d758b12b60e1ac22b2db61d81ca8a78dfe8c10e787289f66b6b4");
+  const auto scene=SrpCollision::Scene::Load(doc,doc.at("bindings"),SrpCollision::Scene::Digest(doc));
+  auto& w=GetPartOne();AttachStorage(w);
+  auto& cow=SetupCow(w);auto& actor=SetupPlayer(w,cow);
+  const auto before=actor.GetChangeForm();
+  // Exact accepted native frame, 15 November 2026 21:27:32.253Z. This is an
+  // offline replay: no runtime actor or saved human position is overwritten.
+  actor.SetPos({917.671875f,958.2507934570313f,-187.61988830566406f});
+  actor.SetAngle({38.45392990112305f,0,148.3330078125f});
+  const auto pose=w.worldState.CaptureSrpActorCollisionPose(actor);
+  REQUIRE(pose.has_value());
+  const auto target=scene->ActorTriangles("71aa:Dawnguard.esm","19fd3:Dawnguard.esm",*pose,false);
+  REQUIRE(target.has_value());
+  const SrpCollision::Vec3 from{981.1483154296875,853.9141235351563,-100.3135988657807};
+  const SrpCollision::Vec3 to{550.5393692487451,1472.3956440312816,-248.2343353219623};
+  const auto hit=SrpCollision::SweepSphereMesh(from,to,10.,*target);
+  const bool legacy=std::getenv("SRP_R49_EXPECT_COUNTERCLOCKWISE_POSE")!=nullptr;
+  REQUIRE(hit.verdict==(legacy?SrpCollision::Verdict::Clear:SrpCollision::Verdict::Blocked));
+  // Wrong-facing casts still miss. No padding of projectile/controller/ray.
+  REQUIRE(SrpCollision::SweepSphereMesh(from,{2*from.x-to.x,2*from.y-to.y,2*from.z-to.z},10.,*target).verdict==SrpCollision::Verdict::Clear);
+  if(!legacy){
+    REQUIRE(hit.hitFraction>0);REQUIRE(hit.hitFraction<1);
+    SrpCollision::Query q;q.worldOrCell=33580089;q.from=from;q.radius=10.;
+    q.to={from.x+(to.x-from.x)*hit.hitFraction,from.y+(to.y-from.y)*hit.hitFraction,from.z+(to.z-from.z)*hit.hitFraction};
+    q.dynamics.worldOrCell=q.worldOrCell;q.dynamics.revision=2176;q.dynamics.complete=true;
+    const auto trace=scene->Trace(q);INFO(trace.reason);
+    REQUIRE(trace.verdict==SrpCollision::Verdict::Clear);
+  }
+  actor.ApplyChangeForm(before);
 }
 
 TEST_CASE("Collision pose rejects bone overrides and reads authoritative actor sex", "[srp-original-impact]")
