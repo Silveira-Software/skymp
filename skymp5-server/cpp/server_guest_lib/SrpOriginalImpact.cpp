@@ -338,7 +338,7 @@ Json WeaponJson(const Weapon& weapon,const MpActor& actor)
     result["source"] = weapon.source;
     result["reach"] = weapon.reach;
     result["intervalMs"] = weapon.interval;
-    result["policy"] = "NORMAL_MELEE_SEGMENT_V1";
+    result["policy"] = "CURRENT_CLAW_CONTACT_V2";
     return result;
   }
   return {{"source",weapon.source},{"reach",weapon.reach},{"intervalMs",weapon.interval},
@@ -788,26 +788,28 @@ Json Apply(PartOne& server,Networking::UserId userId,const std::string& operatio
   Require(Saved(attacker)&&Saved(target),"SRP_IMPACT_INTENT_SAVE_PENDING");
   const auto now=Now();Require(now>=intent.at("issuedAtMs").get<int64_t>() &&
     now<=intent.at("expiresAtMs").get<int64_t>(),"SRP_IMPACT_INTENT_EXPIRED");
-  const bool drain=intent.at("weapon").value("power",std::string())=="vampireDrain";
+  const auto power = intent.at("weapon").value("power", std::string());
+  const bool drain = power == "vampireDrain";
+  const bool claws = power == "werewolfClaws";
   if(drain)Require(channelObserved&&now>=intent.at("readyAtMs").get<int64_t>(),"SRP_DRAIN_CHANNEL_PENDING");
   const auto weapon=drain ? DrainWeapon(attacker,intent.at("weapon").at("source").get<uint32_t>()) : NativeWeapon(attacker);
   Require(WeaponJson(weapon,attacker)==intent.at("weapon"),"SRP_IMPACT_WEAPON_CHANGED");
   const auto frame=Capture(server.worldState,attacker,target);
   const auto grip=AttackerGripHeight(frame,attacker);
   Require(grip.has_value(),"SRP_IMPACT_ATTACKER_PROXY_REQUIRED");
-  if(drain) {
+  if (drain || claws) {
     const auto& admitted=intent.at("proof").at("frame");
     Require(frame.scene->Id()==admitted.at("sceneId").get<std::string>() && frame.worldOrCell==admitted.at("worldOrCell").get<uint32_t>() &&
       frame.movementPolicy==admitted.at("movementPolicy").get<std::string>() &&
       frame.hitRepresentation==admitted.at("hitRepresentation").get<std::string>(),
-      "SRP_DRAIN_SCENE_CHANGED");
+      drain ? "SRP_DRAIN_SCENE_CHANGED" : "SRP_IMPACT_FRAME_CHANGED");
   }
   const auto proof=Contact(frame,weapon,*grip);
-  // Aimed drain is observed again after its durable cost reservation. Re-prove
-  // contact from the current accepted poses, retaining the immutable admission
-  // proof in the intent and recording this applied proof in the target receipt.
-  // Melee and claws still bind the exact admission frame.
-  if(!drain)Require(proof==intent.at("proof"),"SRP_IMPACT_FRAME_CHANGED");
+  // Claws and aimed drain require valid contact at admission and again after
+  // saving the intent. Keep both proofs, and bind other weapons to the exact
+  // admitted frame.
+  if (!drain && !claws)
+    Require(proof == intent.at("proof"), "SRP_IMPACT_FRAME_CHANGED");
   Require(SrpActorStats::Read(attacker).enabled && SrpOriginalStats::Read(target).has_value(),
     "SRP_IMPACT_STATS_REQUIRED");
   Require(targetLedger.at("operations").size()<capacity,"SRP_IMPACT_CAPACITY_REQUIRES_RECONCILIATION");

@@ -307,6 +307,85 @@ TEST_CASE("Claws require the canonical condition, reserve, transformation and co
   REQUIRE(cow.GetActorValues().healthPercentage==before);
 }
 
+TEST_CASE("Werewolf claw contact survives valid movement before the durable apply",
+          "[srp-r49-claw-contact]")
+{
+  const auto scenario = GENERATE(0, 1, 2, 3);
+  CAPTURE(scenario);
+  const bool baseline = std::getenv("SRP_R49_EXPECT_EXACT_CLAW_FRAME") != nullptr;
+  auto& server = GetPartOne();
+  AttachStorage(server);
+  auto& target = SetupCow(server);
+  auto& player = SetupPlayer(server, target);
+  Isolate(server, target, player);
+  SetupClaws(server, player);
+  server.SetDamageFormula(std::make_unique<TES5DamageFormula>());
+
+  auto& world = server.worldState;
+  const auto cell = target.GetCellOrWorld().ToFormId(world.espmFiles);
+  const auto descriptor = [&](uint32_t id) {
+    return FormDesc::FromFormId(id, world.espmFiles).ToString();
+  };
+  const auto install = [&](bool changed) {
+    // A wall beyond the target changes the scene identity without obscuring
+    // this contact. An issued action cannot migrate to a different scene.
+    world.InstallSrpCollisionScene(CreateSyntheticScene(cell, descriptor(target.GetBaseId()),
+      descriptor(target.GetRaceId()), target.GetPos(), descriptor(player.GetBaseId()),
+      descriptor(player.GetRaceId()), false, changed, -130.), AuditConfig(cell, true));
+  };
+  install(false);
+  const auto healthBefore = target.GetActorValues().healthPercentage;
+  const auto issued = SrpOriginalImpact::Begin(server, testUserId, cowId, "claw-movement-before-apply");
+  const auto operation = issued.at("operationId").get<std::string>();
+  WaitForSaved(server, player);
+  const auto admitted = SrpOriginalImpact::Inspect(player).at("ledger").at("operations")
+    .at(operation).at("intent").at("proof");
+  REQUIRE(admitted.at("collision") == "CLEAR");
+
+  if (scenario == 1) {
+    player.SetAngle({0, 0, 180});
+    WaitForSaved(server, player);
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(server, testUserId, operation),
+                        "SRP_IMPACT_SERVER_SEGMENT_MISSES_TARGET");
+  } else if (scenario == 2) {
+    target.SetPropertyValueDump("r49-claw-contact-fixture", "1", false, false);
+    WaitForSaved(server, target);
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(server, testUserId, operation),
+                        "SRP_IMPACT_GENERATION_CHANGED");
+  } else if (scenario == 3) {
+    install(true);
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(server, testUserId, operation),
+                        "SRP_IMPACT_FRAME_CHANGED");
+  } else {
+    auto position = player.GetPos();
+    position.y += 2;
+    player.SetPos(position);
+    player.SetAngle({9, 0, 2});
+    WaitForSaved(server, player);
+    if (!baseline) {
+      const auto result = SrpOriginalImpact::Apply(server, testUserId, operation);
+      REQUIRE(result.at("state") == "TARGET_SAVE_PENDING");
+      const auto& receipt = result.at("targetReceipt");
+      REQUIRE(receipt.at("intent").at("proof") == admitted);
+      REQUIRE(receipt.at("proof") != admitted);
+      REQUIRE(receipt.at("proof").at("collision") == "CLEAR");
+      REQUIRE(receipt.at("damage").get<float>() > 0.f);
+      const auto healthAfter = target.GetActorValues().healthPercentage;
+      REQUIRE(healthAfter < healthBefore);
+      WaitForSaved(server, target);
+      REQUIRE(SrpOriginalImpact::Apply(server, testUserId, operation).at("state") == "APPLIED");
+      WaitForSaved(server, player);
+      REQUIRE(SrpOriginalImpact::Apply(server, testUserId, operation).at("duplicate") == true);
+      REQUIRE(target.GetActorValues().healthPercentage == healthAfter);
+      return;
+    }
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::Apply(server, testUserId, operation),
+                        "SRP_IMPACT_FRAME_CHANGED");
+  }
+  REQUIRE(SrpOriginalImpact::Cancel(server, testUserId, operation).at("state") == "CANCELLED");
+  REQUIRE(target.GetActorValues().healthPercentage == healthBefore);
+}
+
 TEST_CASE("Vampire drain escrows one cost, applies resistance and heals once", "[srp-r48-drain]")
 {
   const int resistance=GENERATE(0,30,103);
