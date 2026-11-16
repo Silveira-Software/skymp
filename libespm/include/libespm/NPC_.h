@@ -75,6 +75,15 @@ public:
     bool isEssential = false;
     bool isUnique = false;
     bool isProtected = false;
+    bool isFemale = false;
+
+    bool hasStatsConfiguration = false;
+    bool autoCalcStats = false;
+    bool pcLevelMult = false;
+    uint16_t level = 0; // fixed level, or multiplier * 1000 when pcLevelMult
+    uint16_t calcMinLevel = 0;
+    uint16_t calcMaxLevel = 0;
+    uint32_t classId = 0;
 
     uint32_t race = 0;
     int16_t healthOffset = 0;

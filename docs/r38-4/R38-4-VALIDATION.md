@@ -1,0 +1,13 @@
+# R38.4 — cold identity and durable NPC retirement
+
+Implementation commit: f8451379e0f6dbb31edbf6f8c8c49561fb1d0061, following a0ef1bff4f5309010ebcc6e6d724ba1655e94e3d. PUBLIC remains R35/R3. RELEASE_BLOCKED; no production installation or restart.
+
+The opt-in admission policy now restores dynamic NPC images cold at their exact saved coordinates instead of spending every active slot during file recovery. The historical off-map sentinel stays preserved and unindexed. The allocator reserves cold identities and durable deletion tombstones even when a budget-denied lookup returns null. Explicit inserts cannot replace those IDs. Invalid cold recovery latches failure because the storage iterator catches per-record exceptions.
+
+The current published game.despawnRef uses Disable/Delete, which did not destroy the actor or free its admission slot. The new native retirement waits for durable deletion, runs BeforeDestroy exactly once, waits for its final generation, then frees the index and admission lease. Teardown recursion, pending saves and write failure cannot turn into a success. Tombstones reserve IDs after restart and stay on disk; no receipt/inventory clearing or file-format migration was introduced. Original references and players are excluded from this new retirement path.
+
+Final binary SHA-256: aaf156a6ee7432c47dc9ec42f35fabf21c5f4867c3744df3e86f9989612676d5. Official pinned toolchain image: sha256:3bbc25fdca033c192d2dc66c661ddf998036109127c039de69c41acb0b93d9db. Full C++ 374/374, repeated with seed 3286815900; 168 native regression cases; parity of 566 sources/headers. The three modified translation units were forcibly recompiled using the server clock to avoid incremental-build timestamp ambiguity. No Windows client rebuild.
+
+Actual-addon proofs include 34,668 individually stable eligible NPC images (no player fixtures copied), a prior-binary ID-collision negative control, the actual published despawn function, four crash/write-failure retirement groups, two mock-network observers of one original HF ACHR, and consumption rollback additionalDebit=0. These are not Skyrim/AI/rendering or a consistent production backup. Full reports and scripts are in https://github.com/Silveira-Software/SKYRIMRP/pull/64 under docs/r38-4 and ops/r38-4.
+
+Deployment remains blocked by live-NPC interest unload and host/capacity validation, a full operational native rollback over the latest world, a new consistent backup/restore, and human acceptance. An old native with only admissionVersion=1 is insufficient for the new cold/tombstone semantics. HF combat/rewards/respawn, transforms, voice, SPEL and point allocation remain OFF. A persistence PASS does not approve those systems.

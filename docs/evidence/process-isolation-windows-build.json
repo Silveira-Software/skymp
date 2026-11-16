@@ -1,0 +1,42 @@
+{
+  "status": "PASS",
+  "run": 42343526234,
+  "repository": "Silveira-Software/skymp",
+  "commit": "29c4766c388582fbdb203539300d74e6f89ac18a",
+  "artifact": [
+    {
+      "path": "build\\skyrim-platform\\_platform_se\\bin\\Release\\SkyrimPlatform.dll",
+      "sha256": "cddedfe99d17c84e0b9f35e2c05bd7271cd6f05765b411fe5e5d792549d80dea",
+      "bytes": 149504,
+      "commit": "29c4766c388582fbdb203539300d74e6f89ac18a"
+    },
+    {
+      "path": "build\\skyrim-platform\\_platform_se\\bin\\Release\\SkyrimPlatformCEF.exe.hidden",
+      "sha256": "613022906fa61f1973d04e02d80b4d439dbb21692cb2f1a5cd4575a72616f9da",
+      "bytes": 431616,
+      "commit": "29c4766c388582fbdb203539300d74e6f89ac18a"
+    },
+    {
+      "path": "build\\skyrim-platform\\_platform_se\\bin\\Release\\SkyrimPlatformImpl.dll",
+      "sha256": "354df75525882fff284bce9c953a04cba660283532e1eb4f088b9f25f8c43dea",
+      "bytes": 15665152,
+      "commit": "29c4766c388582fbdb203539300d74e6f89ac18a"
+    }
+  ],
+  "downloadedHashesVerified": true,
+  "installed": false,
+  "realSkyrim": false,
+  "processProof": {
+    "status": "PASS",
+    "checks": 7,
+    "actualWindowsProcesses": true,
+    "realSkyrim": false,
+    "loaderLockChecks": 3,
+    "sourceSha256": {
+      "skyrim-platform\\tests\\FlowManagerWindowsTests.cpp": "318cd2c9603d87fc6df2b29adcea8eb1235f1cd8971bba0dfe1940d65e350373",
+      "skyrim-platform\\src\\platform_se\\skyrim_platform\\FlowManager.cpp": "f1fbef034db66925f0b5b41d38ea5e9dc64c5d40b0e3fead7471de1492533468",
+      "skyrim-platform\\src\\platform_se\\skyrim_platform\\main.cpp": "c33b27e38eba87d6722146a8332de4bc9b7bb47077fbc63581eb52961adb7d92"
+    },
+    "binarySha256": "50927283cb9e8f844294465e21eff3b46e31654670dd1624f445c989dd5507f9"
+  }
+}

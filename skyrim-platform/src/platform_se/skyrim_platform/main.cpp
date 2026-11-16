@@ -442,8 +442,8 @@ public:
 
   bool Detach() override
   {
-    FlowManager::CloseProcess(L"SkyrimSE.exe");
-    FlowManager::CloseProcess(L"SkyrimPlatformCEF.exe.hidden");
+    // Called under the DLL loader lock. CEF helpers independently watch their
+    // parent, so no process enumeration or termination belongs here.
     return true;
   }
 
@@ -570,6 +570,7 @@ public:
   {
     renderSystem.reset();
     overlayService.reset();
+    FlowManager::CloseChildProcesses(L"SkyrimPlatformCEF.exe.hidden");
     return true;
   }
 

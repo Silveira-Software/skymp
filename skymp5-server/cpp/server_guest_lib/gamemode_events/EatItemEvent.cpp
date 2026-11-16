@@ -41,6 +41,20 @@ std::string EatItemEvent::GetArgumentsJsonArray() const
 
 void EatItemEvent::OnFireSuccess(WorldState* worldState)
 {
+  if (isIngredient && !opId.empty() &&
+      actor->GetDynamicFields().GetAsJson().value("srpTransactionalConsumeRequired",false) &&
+      FormDesc::FromFormId(baseId,worldState->espmFiles).ToString()=="fb3f:mihailhighfantasypack.esp") {
+    const auto owner = worldState->GetEspm().GetBrowser().LookupById(baseId);
+    const auto ingredient = espm::GetData<espm::INGR>(baseId,worldState);
+    if (!owner.rec || ingredient.effects.empty()) throw std::runtime_error("SRP_IMP_GALL_RECORD_REQUIRED");
+    auto effect = ingredient.effects.front();
+    effect.effectId = owner.ToGlobalId(effect.effectId);
+    if (FormDesc::FromFormId(effect.effectId,worldState->espmFiles).ToString()!="109add:Skyrim.esm" ||
+        effect.duration!=0 || espm::GetData<espm::MGEF>(effect.effectId,worldState).data.effectType!=espm::MGEF::EffectType::CurePoison)
+      throw std::runtime_error("SRP_IMP_GALL_EFFECT_REQUIRED");
+    actor->ApplyMagicEffect(effect,false,false);
+    return;
+  }
   if(isAlchemyItem&&SrpActorModifiers::Managed(*actor)){
     const bool sweet=worldState->HasEspmFile("SweetPie.esp");
     SrpActorModifiers::ApplyFromSource(*actor,baseId,*actor,opId,sweet);

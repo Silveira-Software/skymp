@@ -9,6 +9,7 @@ import { logTrace } from '../../logging';
 import { MsgType } from "../../messages";
 import { SpellCastMsgData, SpellCastMessage } from "../messages/spellCastMessage";
 import { UpdateAnimVariablesMessageMsgData } from "../messages/updateAnimVariablesMessage";
+import { HitService } from './hitService';
 
 export class MagicSyncService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -59,6 +60,19 @@ export class MagicSyncService extends ClientListener {
         const isInterruptCast = false;
 
         const msg: SpellCastMsgData = this.getSpellCastEventData(event, isInterruptCast);
+        // MagicTarget belongs to the caster; its stats object can be the caster
+        // itself, rather than the victim of an aimed spell.
+        const drainTarget = msg.target === msg.caster ? 0 : msg.target;
+        const crosshair = event.caster.getFormID() === 0x14 && !drainTarget ? Game.getCurrentCrosshairRef() : null;
+        if (event.caster.getFormID() === 0x14 && this.controller.lookupListener(HitService).isDrainSpell(msg.spell)) {
+            try { this.sp.writeLogs('srp-original-combat', JSON.stringify({ at: new Date().toISOString(),
+                kind: 'DRAIN_CAST', eventTarget: msg.target, caster: msg.caster,
+                crosshair: crosshair ? crosshair.getFormID() : 0, spell: msg.spell, source: msg.castingSource })); } catch (_) {}
+        }
+        if (msg.isDualCasting && this.controller.lookupListener(HitService).isDrainSpell(msg.spell)) return;
+        if (event.caster.getFormID() === 0x14 && this.controller.lookupListener(HitService).beginDrain(
+            drainTarget || (crosshair ? localIdToRemoteId(crosshair.getFormID(), true) : 0),
+            msg.spell, msg.castingSource)) return;
 
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.SpellCast, data: msg },
@@ -69,6 +83,8 @@ export class MagicSyncService extends ClientListener {
     }
 
     private onSendAnimationEventLeave(ctx: { animEventName: string, animationSucceeded: boolean }) {
+        if (ctx.animationSucceeded && this.isInteraptSpellCastAnim(ctx.animEventName))
+            this.controller.lookupListener(HitService).interruptDrain();
 
         if (!this.lastSpellCastEventMsg || !this.isInteraptSpellCastAnim(ctx.animEventName)) {
             return;

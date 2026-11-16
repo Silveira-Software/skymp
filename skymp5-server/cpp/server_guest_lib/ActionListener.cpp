@@ -1,4 +1,8 @@
 #include "ActionListener.h"
+#include "SrpOriginalImpact.h"
+#include "SrpSupernaturalCombat.h"
+#include "SrpOriginalLifecycle.h"
+#include "SrpTransformationFence.h"
 #include "AnimationSystem.h"
 #include "ConditionsEvaluator.h"
 #include "ConsoleCommands.h"
@@ -76,6 +80,10 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
       return nullptr;
     }
 
+    if (!partOne.worldState.CanSrpNpcHost(*actor, *myActor)) {
+      partOne.SendHostStop(userId, *actor);
+      return nullptr;
+    }
     auto it = partOne.worldState.hosters.find(actor->GetFormId());
     if (it == partOne.worldState.hosters.end() ||
         it->second != myActor->GetFormId()) {
@@ -114,6 +122,12 @@ void ActionListener::OnCustomPacket(const RawMessageData& rawMsgData,
 {
   simdjson::dom::parser parser;
   auto content = parser.parse(msg.contentJsonDump).value();
+  std::string_view type;
+  if (!content["customPacketType"].get(type) && type == "srpOriginalMelee") {
+    SrpOriginalImpact::HandleMeleePacket(partOne, rawMsgData.userId,
+                                         msg.contentJsonDump);
+    return;
+  }
   for (auto& listener : partOne.GetListeners()) {
     listener->OnCustomPacket(rawMsgData.userId, content);
   }
@@ -220,7 +234,7 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
     return;
   }
 
-  const bool isAllowed = actor->IsRaceMenuOpen();
+  const bool isAllowed = actor->IsRaceMenuOpen() && !SrpTransformationFenced(*actor);
 
   if (isAllowed) {
     actor->SetRaceMenuOpen(false);
@@ -240,6 +254,10 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   if (!actor) {
     return;
   }
+
+  // Beast races unequip local armor during the race switch. Keep the canonical
+  // equipment while the restoration envelope exists, including after ACK.
+  if (!SrpTransformationCanChangeCharacter(*actor)) return;
 
   bool isAllowed = true;
   const auto actorFormId = actor->GetFormId();
@@ -469,8 +487,11 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
     }
   }
 
+  const auto targetId = static_cast<uint32_t>(msg.data.target);
   auto targetPtr = std::dynamic_pointer_cast<MpObjectReference>(
-    partOne.worldState.LookupFormById(static_cast<uint32_t>(msg.data.target)));
+    partOne.worldState.IsSrpOriginalControlled(targetId)
+      ? partOne.worldState.LookupFormByIdNoLoad(targetId)
+      : partOne.worldState.LookupFormById(targetId));
   if (!targetPtr)
     return;
 
@@ -528,6 +549,10 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
     return;
   }
 
+  // A client cannot warm a quarantined original by asking to loot it.
+  if (partOne.worldState.IsSrpOriginalControlled(msg.target) &&
+      !partOne.worldState.LookupFormByIdNoLoad(msg.target))
+    return;
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(msg.target);
 
   auto worldState = actor->GetParent();
@@ -682,14 +707,27 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
     return;
   }
 
-  // Preserve vanilla reference loading; dynamic IDs are never loaded by this API.
-  const auto remoteForm = partOne.worldState.LookupFormById(remoteId);
+  // Cold NPCs cannot be materialized by a remote host request. Preserve the
+  // original lazy-loading behavior for non-actor objects used by other systems.
+  auto remoteForm = partOne.worldState.LookupFormByIdNoLoad(remoteId);
+  if (!remoteForm) {
+    const bool live = partOne.worldState.InspectSrpNpcAdmission().value("liveNpcUnloadEnabled", false);
+    if (!live) {
+      remoteForm = partOne.worldState.LookupFormById(remoteId);
+    } else if (remoteId < 0xff000000 && partOne.worldState.HasEspm()) {
+      const auto record = partOne.GetEspm().GetBrowser().LookupById(remoteId);
+      if (record.rec && record.rec->GetType() != "ACHR")
+        remoteForm = partOne.worldState.LookupFormById(remoteId);
+    }
+  }
   auto* remoteRef = remoteForm ? remoteForm->AsObjectReference() : nullptr;
   if (!remoteRef) {
     spdlog::warn("OnHostAttempt - Rejected missing or despawned reference");
     return;
   }
   auto& remote = *remoteRef;
+  if (!partOne.worldState.CanSrpNpcHost(remote, *me))
+    return;
 
   auto user = partOne.serverState.UserByActor(remote.AsActor());
   if (user != Networking::InvalidUserId) {
@@ -820,6 +858,11 @@ void ActionListener::OnChangeValues(const RawMessageData& rawMsgData,
       rawMsgData.userId);
   }
 
+  if (SrpTransformationFenced(*actor)) {
+    actor->NetSendChangeValues(actor->GetActorValues(), std::nullopt);
+    return;
+  }
+
   if (actor->ShouldSkipRestoration()) {
     return;
   }
@@ -833,11 +876,16 @@ void ActionListener::OnChangeValues(const RawMessageData& rawMsgData,
   ChangeValuesMessage outMsg;
   outMsg.idx = actor->GetIdx();
   bool sendOutMsg = false;
+  const bool drainResources=SrpOriginalImpact::OwnsDrainResources(*actor);
 
   auto process = [&](espm::ActorValue av, std::optional<float> inputVal,
                      float currentVal, std::optional<float>& outVal) {
     if (!inputVal.has_value()) {
       return;
+    }
+
+    if(drainResources && (av==espm::ActorValue::Health||av==espm::ActorValue::Magicka)) {
+      outVal=currentVal;sendOutMsg=true;return;
     }
 
     if (MathUtils::IsNearlyEqual(currentVal, *inputVal)) {
@@ -1063,28 +1111,84 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     aggressor = myActor;
     hitData.aggressor = aggressor->GetFormId();
   } else {
-    aggressor = &partOne.worldState.GetFormAt<MpActor>(hitData.aggressor);
     auto it = partOne.worldState.hosters.find(hitData.aggressor);
     if (it == partOne.worldState.hosters.end() ||
         it->second != myActor->GetFormId()) {
       spdlog::error("SendToNeighbours - No permission to send OnHit with "
                     "aggressor actor {:x}",
-                    aggressor->GetFormId());
+                    hitData.aggressor);
       return;
     }
+    // Hosting only exists for an already loaded actor. Resolving a client
+    // supplied aggressor through GetFormAt first can materialize a cold ACHR
+    // before the permission check. Neither admission nor identity is a hit.
+    const auto form=partOne.worldState.LookupFormByIdNoLoad(hitData.aggressor);
+    aggressor=form?form->AsActor():nullptr;
+    if(!aggressor)return;
   }
+
+  // A race switch may reset local AVs/equipment. It must not borrow either the
+  // previous or the next form's combat while its durable handshake is pending.
+  if (SrpTransformationFenced(*aggressor)) return;
+  if (SrpOriginalImpact::IsDrainSpell(partOne.worldState,hitData.source) &&
+      SrpOriginalImpact::OwnsDrainResources(*aggressor)) return;
+  // Claws use the durable CustomPacket action, including on older clients.
+  // A legacy hit must not bypass condition or per-action receipt validation.
+  if (aggressor->GetRaceId() == FormDesc::FromString("cdd84:Skyrim.esm").ToFormId(partOne.worldState.espmFiles)) return;
 
   if (hitData.target == 0x14) {
     hitData.target = myActor->GetFormId();
   }
 
-  MpForm* targetForm = partOne.worldState.LookupFormById(hitData.target).get();
+  // A combat packet cannot bring a deferred dynamic actor into the world.
+  auto& world = partOne.worldState;
+  const auto targetForm = hitData.target >= 0xff000000 ||
+      world.IsSrpOriginalControlled(hitData.target)
+    ? world.LookupFormByIdNoLoad(hitData.target)
+    : world.LookupFormById(hitData.target);
   MpObjectReference* targetRef =
     targetForm ? targetForm->AsObjectReference() : nullptr;
   if (!targetRef) {
     spdlog::error("ActionListener::OnHit - MpObjectReference not found for "
                   "hitData.target {:x}",
                   hitData.target);
+    return;
+  }
+
+  const bool managedAggressor = SrpOriginalLifecycle::Managed(*aggressor);
+  const bool managedTarget =
+    targetRef->AsActor() && SrpOriginalLifecycle::Managed(*targetRef->AsActor());
+  if (managedAggressor || managedTarget) {
+    // A legacy hit cannot distinguish a swing from a retransmission.
+    // Original melee uses the versioned intent handled by OnCustomPacket.
+    return;
+  }
+
+  auto* targetActor = targetRef->AsActor();
+  if (world.RequiresSrpDynamicMeleeProof(*aggressor) ||
+      (targetActor && world.RequiresSrpDynamicMeleeProof(*targetActor))) {
+    if (!targetActor || !partOne.serverState.IsConnected(rawMsgData.userId) ||
+        hitData.projectile || hitData.isPowerAttack || hitData.isSneakAttack ||
+        hitData.isBashAttack)
+      return;
+    if (aggressor != myActor &&
+        (partOne.serverState.UserByActor(aggressor) != Networking::InvalidUserId ||
+         aggressor->GetCellOrWorld() != myActor->GetCellOrWorld() ||
+         !aggressor->GetListeners().count(myActor) ||
+         !world.CanSrpNpcHost(*aggressor, *myActor)))
+      return;
+    try {
+      SrpOriginalImpact::RequireDynamicMeleeContact(
+        world, *aggressor, *targetActor, hitData.source);
+    } catch (const std::exception& error) {
+      spdlog::debug("Reviewed dynamic melee refused {:x} -> {:x}: {}",
+                    aggressor->GetFormId(), targetActor->GetFormId(), error.what());
+      return;
+    }
+    // The legacy handler still owns damage and the NPC's death/loot/XP path.
+    // Its native block check computes this flag from the target's state.
+    hitData.isHitBlocked = false;
+    OnWeaponHit(aggressor, targetRef, hitData, IsUnarmedAttack(hitData.source));
     return;
   }
 
@@ -1182,7 +1286,6 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     caster = myActor;
     spellCastData.caster = caster->GetFormId();
   } else {
-    caster = &partOne.worldState.GetFormAt<MpActor>(spellCastData.caster);
     const auto it = partOne.worldState.hosters.find(spellCastData.caster);
 
     if (it == partOne.worldState.hosters.end() ||
@@ -1190,14 +1293,31 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
       spdlog::error(
         "SendToNeighbours - No permission to send OnSpellCast with "
         "caster actor {:x}",
-        caster->GetFormId());
+        spellCastData.caster);
       return;
     }
+    const auto form = partOne.worldState.LookupFormByIdNoLoad(spellCastData.caster);
+    caster = form ? form->AsActor() : nullptr;
+    if (!caster) return;
   }
 
   if (spellCastData.target == 0x14) {
     spellCastData.target = myActor->GetFormId();
   }
+
+  if (SrpOriginalImpact::IsDrainSpell(partOne.worldState,spellCastData.spell) &&
+      SrpOriginalImpact::OwnsDrainResources(*caster)) return;
+
+  const auto observedTarget =
+    partOne.worldState.LookupFormByIdNoLoad(spellCastData.target);
+  if (SrpTransformationFenced(*caster) ||
+      partOne.worldState.IsSrpOriginalControlled(spellCastData.target) ||
+      SrpOriginalLifecycle::Managed(*caster) ||
+      partOne.worldState.RequiresSrpDynamicMeleeProof(*caster) ||
+      (observedTarget && observedTarget->AsActor() &&
+       (SrpOriginalLifecycle::Managed(*observedTarget->AsActor()) ||
+        partOne.worldState.RequiresSrpDynamicMeleeProof(*observedTarget->AsActor()))))
+    return;
 
   if (caster->IsDead()) {
     spdlog::info(fmt::format("{:x} actor is dead and can't spell cast. "
@@ -1231,7 +1351,9 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   caster->SendPapyrusEvent("OnSpellCast", args.data(), args.size());
 
   const auto targetRef = std::dynamic_pointer_cast<MpObjectReference>(
-    partOne.worldState.LookupFormById(spellCastData.target));
+    spellCastData.target >= 0xff000000
+      ? observedTarget
+      : partOne.worldState.LookupFormById(spellCastData.target));
 
   if (!targetRef) {
     spdlog::info(
@@ -1256,6 +1378,10 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
                                 const HitData& hitData)
 {
+  if (SrpOriginalLifecycle::Managed(*aggressor) ||
+      (targetRef && targetRef->AsActor() &&
+       SrpOriginalLifecycle::Managed(*targetRef->AsActor())))
+    return;
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
 
   auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
@@ -1295,6 +1421,10 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
                                  MpObjectReference* targetRef, HitData hitData,
                                  [[maybe_unused]] bool isUnarmed)
 {
+  if (SrpOriginalLifecycle::Managed(*aggressor) ||
+      (targetRef && targetRef->AsActor() &&
+       SrpOriginalLifecycle::Managed(*targetRef->AsActor())))
+    return;
   const auto currentHitTime = std::chrono::steady_clock::now();
 
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);

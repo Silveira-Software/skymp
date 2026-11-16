@@ -1,0 +1,38 @@
+{
+  "status": "PASS",
+  "gate": "CURRENT_MOB_DESPAWN_MUST_NOT_EXHAUST_NEW_ADMISSION",
+  "actualExistingGameModule": true,
+  "deletionDurablySaved": true,
+  "loadedAfterDespawn": [
+    4278190080,
+    4278190083
+  ],
+  "admissionAfterDespawn": {
+    "authority": "NATIVE_LOADED_NPC_ADMISSION_NOT_COMBAT",
+    "coldDynamicStorageVersion": 1,
+    "deferredDynamicNpcs": 0,
+    "durableNpcRetirementVersion": 1,
+    "enabled": true,
+    "fauna": 0,
+    "initializationFailed": false,
+    "limits": {
+      "fauna": 2,
+      "other": 2,
+      "perRegion": 2,
+      "total": 3
+    },
+    "other": 0,
+    "regions": {},
+    "reservedNpcTombstones": 2,
+    "retiringNpcs": 0,
+    "schemaVersion": 1,
+    "total": 0
+  },
+  "replacement": 4278190083,
+  "error": null,
+  "productionWritten": false,
+  "realSkyrim": false,
+  "nativeSha256": "aaf156a6ee7432c47dc9ec42f35fabf21c5f4867c3744df3e86f9989612676d5",
+  "remoteEvidence": "/opt/skymp/candidates/r38-4-operation-20261029/despawn-capacity-1793322224363276263",
+  "exitCode": 0
+}

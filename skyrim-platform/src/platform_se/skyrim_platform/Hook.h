@@ -1,4 +1,5 @@
 #pragma once
+#include <mutex>
 
 class Handler;
 struct HandlerInfoPerThread;
@@ -38,6 +39,8 @@ private:
   const std::string eventNameVariableName;
   const std::optional<std::string> succeededVariableName;
   std::set<DWORD> inProgressThreads;
+  // Protect game-thread Papyrus filter reads against JS registration changes.
+  std::mutex handlersMutex;
   std::map<uint32_t, std::shared_ptr<Handler>> handlers;
   uint32_t hCounter = 0;
   std::atomic<int> addRemoveBlocker = 0;

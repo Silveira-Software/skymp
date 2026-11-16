@@ -1,0 +1,9 @@
+# R48 werewolf claws candidate
+
+The real client TESHitEvent producer recognizes null/Unarmed source for the original WerewolfBeastRace after AttackStart and the R46 handshake. CustomPacket identifies the power, but the server owns condition, transformation, reserve, reach, formula, collision, host, identity and rate. No artificial weapon. The existing original-impact ledger and native death pipeline remain the only damage writer. A shared swing nonce namespace prevents replay across human/werewolf forms. Legacy hits cannot bypass the claw path.
+
+`private.srpSupernaturalCombatV1` is a saved, checksummed canonical projection, bound to the profile/character and expiring after 90 seconds. The Game coordinator refreshes it on its existing pulse. It requires explicit experimental admission; zero reserve, unconfirmed transformation, disabled capability and expired state deny new damage. Durable target receipts are reconciled independently of new power admission once the transformation fence is released. Original XP/loot quarantine remains unchanged.
+
+Tests: `[srp-r48-claws]`, plus `[Hit],[PartOne],[srp-original-impact],[srp-dynamic-melee]`. Parameterized real TES5 damage and SIGKILL cases reuse the R46 fixtures. The hidden `[srp-r48-seed]` exports a disposable world for the real addon + Game consumers + API/Mongo test. Mock-client receive() consumes actual server packets through the existing decoder; it does not mint session tokens. See Game PR 66, `ops/public-regression-recovery-20261104/evidence/r48/claws.json` for hashes and integrated results.
+
+No installed binary changes, public deployment, CDN publishing or real Skyrim acceptance. Collision meshes and engine observations are synthetic. Full binary rollback remains blocked pending compatibility evidence. Geladao/Elohim visual acceptance is deferred by the user.
