@@ -39,6 +39,7 @@
 #include <save_storages/ISaveStorage.h>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 std::pair<int16_t, int16_t> ColdGridPos(const NiPoint3& pos)
@@ -689,10 +690,55 @@ bool SrpDynamicSnapshotComplete(
     return false;
   if (!audit.contains("blockers") || !audit.at("blockers").is_array())
     return false;
-  if (config.value("physicalBaselineVerified", false) &&
-      (!audit.contains("untrackedPhysics") || !audit.at("untrackedPhysics").is_array() ||
-       !audit.at("untrackedPhysics").empty()))
-    return false;
+  const auto originalPose = [&](uint32_t id) -> const MpObjectReference* {
+    const auto found = forms.find(id);
+    if (found == forms.end() || !found->second) return nullptr;
+    const auto* ref = found->second->AsObjectReference();
+    if (!ref || ref->AsActor() || ref->GetCellOrWorld().ToFormId(world.espmFiles) != worldOrCell)
+      return nullptr;
+    const auto desc = FormDesc::FromFormId(id, world.espmFiles).ToString();
+    const auto row = std::find_if(scene.References().begin(), scene.References().end(),
+      [&](const auto& r) { return r.reference == desc && r.worldOrCell == worldOrCell; });
+    if (row == scene.References().end() ||
+        row->base != FormDesc::FromFormId(ref->GetBaseId(), world.espmFiles).ToString())
+      return nullptr;
+    const auto lookup = world.GetEspm().GetBrowser().LookupById(id);
+    if (!lookup.rec || lookup.rec->GetType() != "REFR") return nullptr;
+    const auto data = reinterpret_cast<const espm::REFR*>(lookup.rec)->GetData(world.GetEspmCache());
+    if (!data.loc || lookup.ToGlobalId(data.baseId) != ref->GetBaseId()) return nullptr;
+    const auto sourceWorld = lookup.ToGlobalId(espm::GetWorldOrCell(world.GetEspm().GetBrowser(), lookup.rec));
+    if (sourceWorld != worldOrCell) return nullptr;
+    const auto pos = LocationalDataUtils::GetPos(data.loc), rot = LocationalDataUtils::GetRot(data.loc);
+    for (size_t axis = 0; axis < 3; ++axis)
+      if (!std::isfinite(ref->GetPos()[axis]) || !std::isfinite(ref->GetAngle()[axis]) ||
+          !std::isfinite(pos[axis]) || !std::isfinite(rot[axis]) ||
+          std::abs(ref->GetPos()[axis] - pos[axis]) > .001f ||
+          std::abs(ref->GetAngle()[axis] - rot[axis]) > .0001f)
+        return nullptr;
+    return ref;
+  };
+  if (config.value("physicalBaselineVerified", false)) {
+    if (!audit.contains("untrackedPhysics") || !audit.at("untrackedPhysics").is_array()) return false;
+    const auto& untracked = audit.at("untrackedPhysics");
+    const bool allowInactive = config.contains("allowDurableInactiveOriginalBodies") &&
+      config.at("allowDurableInactiveOriginalBodies").is_boolean() &&
+      config.at("allowDurableInactiveOriginalBodies").get<bool>();
+    if (!untracked.empty() && !allowInactive) return false;
+    std::unordered_set<uint32_t> seen;
+    for (const auto& value : untracked) {
+      if (!value.is_number_unsigned() && !value.is_number_integer()) return false;
+      const auto number = value.get<int64_t>();
+      if (number <= 0 || number >= 0xff000000) return false;
+      const auto id = static_cast<uint32_t>(number);
+      if (!seen.insert(id).second) return false;
+      const auto* ref = originalPose(id);
+      const auto generation = world.GetChangeFormGeneration(id);
+      // Missing/cold/dirty references are not evidence of an absent body.
+      // Keep the original geometry as an outer blocker even when disabled.
+      if (!ref || !ref->IsDisabled() || ref->IsDeleted() || generation == 0 ||
+          !world.IsChangeFormSaved(id, generation)) return false;
+    }
+  }
   for (const auto& blocker : audit.at("blockers")) {
     if (!blocker.is_number_unsigned() && !blocker.is_number_integer())
       return false;
@@ -707,18 +753,7 @@ bool SrpDynamicSnapshotComplete(
       // only while its server transform still equals its original plugin pose.
       // Changed/moved objects and legacy point/triangle scenes remain unknown.
       if(!config.value("physicalBaselineVerified",false))return false;
-      const auto* ref=found->second->AsObjectReference();
-      if(!ref||ref->AsActor()||ref->GetCellOrWorld().ToFormId(world.espmFiles)!=worldOrCell)return false;
-      const auto desc=FormDesc::FromFormId(static_cast<uint32_t>(id),world.espmFiles).ToString();
-      const auto row=std::find_if(scene.References().begin(),scene.References().end(),[&](const auto& r){return r.reference==desc&&r.worldOrCell==worldOrCell;});
-      if(row==scene.References().end()||row->base!=FormDesc::FromFormId(ref->GetBaseId(),world.espmFiles).ToString())return false;
-      const auto lookup=world.GetEspm().GetBrowser().LookupById(static_cast<uint32_t>(id));
-      if(!lookup.rec||lookup.rec->GetType()!="REFR")return false;
-      const auto data=reinterpret_cast<const espm::REFR*>(lookup.rec)->GetData(world.GetEspmCache());
-      if(!data.loc)return false;
-      const auto originalPos=LocationalDataUtils::GetPos(data.loc),originalRot=LocationalDataUtils::GetRot(data.loc);
-      for(size_t axis=0;axis<3;++axis)
-        if(std::abs(ref->GetPos()[axis]-originalPos[axis])>.001f||std::abs(ref->GetAngle()[axis]-originalRot[axis])>.0001f)return false;
+      if(!originalPose(static_cast<uint32_t>(id)))return false;
     }
   }
   // Newly dropped/spawned non-actor bodies are absent from the plugin audit.

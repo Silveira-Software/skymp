@@ -80,7 +80,7 @@ std::shared_ptr<FileDatabase> AttachStorage(
   return database;
 }
 
-void WaitForSaved(PartOne& w, MpActor& actor)
+void WaitForSaved(PartOne& w, MpObjectReference& actor)
 {
   const auto g = w.worldState.GetChangeFormGeneration(actor.GetFormId());
   for (int i = 0; i < 2200 && !w.worldState.IsChangeFormSaved(actor.GetFormId(), g); ++i) {
@@ -141,11 +141,24 @@ nlohmann::json ActorShape(const std::string& baseDesc, const std::string& raceDe
           {"triangles", {{0, 1, 2}, {0, 2, 3}}}};
 }
 
+nlohmann::json SyntheticReferenceBinding(const MpObjectReference& ref, WorldState& world)
+{
+  const auto desc = [&](uint32_t id) { return FormDesc::FromFormId(id, world.espmFiles).ToString(); };
+  const auto p = ref.GetPos();
+  return {{"worldOrCell", ref.GetCellOrWorld().ToFormId(world.espmFiles)},
+    {"reference", desc(ref.GetFormId())}, {"base", desc(ref.GetBaseId())},
+    {"asset", "cow-proxy.nif"}, {"representation", "havok-triangles"},
+    {"worldTransform", {1,0,0,p.x, 0,1,0,p.y, 0,0,1,p.z}},
+    {"referenceTransform", {1,0,0,p.x, 0,1,0,p.y, 0,0,1,p.z}},
+    {"vertices", {{0,0,0},{1,0,0},{0,1,0}}}, {"triangles", {{0,1,2}}}};
+}
+
 std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
   uint32_t cellId, const std::string& baseDesc, const std::string& raceDesc,
   const NiPoint3& center, const std::string& attackerBase,
   const std::string& attackerRace, bool controllerEnvelope = false,
-  bool wall = false, double wallDistance = 25., double wallPadding = 0.)
+  bool wall = false, double wallDistance = 25., double wallPadding = 0.,
+  const nlohmann::json& extraGeometry = nlohmann::json::array())
 {
   const std::string dummyHash(64, 'a');
   // The audited coverage box must actually contain the real fixture position.
@@ -193,6 +206,7 @@ std::shared_ptr<const SrpCollision::Scene> CreateSyntheticScene(
       {"triangles", {{0, 1, 2}, {0, 2, 3}}}
     });
   }
+  for (const auto& row : extraGeometry) doc["geometry"].push_back(row);
   return SrpCollision::Scene::Load(doc, doc.at("bindings"), SrpCollision::Scene::Digest(doc));
 }
 
@@ -1349,6 +1363,151 @@ TEST_CASE("Impact refuses a dynamic snapshot the audit does not cover", "[srp-or
     SrpOriginalImpact::Begin(w, testUserId, cowId, "req-live-blocker-1"),
     "SRP_IMPACT_SERVER_FRAME_UNAVAILABLE"
   );
+}
+
+TEST_CASE("Only durable inactive original bodies can leave the untracked live set",
+          "[srp-r49-inactive-physics]")
+{
+  auto& server = GetPartOne();
+  AttachStorage(server);
+  auto& cow = SetupCow(server);
+  auto& player = SetupPlayer(server, cow);
+  Isolate(server, cow, player);
+  auto& world = server.worldState;
+  // Original container in the cow's original cell. Geometry below is a
+  // unit-only reference binding, not a claim about this barrel's real mesh.
+  constexpr uint32_t bodyId = 0x4cc2d;
+  auto& body = world.GetFormAt<MpObjectReference>(bodyId);
+  const auto before = body.GetChangeForm();
+  struct Restore {
+    WorldState& world;
+    MpObjectReference& body;
+    MpChangeForm before;
+    ~Restore() { world.InstallSrpCollisionScene(nullptr); body.ApplyChangeForm(before); }
+  } restore{world, body, before};
+  const auto cell = cow.GetCellOrWorld().ToFormId(world.espmFiles);
+  REQUIRE(body.GetCellOrWorld() == cow.GetCellOrWorld());
+  const auto desc = [&](uint32_t id) { return FormDesc::FromFormId(id, world.espmFiles).ToString(); };
+  const auto pos = body.GetPos();
+  const auto rot = body.GetAngle();
+  auto binding = SyntheticReferenceBinding(body, world);
+  auto audit = AuditConfig(cell, true, {bodyId});
+  audit["physicalBaselineVerified"] = true;
+  audit["allowDurableInactiveOriginalBodies"] = true;
+  audit["dynamicAudit"]["untrackedPhysics"] = nlohmann::json::array({bodyId});
+  const auto install = [&](const nlohmann::json& rows, const nlohmann::json& config) {
+    auto scene = CreateSyntheticScene(cell, desc(cow.GetBaseId()), desc(cow.GetRaceId()),
+      cow.GetPos(), desc(player.GetBaseId()), desc(player.GetRaceId()), false, false, 25, 0, rows);
+    world.InstallSrpCollisionScene(scene, config);
+    return scene;
+  };
+  const auto rows = nlohmann::json::array({binding});
+  const auto scene = install(rows, audit);
+  const auto frame = [&] { return world.CaptureSrpOriginalImpactFrame(player, cow); };
+  body.Enable();
+  REQUIRE_FALSE(frame());
+  body.Disable();
+  REQUIRE(world.GetChangeFormGeneration(bodyId) > 0);
+  REQUIRE_FALSE(frame());
+  WaitForSaved(server, body);
+  if (std::getenv("SRP_R49_EXPECT_UNTRACKED_INACTIVE_REFUSAL")) {
+    // The old native rejects a correctly saved disabled original body too.
+    REQUIRE_FALSE(frame());
+    return;
+  }
+  REQUIRE(frame());
+  REQUIRE(frame()->scene == scene);
+  REQUIRE(frame()->dynamics.complete);
+  REQUIRE(scene->References().size() == 1); // Geometry is retained, never erased.
+
+  auto invalid = audit;
+  invalid.erase("allowDurableInactiveOriginalBodies");
+  install(rows, invalid); REQUIRE_FALSE(frame());
+  invalid["allowDurableInactiveOriginalBodies"] = false;
+  install(rows, invalid); REQUIRE_FALSE(frame());
+  invalid = audit;
+  invalid["dynamicAudit"]["untrackedPhysics"] = nlohmann::json::array({bodyId, bodyId});
+  install(rows, invalid); REQUIRE_FALSE(frame());
+  for (const auto& id : nlohmann::json::array({0, -1, 1.5, 0x100000000ULL, cowId, 0x7546f})) {
+    invalid = audit;
+    invalid["dynamicAudit"]["untrackedPhysics"] = nlohmann::json::array({id});
+    install(rows, invalid); REQUIRE_FALSE(frame());
+  }
+  invalid = audit;
+  invalid["dynamicAudit"].erase("untrackedPhysics");
+  install(rows, invalid); REQUIRE_FALSE(frame());
+  install(nlohmann::json::array(), audit); REQUIRE_FALSE(frame());
+  auto wrong = binding;
+  wrong["base"] = desc(cow.GetBaseId());
+  install(nlohmann::json::array({wrong}), audit); REQUIRE_FALSE(frame());
+  install(rows, audit); REQUIRE(frame());
+
+  body.SetPropertyValueDump("private.r49InactiveUnit", "1", false, false);
+  REQUIRE_FALSE(frame());
+  WaitForSaved(server, body); REQUIRE(frame());
+  body.Enable(); REQUIRE_FALSE(frame());
+  WaitForSaved(server, body); REQUIRE_FALSE(frame());
+  body.Disable(); WaitForSaved(server, body); REQUIRE(frame());
+  auto moved = pos; moved.x += 1;
+  body.SetPos(moved); REQUIRE_FALSE(frame());
+  WaitForSaved(server, body); REQUIRE_FALSE(frame());
+  body.SetPos(pos); WaitForSaved(server, body); REQUIRE(frame());
+  auto turned = rot; turned.z += 1;
+  body.SetAngle(turned); REQUIRE_FALSE(frame());
+  body.SetAngle(rot); WaitForSaved(server, body); REQUIRE(frame());
+  body.SetCellOrWorld(FormDesc::Tamriel()); REQUIRE_FALSE(frame());
+  body.SetCellOrWorld(cow.GetCellOrWorld()); WaitForSaved(server, body); REQUIRE(frame());
+}
+
+TEST_CASE("Cold disabled original bodies need a new durable acknowledgment",
+          "[srp-r49-inactive-physics][srp-r49-inactive-cold]")
+{
+  constexpr uint32_t bodyId = 0x4cc2d;
+  auto& first = GetPartOne();
+  AttachStorage(first, std::filesystem::temp_directory_path() /
+    ("r49-inactive-source-" + std::to_string(getpid())));
+  auto& source = first.worldState.GetFormAt<MpObjectReference>(bodyId);
+  // Use the public inventory writer to materialize the base container before
+  // its saved snapshot is loaded into the second world.
+  source.AddItem(0xf, 1);
+  source.SetPropertyValueDump("private.r49InactiveUnit", "1", false, false);
+  source.Disable();
+  WaitForSaved(first, source);
+  const auto saved = source.GetChangeForm();
+  REQUIRE(saved.isDisabled);
+
+  auto& resumed = GetPartOne();
+  AttachStorage(resumed, std::filesystem::temp_directory_path() /
+    ("r49-inactive-resumed-" + std::to_string(getpid())));
+  auto& world = resumed.worldState;
+  world.LoadChangeForm(saved, FormCallbacks::DoNothing());
+  auto& cold = world.GetFormAt<MpObjectReference>(bodyId);
+  REQUIRE(cold.IsDisabled());
+  REQUIRE(world.GetChangeFormGeneration(bodyId) == 0);
+  auto& cow = SetupCow(resumed);
+  auto& player = SetupPlayer(resumed, cow);
+  Isolate(resumed, cow, player);
+  REQUIRE(world.GetChangeFormGeneration(bodyId) == 0);
+  const auto cell = cow.GetCellOrWorld().ToFormId(world.espmFiles);
+  const auto desc = [&](uint32_t id) { return FormDesc::FromFormId(id, world.espmFiles).ToString(); };
+  auto scene = CreateSyntheticScene(cell, desc(cow.GetBaseId()), desc(cow.GetRaceId()), cow.GetPos(),
+    desc(player.GetBaseId()), desc(player.GetRaceId()), false, false, 25, 0,
+    nlohmann::json::array({SyntheticReferenceBinding(cold, world)}));
+  auto audit = AuditConfig(cell, true, {bodyId});
+  audit["physicalBaselineVerified"] = true;
+  audit["allowDurableInactiveOriginalBodies"] = true;
+  audit["dynamicAudit"]["untrackedPhysics"] = nlohmann::json::array({bodyId});
+  world.InstallSrpCollisionScene(scene, audit);
+  const auto frame = [&] { return world.CaptureSrpOriginalImpactFrame(player, cow); };
+  REQUIRE_FALSE(frame());
+  // Reassert the SAME metadata through the existing writer; generation zero
+  // is never treated as an ACK just because the stored disabled flag is true.
+  cold.SetPropertyValueDump("private.r49InactiveUnit", "1", false, false);
+  REQUIRE(world.GetChangeFormGeneration(bodyId) > 0);
+  REQUIRE_FALSE(frame());
+  WaitForSaved(resumed, cold);
+  if (std::getenv("SRP_R49_EXPECT_UNTRACKED_INACTIVE_REFUSAL")) REQUIRE_FALSE(frame());
+  else REQUIRE(frame());
 }
 
 TEST_CASE("Original impact binds third actor envelopes and refuses stale or incomplete LOS",
