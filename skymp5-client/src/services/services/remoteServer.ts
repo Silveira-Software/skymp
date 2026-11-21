@@ -345,6 +345,10 @@ export class RemoteServer extends ClientListener {
       return;
     }
 
+    // Doors retain their full FormView path. Apply their explicit native disabled
+    // property through the same original-reference projection used above.
+    this.applyStaticReferenceDisabled(msg.refrId, msg.props?.['isDisabled'] !== undefined
+      ? msg.props['isDisabled'] : msg.props?.['disabled']);
     logTrace(this, "Create actor");
 
     const i = this.getIdManager().allocateIdFor(msg.idx);
@@ -730,6 +734,11 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
     const msgData = this.extractUpdatePropertyMessageData(msg);
 
+    if (!this.skipFormViewCreation(msg) &&
+        (msg.propName === 'isDisabled' || msg.propName === 'disabled')) {
+      this.applyStaticReferenceDisabled(msg.refrId, msgData);
+    }
+
     if (this.skipFormViewCreation(msg)) {
       const refrId = msg.refrId;
       once('update', () => {
@@ -919,6 +928,14 @@ export class RemoteServer extends ClientListener {
     // Optimization added in #1186, however it doesn't work for doors for some reason
     return msg.refrId && msg.refrId < 0xff000000 && msg.baseRecordType !== 'DOOR';
   };
+
+  private applyStaticReferenceDisabled(refrId: number | undefined, disabled: unknown): void {
+    if (typeof refrId !== 'number' || !Number.isSafeInteger(refrId) ||
+        refrId <= 0 || refrId >= 0xff000000 || typeof disabled !== 'boolean') return;
+    this.onceLoad(refrId, (refr: ObjectReference) => {
+      if (refr && !Actor.from(refr)) ModelApplyUtils.applyModelIsDisabled(refr, disabled);
+    });
+  }
 
   private extractUpdatePropertyMessageData(updatePropertyMessage: UpdatePropertyMessage) {
     let msgData: unknown = updatePropertyMessage.data;

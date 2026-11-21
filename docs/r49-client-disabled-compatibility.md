@@ -17,3 +17,9 @@ Manifest: `8451f5287b4355ef1241379e4fc6c1fba8adf71f0114095afd2fccaab5f0b189`.
 The 37 other packages and the platform DLLs are preserved. Actual engine
 projection of the three disabled Bthardamz objects is still pending. This
 change does not establish human feeding or authorize PUBLIC publication.
+
+The subsequent human entry confirmed disabled state for the chest and book,
+but the door retained its enabled state on its separate full FormView path.
+R12 addresses that path; see r49-client-door-projection.md. The earlier six
+tests covered the static optimization and did not exercise the real door
+predicate. Three-object engine projection has not passed yet.
