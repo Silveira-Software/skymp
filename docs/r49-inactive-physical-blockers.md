@@ -12,8 +12,9 @@ Missing, cold, dirty, active, moved or mismatched references still refuse the
 frame. Duplicate/invalid IDs and incomplete audits refuse too. The original
 collision geometry remains in the scene as a conservative blocker.
 
-The existing `isDisabled` binding and built-in client `disabled` projection
-are reused. No new setter or client command is introduced. A cold load cannot
+The existing `isDisabled` binding and built-in client projection are reused.
+R11 corrects the client property spelling (see r49-client-disabled-compatibility.md).
+No new setter or client command is introduced. A cold load cannot
 reuse generation zero as an ACK: reasserting the same fixture metadata through
 the existing writer must produce a new confirmed generation. The client must
 still be observed disabled before requesting a human attack in the LAB.

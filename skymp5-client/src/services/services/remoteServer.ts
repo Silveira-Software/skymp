@@ -300,7 +300,8 @@ export class RemoteServer extends ClientListener {
 
             ModelApplyUtils.applyModelNodeTextureSet(refr, msg.props.setNodeTextureSet);
 
-            ModelApplyUtils.applyModelIsDisabled(refr, !!msg.props['disabled']);
+            ModelApplyUtils.applyModelIsDisabled(refr, !!(msg.props['isDisabled'] !== undefined
+              ? msg.props['isDisabled'] : msg.props['disabled']));
 
             // TODO: move to a separate module
             const animation = msg.props.lastAnimation;
@@ -743,7 +744,7 @@ export class RemoteServer extends ClientListener {
           ModelApplyUtils.applyModelIsOpen(refr, !!msgData);
         } else if (msg.propName === 'isHarvested') {
           ModelApplyUtils.applyModelIsHarvested(refr, !!msgData);
-        } else if (msg.propName === 'disabled') {
+        } else if (msg.propName === 'isDisabled' || msg.propName === 'disabled') {
           ModelApplyUtils.applyModelIsDisabled(refr, !!msgData);
         }
       });
