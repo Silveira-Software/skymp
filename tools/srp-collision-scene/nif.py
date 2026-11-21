@@ -46,6 +46,7 @@ class Nif:
     def __init__(self, data):
         self.types = []
         self.blocks = []  # (type_name, offset, size)
+        self.strings = []
         self._parse(data)
 
     def _parse(self, d):
@@ -90,7 +91,8 @@ class Nif:
         num_strings, o = _u32(d, o)
         max_string_length, o = _u32(d, o)
         for _ in range(num_strings):
-            _, o = _sized_string(d, o)
+            value, o = _sized_string(d, o)
+            self.strings.append(value)
         num_groups, o = _u32(d, o)
         for _ in range(num_groups):
             _, o = _u32(d, o)

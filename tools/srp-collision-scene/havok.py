@@ -94,6 +94,118 @@ def capsule(raw):
     return a, b, radius
 
 
+def _shader_only_manager(doc, blocks, index, target):
+    """Recognize a complete lighting-float sequence, never a transform sequence.
+
+    Skyrim BS100 layouts are pinned to niftools/nifxml 292bb9403cbf4052c58d66e8.
+    An unbound multi-target controller is scaffolding for the manager; its
+    presence alone does not animate the Havok node. Unsupported graphs retain
+    the ordinary spatial-animation checks below.
+    """
+    if doc.bsver != 100 or any(name == 'BSBehaviorGraphExtraData' for name, _ in blocks):
+        return False
+
+    def linked(i, kind):
+        if not 0 <= i < len(blocks) or blocks[i][0] != kind:
+            raise nif.NifError('shader controller link/type')
+        return blocks[i][1]
+
+    def time(raw):
+        following, _, frequency, phase, start, stop, owner = struct.unpack_from('<IH4fI', raw)
+        if not all(map(math.isfinite, (frequency, phase, start, stop))):
+            raise nif.NifError('shader controller time')
+        return following, owner
+
+    def string(i, expected=None, optional=False):
+        if optional and i == 0xffffffff:
+            return
+        if not 0 <= i < len(doc.strings) or not doc.strings[i]:
+            raise nif.NifError('shader controlled block string')
+        if expected is not None and doc.strings[i] != expected:
+            raise nif.NifError('shader controlled block class')
+
+    def float_data(raw):
+        count = struct.unpack_from('<I', raw)[0]
+        if count == 0:
+            return len(raw) == 4
+        interpolation = struct.unpack_from('<I', raw, 4)[0]
+        width = {1: 2, 2: 4, 3: 5}.get(interpolation)
+        if width is None or count > 4096 or len(raw) != 8 + count * width * 4:
+            return False
+        previous = -math.inf
+        for at in range(8, len(raw), width * 4):
+            values = struct.unpack_from('<%df' % width, raw, at)
+            if not all(map(math.isfinite, values)) or values[0] < previous:
+                return False
+            previous = values[0]
+        return True
+
+    try:
+        manager = linked(index, 'NiControllerManager')
+        following, owner = time(manager)
+        if owner != target or manager[26] != 0:
+            return False
+        count = struct.unpack_from('<I', manager, 27)[0]
+        if not 1 <= count <= 256 or len(manager) != 35 + count * 4:
+            return False
+        sequences = struct.unpack_from('<%dI' % count, manager, 31)
+        palette = struct.unpack_from('<I', manager, 31 + count * 4)[0]
+        if palette != 0xffffffff:
+            linked(palette, 'NiDefaultAVObjectPalette')
+        if following != 0xffffffff:
+            multi = linked(following, 'NiMultiTargetTransformController')
+            next_controller, owner = time(multi)
+            targets = struct.unpack_from('<H', multi, 26)[0]
+            if (next_controller != 0xffffffff or owner != target or
+                    len(multi) != 28 + targets * 4 or
+                    any(i != 0xffffffff for i in struct.unpack_from('<%dI' % targets, multi, 28))):
+                return False
+        for sequence in sequences:
+            raw = linked(sequence, 'NiControllerSequence')
+            name, controls, _ = struct.unpack_from('<III', raw)
+            string(name)
+            if not 1 <= controls <= 1024 or len(raw) != 46 + controls * 29:
+                return False
+            at = 12
+            for _ in range(controls):
+                interpolator, controller, _, node_name, prop_name, type_name, ctl_id, interp_id = \
+                    struct.unpack_from('<IIB5I', raw, at)
+                at += 29
+                string(node_name)
+                string(prop_name, 'BSLightingShaderProperty')
+                string(type_name, 'BSLightingShaderPropertyFloatController')
+                string(ctl_id, optional=True)
+                string(interp_id, optional=True)
+                value = linked(interpolator, 'NiFloatInterpolator')
+                if len(value) != 8 or not math.isfinite(struct.unpack_from('<f', value)[0]):
+                    return False
+                if not float_data(linked(struct.unpack_from('<I', value, 4)[0], 'NiFloatData')):
+                    return False
+                ctl = linked(controller, 'BSLightingShaderPropertyFloatController')
+                next_controller, shader = time(ctl)
+                if len(ctl) != 34 or next_controller != 0xffffffff:
+                    return False
+                linked(shader, 'BSLightingShaderProperty')
+                blend, variable = struct.unpack_from('<II', ctl, 26)
+                # Only the shipped lantern's emissive multiplier is supported.
+                if variable != 11:
+                    return False
+                blend = linked(blend, 'NiBlendFloatInterpolator')
+                if len(blend) != 10 or blend[0] != 1 or not all(map(math.isfinite, struct.unpack_from('<2f', blend, 2))):
+                    return False
+            weight, keys, cycle, frequency, start, stop, owner, accum, notes = \
+                struct.unpack_from('<fII3fIIH', raw, at)
+            if (not all(map(math.isfinite, (weight, frequency, start, stop))) or
+                    weight < 0 or cycle > 2 or start > stop or owner != index or notes != 0):
+                return False
+            string(accum, optional=True)
+            if keys != 0xffffffff:
+                linked(keys, 'NiTextKeyExtraData')
+        return True
+    except (nif.NifError, struct.error, IndexError):
+        return False
+
+
 def read(data):
     doc = nif.Nif(data)
     if doc.bsver not in (83, 100):
@@ -142,7 +254,8 @@ def read(data):
         if i not in doc.roots:
             raise nif.NifError('unrooted physical target')
         return m
-    animated = any(v[2] != 0xffffffff for v in nodes.values())
+    animated = any(v[2] != 0xffffffff and not _shader_only_manager(doc, blocks, v[2], i)
+                   for i, v in nodes.items())
     animation_translation, animation_scale = 0., 0.
     if animated:
         key_data = [raw for name, raw in blocks if name == 'NiTransformData']
