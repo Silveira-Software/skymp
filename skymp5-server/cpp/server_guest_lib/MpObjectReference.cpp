@@ -732,7 +732,11 @@ void MpObjectReference::SetActivationBlocked(bool blocked)
 void MpObjectReference::ForceSubscriptionsUpdate()
 {
   auto worldState = GetParent();
-  if (!worldState || IsDisabled()) {
+  // Original non-actors stay in the grid when disabled (see Disable). Their
+  // saved disabled property must reach a new client after a cold load too.
+  // Actors, dynamic references and deleted disabled originals remain absent.
+  if (!worldState || (IsDisabled() &&
+      (!IsEspmForm() || AsActor() || IsDeleted()))) {
     return;
   }
   auto worldOrCell = GetCellOrWorld().ToFormId(worldState->espmFiles);
