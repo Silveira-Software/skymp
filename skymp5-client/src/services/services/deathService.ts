@@ -29,17 +29,30 @@ export class DeathService extends ClientListener {
   }
 
   private hookDisableKillMoves() {
-    this.sp.hooks.sendAnimationEvent.add(
-      {
-        enter(ctx) {
+    const handler = {
+      enter: (ctx: { selfId: number; animEventName: string }) => {
+        const id = ctx.selfId;
+        let adopted = false;
+        // snapshot only copies lease metadata; never call engine APIs in a hook.
+        const registry = (globalThis as any).__srpStaticActorsV16;
+        if (id > 0 && id < 0xff000000 && registry && typeof registry.snapshot === "function") {
+          const leases = registry.snapshot()?.leases;
+          adopted = Array.isArray(leases) && leases.some((lease: any) =>
+            lease &&
+            lease.originalRef === id && lease.staticFormId === id &&
+            lease.proxyRef === null && lease.state === "ADOPTED_STATIC_ACTOR" &&
+            lease.pending === false && Number.isSafeInteger(lease.generation) && lease.generation > 0);
+        }
+        if (id === this.playerActorId || id >= 0xff000000 || adopted) {
           ctx.animEventName = "";
-        },
-        leave() { },
+        }
       },
-      0xff000000,
-      0xffffffff,
-      "KillMove*"
-    );
+      leave() { },
+    };
+    // Vanilla paired finishers use pa_KillMove* and pa_KillWerewolf*, too.
+    for (const pattern of ["KillMove*", "pa_Kill*"]) {
+      this.sp.hooks.sendAnimationEvent.add(handler, 1, 0xffffffff, pattern);
+    }
   }
 
   private hookDisableStagger() {
