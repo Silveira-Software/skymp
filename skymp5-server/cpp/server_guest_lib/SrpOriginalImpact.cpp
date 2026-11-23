@@ -299,7 +299,10 @@ Weapon NativeWeapon(const MpActor& actor)
     Require(std::isfinite(result.reach) && result.reach>0 && result.reach<=1024,"SRP_IMPACT_REACH_INVALID");
     return result;
   }
-  Require(!equipment.rightSpell && !equipment.leftSpell,"SRP_IMPACT_MELEE_WEAPON_REQUIRED");
+  // Client equipment uses zero for an empty hand; an engaged optional(0)
+  // must have the same meaning as an omitted spell slot.
+  Require(equipment.rightSpell.value_or(0) == 0 && equipment.leftSpell.value_or(0) == 0,
+    "SRP_IMPACT_MELEE_WEAPON_REQUIRED");
   size_t count=0;
   for(const auto& entry:equipment.inv.entries){
     if(entry.GetWorn()==Inventory::Worn::None)continue;

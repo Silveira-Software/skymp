@@ -1215,8 +1215,9 @@ TEST_CASE("Impact fails closed when attacker is turned away or out of melee reac
 }
 
 TEST_CASE("Reviewed dynamic hits require server contact and a current host",
-          "[srp-dynamic-melee][espm]")
+          "[srp-dynamic-melee][srp-r49-empty-spell][espm]")
 {
+  const bool expectEmptySpellRefusal = std::getenv("SRP_R49_EXPECT_EMPTY_SPELL_REFUSAL") != nullptr;
   auto& server = GetPartOne();
   server.SetDamageFormula(std::make_unique<TES5DamageFormula>());
   auto& world = server.worldState;
@@ -1257,7 +1258,16 @@ TEST_CASE("Reviewed dynamic hits require server contact and a current host",
   worn.worn_ = true;
   Equipment equipment;
   equipment.inv.entries.emplace_back(dagger, 1, worn);
-  player.SetEquipment(equipment);
+  // The real client serializes empty spell slots as engaged zero optionals.
+  // Preserve that wire representation instead of testing only omitted fields.
+  auto clientEquipment = equipment.ToJson();
+  clientEquipment["rightSpell"] = 0;
+  clientEquipment["leftSpell"] = 0;
+  player.SetEquipment(Equipment::FromJson(clientEquipment));
+  REQUIRE(player.GetEquipment().rightSpell.has_value());
+  REQUIRE(player.GetEquipment().rightSpell.value() == 0);
+  REQUIRE(player.GetEquipment().leftSpell.has_value());
+  REQUIRE(player.GetEquipment().leftSpell.value() == 0);
   const auto npcHealth = [&] { return npc.GetActorValues().healthPercentage; };
   const auto playerHealth = [&] { return player.GetActorValues().healthPercentage; };
   const auto startNpc = npcHealth(), startPlayer = playerHealth();
@@ -1295,6 +1305,28 @@ TEST_CASE("Reviewed dynamic hits require server contact and a current host",
   hit(0x14, ref, dagger);
   REQUIRE(npcHealth() == startNpc);
   world.InstallSrpCollisionScene(scene(false), AuditConfig(cell, true));
+  for (const auto* hand : {"leftSpell", "rightSpell"}) {
+    auto spellEquipment = clientEquipment;
+    spellEquipment[hand] = 0x12fcd; // real Flames spell, not an empty hand
+    player.SetEquipment(Equipment::FromJson(spellEquipment));
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::RequireDynamicMeleeContact(
+      world, player, npc, dagger), "SRP_IMPACT_MELEE_WEAPON_REQUIRED");
+    hit(0x14, ref, dagger);
+    REQUIRE(npcHealth() == startNpc);
+  }
+  player.SetEquipment(Equipment::FromJson(clientEquipment));
+  if (expectEmptySpellRefusal) {
+    // Reproduce the old native bug with the same client JSON. Keep proving
+    // the existing omitted-field path below, not a changed contact guard.
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::RequireDynamicMeleeContact(
+      world, player, npc, dagger), "SRP_IMPACT_MELEE_WEAPON_REQUIRED");
+    hit(0x14, ref, dagger);
+    REQUIRE(npcHealth() == startNpc);
+    player.SetEquipment(equipment);
+  } else {
+    REQUIRE_NOTHROW(SrpOriginalImpact::RequireDynamicMeleeContact(
+      world, player, npc, dagger));
+  }
   hit(0x14, ref, 0x1f4);
   REQUIRE(npcHealth() == startNpc);
   hit(0x14, ref, dagger);
@@ -1317,6 +1349,59 @@ TEST_CASE("Reviewed dynamic hits require server contact and a current host",
   REQUIRE(server.serverState.UserByActor(&npc) == Networking::InvalidUserId);
   hit(ref, 0x14, 0x1f4);
   REQUIRE(playerHealth() < startPlayer);
+}
+
+TEST_CASE("Original melee treats zero spell slots as empty and still rejects equipped spells",
+          "[srp-original-impact][srp-r49-empty-spell]")
+{
+  const bool expectEmptySpellRefusal = std::getenv("SRP_R49_EXPECT_EMPTY_SPELL_REFUSAL") != nullptr;
+  const auto emptySlots = GENERATE(0, 1, 2, 3);
+  auto& server = GetPartOne();
+  AttachStorage(server);
+  auto& target = SetupCow(server);
+  auto& player = SetupPlayer(server, target);
+  Isolate(server, target, player);
+  auto& world = server.worldState;
+  const auto desc = [&](uint32_t id) {
+    return FormDesc::FromFormId(id, world.espmFiles).ToString();
+  };
+  const auto cell = target.GetCellOrWorld().ToFormId(world.espmFiles);
+  world.InstallSrpCollisionScene(CreateSyntheticScene(cell,
+    desc(target.GetBaseId()), desc(target.GetRaceId()), target.GetPos(),
+    desc(player.GetBaseId()), desc(player.GetRaceId())), AuditConfig(cell, true));
+
+  auto clientEquipment = Equipment{}.ToJson();
+  if (emptySlots & 1) clientEquipment["leftSpell"] = 0;
+  if (emptySlots & 2) clientEquipment["rightSpell"] = 0;
+  player.SetEquipment(Equipment::FromJson(clientEquipment));
+  REQUIRE(player.GetEquipment().leftSpell.has_value() == bool(emptySlots & 1));
+  REQUIRE(player.GetEquipment().rightSpell.has_value() == bool(emptySlots & 2));
+  WaitForSaved(server, player);
+  const auto initialHealth = target.GetActorValues().healthPercentage;
+  for (const auto* hand : {"leftSpell", "rightSpell"}) {
+    auto spellEquipment = clientEquipment;
+    spellEquipment[hand] = 0x12fcd;
+    player.SetEquipment(Equipment::FromJson(spellEquipment));
+    WaitForSaved(server, player);
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(server, testUserId, cowId,
+      std::string("r17-equipped-") + hand), "SRP_IMPACT_MELEE_WEAPON_REQUIRED");
+    REQUIRE(target.GetActorValues().healthPercentage == initialHealth);
+  }
+  player.SetEquipment(Equipment::FromJson(clientEquipment));
+  WaitForSaved(server, player);
+  if (expectEmptySpellRefusal && emptySlots != 0) {
+    REQUIRE_THROWS_WITH(SrpOriginalImpact::Begin(server, testUserId, cowId,
+      "r17-empty-hands"), "SRP_IMPACT_MELEE_WEAPON_REQUIRED");
+    REQUIRE(target.GetActorValues().healthPercentage == initialHealth);
+    return;
+  }
+  const auto issued = SrpOriginalImpact::Begin(server, testUserId, cowId, "r17-empty-hands");
+  REQUIRE(issued.at("state") == "ISSUED");
+  WaitForSaved(server, player);
+  const auto cancelled = SrpOriginalImpact::Cancel(server, testUserId,
+    issued.at("operationId").get<std::string>());
+  REQUIRE(cancelled.at("state") == "CANCELLED");
+  REQUIRE(target.GetActorValues().healthPercentage == initialHealth);
 }
 
 TEST_CASE("Impact refuses a dynamic snapshot the audit does not cover", "[srp-original-impact]")
