@@ -112,7 +112,9 @@ export class MagicSyncService extends ClientListener {
             caster: localIdToRemoteId(e.caster.getFormID(), true),
             // @ts-expect-error (TODO: Remove in 2.10.0)
             target: e.target ? localIdToRemoteId(e.target.getFormID(), true) : 0,
-            spell: e.spell ? e.spell.getFormID() : 0,
+            spell: e.spell ? ((globalThis as any).__srpManagedForms
+                ? (globalThis as any).__srpManagedForms.toServer(e.spell.getFormID())
+                : e.spell.getFormID()) : 0,
             interruptCast: isInterruptCast,
             // @ts-expect-error (TODO: Remove in 2.10.0)
             isDualCasting: e.isDualCasting,
