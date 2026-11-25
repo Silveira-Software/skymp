@@ -1,7 +1,10 @@
 #pragma once
 
+#include <string>
+
 class FlowManager
 {
 public:
-  static void CloseProcess(std::wstring pName);
+  // Only direct helpers owned by this process; never other Skyrim sessions.
+  static void CloseChildProcesses(const std::wstring& processName);
 };

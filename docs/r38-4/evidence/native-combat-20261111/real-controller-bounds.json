@@ -1,0 +1,713 @@
+{
+  "status": "PASS",
+  "scope": "PINNED_ACTOR_CONTROLLER_OUTER_ENVELOPES_ONLY",
+  "manifestActors": 247,
+  "uniqueModels": 39,
+  "checks": [
+    {
+      "model": "actors/character/character assets female/skeleton_female.nif",
+      "sha256": "6da595415742a4bc8eb0cfe062fa32aa9e34da9cbc2567b212ba6b5d7e03121c",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "actors/character/character assets female/skeletonbeast_female.nif",
+      "sha256": "f03fa10317d8445547023aaa526bbe58944cdf183bd9586675e4ab94b3ed13b3",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "actors/character/character assets/skeleton.nif",
+      "sha256": "9ea571d9b210b9b19ae7c3b547028c2fcff4b2c33d66903ce4210c5b284d55d2",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "actors/character/character assets/skeletonbeast.nif",
+      "sha256": "47747660b0fe4543d76114ac3b2a299e290a2355ea273c59cdd23bfa843fadc2",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "actors/dragon/character assets/skeleton.nif",
+      "sha256": "72240d245f34e3a2ecb9a0b29faf4cd8779cefec9689366267fdfd5723ee63dd",
+      "controllerParts": 2,
+      "triangles": 5184,
+      "blockingBounds": {
+        "min": [
+          -321.9077774075868,
+          -532.3822256749869,
+          -172.32077771961687
+        ],
+        "max": [
+          323.60104423942425,
+          381.5380249023438,
+          423.173347299695
+        ]
+      }
+    },
+    {
+      "model": "actors/draugr/character assets/skeletons.nif",
+      "sha256": "c64deaa905a8a5d0a0a0bf768b80a391937fab6030b37643e429cdb060bce5b8",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -24.602765310481193,
+          4.108420144841076,
+          72.18515347061678
+        ],
+        "max": [
+          24.602765310481193,
+          53.31395076580346,
+          144.17214633407073
+        ]
+      }
+    },
+    {
+      "model": "actors/giant/character assets/skeleton.nif",
+      "sha256": "bbbaf86c30ee6eddbd04e46ffba9e847d2278c369e02941a3847b00fec8a4339",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -50.3033993972838,
+          -50.191039396673446,
+          -5e-324
+        ],
+        "max": [
+          49.65089542999864,
+          99.0904633653909,
+          268.96523049548273
+        ]
+      }
+    },
+    {
+      "model": "actors/mammoth/character assets/skeleton.nif",
+      "sha256": "962edacf6daf41017007280e1bcb1b3bd69d532cc96aab3ee973c459d9c613d1",
+      "controllerParts": 1,
+      "triangles": 4032,
+      "blockingBounds": {
+        "min": [
+          -106.94681753091514,
+          -249.3841444349289,
+          -5e-324
+        ],
+        "max": [
+          109.97625614650548,
+          262.6431166293472,
+          359.55695093594494
+        ]
+      }
+    },
+    {
+      "model": "mihail monster and animals/troll/cyrodilic troll/skeletoncyrotroll.nif",
+      "sha256": "67684a979c96b2c6c048ea50ca63beeda7a5f39f6727cfe58ecadd18ddc18b45",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -40.79215407119406,
+          -40.792190669029864,
+          -9.239167751965055e-06
+        ],
+        "max": [
+          40.79215407119406,
+          96.49984248940159,
+          161.5843043217816
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/argonian/homonculus/skeletonhomonculus.nif",
+      "sha256": "41bf43ca76aa28924c13cd24dc0e34f7f8e63060808548fcf42f907cbf92cc14",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/boar/indrik/mounts/skeletonindrikmount.nif",
+      "sha256": "bbe89a6241a727b0a05eb1e5415a0fab5c01e6a7fc85cba5549bc3e5e81b54ca",
+      "controllerParts": 1,
+      "triangles": 1728,
+      "blockingBounds": {
+        "min": [
+          -35.34120916327598,
+          -81.22462817955763,
+          -2.0859017968177796e-05
+        ],
+        "max": [
+          35.34121691251038,
+          132.26774403952064,
+          165.77034955732526
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/boar/indrik/skeletonindrik.nif",
+      "sha256": "1e3ba970c0d84bf894a92ebfd1b75a74ea572e666ac29aaac9cea5e313ab09d9",
+      "controllerParts": 1,
+      "triangles": 1728,
+      "blockingBounds": {
+        "min": [
+          -35.34120916327598,
+          -81.22462817955763,
+          -2.0859017968177796e-05
+        ],
+        "max": [
+          35.34121691251038,
+          132.26774403952064,
+          165.77034955732526
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/draugr/ettin/skeletonettin.nif",
+      "sha256": "8193688351006c955f0a5c16effceb5e65572331dee3b3f78c9e771247be0888",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -22.502975729220555,
+          9.950120206670812,
+          75.13147626279498
+        ],
+        "max": [
+          22.50297572921364,
+          54.956087260075286,
+          143.98534687557714
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/draugr/ogre/skeletonogre.nif",
+      "sha256": "c04a85fb804ad9bd17fc75a3807b9764a251585279b70331b50ba9f7479d7bb3",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -22.502975729220555,
+          9.950120206670812,
+          75.13147626279498
+        ],
+        "max": [
+          22.50297572921364,
+          54.956087260075286,
+          143.98534687557714
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/draugr/thri-kreen/skeletonf.nif",
+      "sha256": "f8b3b197dcf64a4210856bee5b62f79363e8ef20a79dd28c2b49ff27a62f5e9a",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -21.660623837024115,
+          10.562872893509871,
+          71.32700495769747
+        ],
+        "max": [
+          21.66062383701721,
+          53.88413723054448,
+          144.89633831882938
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/dwarven centurion/bolgan/skeletonbolgan.nif",
+      "sha256": "c8eb4613e4a70cc456997df9651e65719485d83ee9b8d8b2fd02ebe7c1379280",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -50.3033993972838,
+          -50.191039396673446,
+          -5e-324
+        ],
+        "max": [
+          49.65089542999864,
+          99.0904633653909,
+          268.96523049548273
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/dwarven centurion/old god/skeletonoldgod.nif",
+      "sha256": "2f387499ad533f881de1aa4eac95371a1ff00c4e0e712376e091106d506aa429",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/falmer/imp/skeletonimp.nif",
+      "sha256": "38f44a51a80218f9494dfb7126eebcb50a2fcf96945dbaed173c7bf5107bd1f1",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/flame atronach/nixad/skeletonnixad.nif",
+      "sha256": "1497287fbe6c3ed286385f1982113082c6b9f0e5ed6f6fcdf40134017ba13a99",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -24.632207588124533,
+          -24.632240261421543,
+          -6.869389156003115
+        ],
+        "max": [
+          24.63220758813393,
+          59.24853015034527,
+          144.25694388468995
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/frost atronach/goron/skeletongoron.nif",
+      "sha256": "d7c9ba54b7b00b063f0c6f0f32fcf6a19fdc62b52cee6963016ca6fa91ed1579",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -34.88782010186464,
+          -33.59584859717638,
+          -5e-324
+        ],
+        "max": [
+          33.07909140694887,
+          82.77042189288885,
+          154.58841199118646
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/giant/cyrodiilian minotaur/skeletoncyrominotaur.nif",
+      "sha256": "61e49ee309a64324ce1e54e576b0e6a8c12d698605359dd9b6a6dfcbea03d8c9",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/giant/cyrodiilian minotaur/skeletoncyrominotaurlord.nif",
+      "sha256": "a2d6fe1ef28b1e38ae71f6b93bd28381bf966557d051e7f8a0e4f24148f47e36",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/giant/frost giants overhaul/skeletonfrostgiant.nif",
+      "sha256": "f010901d82912469ed9e7520e7d0774e7addf384f8d687838e539d936db7cc7b",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -50.3033993972838,
+          -50.191039396673446,
+          -5e-324
+        ],
+        "max": [
+          49.65089542999864,
+          99.0904633653909,
+          268.96523049548273
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/giant/giant youngling/skeletongiantyoung.nif",
+      "sha256": "4fbea3812b86fdfa9741afda09874f52f88b629a18e4f4140205af030350391a",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -50.3033993972838,
+          -50.191039396673446,
+          -5e-324
+        ],
+        "max": [
+          49.65089542999864,
+          99.0904633653909,
+          268.96523049548273
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/giant/giantesses/weapon/skeleton.nif",
+      "sha256": "4fbea3812b86fdfa9741afda09874f52f88b629a18e4f4140205af030350391a",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -50.3033993972838,
+          -50.191039396673446,
+          -5e-324
+        ],
+        "max": [
+          49.65089542999864,
+          99.0904633653909,
+          268.96523049548273
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/giant/ice titan/skeletonicetitan.nif",
+      "sha256": "25387045bfa1c62b572c265b25274bc65f7765621526b1092c62e3ff8a4c3c19",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -50.3033993972838,
+          -50.191039396673446,
+          -5e-324
+        ],
+        "max": [
+          49.65089542999864,
+          99.0904633653909,
+          268.96523049548273
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/giant/minotaur/skeletoncyrominotaur.nif",
+      "sha256": "3cd18fc8864978ded88b6bead587a76be0930634320dac8fc5e531c4dff2406b",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/giant/minotaur/skeletoncyrominotaurs.nif",
+      "sha256": "0dc9290497e74078981cb5e4cd38f718e5a58c74a3b48bfd2a1cfab7681a3a0d",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/giant/sea giant/skeletonseagiant.nif",
+      "sha256": "4fbea3812b86fdfa9741afda09874f52f88b629a18e4f4140205af030350391a",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -50.3033993972838,
+          -50.191039396673446,
+          -5e-324
+        ],
+        "max": [
+          49.65089542999864,
+          99.0904633653909,
+          268.96523049548273
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/human/goblins/skeletongoblin.nif",
+      "sha256": "db2593cadc1f88a317f0becd808c5bcbbb31c11c9799184d66b57467bd70f9e2",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/human/riekr/skeletongoblin.nif",
+      "sha256": "db2593cadc1f88a317f0becd808c5bcbbb31c11c9799184d66b57467bd70f9e2",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -19.999997718408707,
+          -2.999997718408704,
+          9.999999999999998
+        ],
+        "max": [
+          19.999997718408707,
+          36.999997718408714,
+          125.99999010421337
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/ice wraith/fire wyrm/skeleton.nif",
+      "sha256": "6738cd590ded254fbf19a7218a7f42c20b3bf709e5a1a01385f29eac78d3dc48",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -28.096498549319804,
+          -28.09652216093325,
+          -4.605375791077852e-06
+        ],
+        "max": [
+          28.096498549319804,
+          28.096498549319804,
+          144.0498483229285
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/ice wraith/magic anomaly tweaks/skeleton.nif",
+      "sha256": "6738cd590ded254fbf19a7218a7f42c20b3bf709e5a1a01385f29eac78d3dc48",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -28.096498549319804,
+          -28.09652216093325,
+          -4.605375791077852e-06
+        ],
+        "max": [
+          28.096498549319804,
+          28.096498549319804,
+          144.0498483229285
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/ice wraith/snowray/skeletonsnowray.nif",
+      "sha256": "0f8e3ee4787099127e14d783bcf20b72e7e61d3f704b2bc58d5ed0f02e22b5c6",
+      "controllerParts": 1,
+      "triangles": 576,
+      "blockingBounds": {
+        "min": [
+          -28.096498549319804,
+          -28.09652216093325,
+          -4.605375791077852e-06
+        ],
+        "max": [
+          28.096498549319804,
+          28.096498549319804,
+          144.0498483229285
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/riekling/gnome/skeletongnome.nif",
+      "sha256": "db55e5d9e66131ce882ecaa1dc40de282c2dbf49d6ac30e645915bae3330ed0e",
+      "controllerParts": 2,
+      "triangles": 864,
+      "blockingBounds": {
+        "min": [
+          -24.33042682009105,
+          -18.16262171117876,
+          -3.639545052147545
+        ],
+        "max": [
+          24.33042682009105,
+          47.8163901847601,
+          97.46668691063587
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/riekling/gremlin/skeletongremlin.nif",
+      "sha256": "4163a534eec44740ceaef7e15a08bbb2b66c2979d22cc5c805854a3821097254",
+      "controllerParts": 2,
+      "triangles": 864,
+      "blockingBounds": {
+        "min": [
+          -24.33042682009105,
+          -18.16262171117876,
+          -3.639545052147545
+        ],
+        "max": [
+          24.33042682009105,
+          47.8163901847601,
+          97.46668691063587
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/riekling/pixies/skeletonpixie.nif",
+      "sha256": "aa95a7ae9abd2de97e847dea91ff234206bd3acd24e5b719a059d60dc3266ee1",
+      "controllerParts": 2,
+      "triangles": 864,
+      "blockingBounds": {
+        "min": [
+          -24.33042682009105,
+          -18.16262171117876,
+          -3.639545052147545
+        ],
+        "max": [
+          24.33042682009105,
+          47.8163901847601,
+          97.46668691063587
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/troll/grahl/skeletongrahl.nif",
+      "sha256": "19cc06b7bbb905e2d4739eebb81871cc7283147464943eb4c7523593fb024bc9",
+      "controllerParts": 2,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -40.79215407119406,
+          -40.792190669029864,
+          -9.239167751965055e-06
+        ],
+        "max": [
+          40.79215407119406,
+          96.49984248940159,
+          161.5843043217816
+        ]
+      }
+    },
+    {
+      "model": "mihail monsters and animals/werebear tweaks/skeleton.nif",
+      "sha256": "49fbe48afd93054806f0e40da706e01d771c4197a46a6480d59ed9bb19caa5d6",
+      "controllerParts": 1,
+      "triangles": 1152,
+      "blockingBounds": {
+        "min": [
+          -24.99999819096178,
+          -25.000026502680697,
+          -5.662343783788522e-06
+        ],
+        "max": [
+          24.99999819096178,
+          65.50258945746153,
+          125.21615319263074
+        ]
+      }
+    }
+  ],
+  "manifestSha256": "683b6ed8ae6f59550405efef0028e357b9e429dd8072c06b23866db12367de13",
+  "dynamicBodySimulation": false,
+  "realSkyrim": false
+}

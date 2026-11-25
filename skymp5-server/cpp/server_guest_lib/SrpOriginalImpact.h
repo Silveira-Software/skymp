@@ -1,0 +1,57 @@
+#pragma once
+#include "NiPoint3.h"
+#include "SrpCollision.h"
+#include <Networking.h>
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <string>
+
+class MpActor;
+class PartOne;
+class WorldState;
+
+// Server-policy melee admission. This is not Skyrim animation/pose parity.
+// Legacy OnHit/OnWeaponHit remain quarantined for managed originals.
+namespace SrpOriginalImpact {
+constexpr auto kProperty = "private.srpOriginalImpactV1";
+constexpr auto kIdentityProperty = "private.srpImpactActorIdentityV1";
+struct Frame {
+  uint64_t revision = 0;
+  std::string movementPolicy;
+  uint32_t worldOrCell = 0;
+  NiPoint3 attackerPosition, attackerAngle, targetPosition, targetAngle;
+  std::shared_ptr<const SrpCollision::Scene> scene;
+  SrpCollision::DynamicSnapshot dynamics;
+  // Full sorted server actor identities/generations/poses and their meshes.
+  // Do not reduce this binding to the target generation or a 64-bit counter.
+  std::string dynamicStateDigest;
+  // Independently pinned, transformed target mesh, never OBND-derived proof.
+  // Missing/unsupported pose representation cannot authorize an impact.
+  std::vector<SrpCollision::Triangle> targetTriangles;
+  std::string hitRepresentation;
+};
+
+// WorldState supplies Frame from its installed server-only scene and accepted
+// native state. Neither endpoint accepts client damage, source, flags, a hit
+// point, geometry, a collision boolean, numeric stats or a supplied Frame.
+// requestId is only an untrusted idempotency key; the operationId is generated
+// by this service, persisted, and never inferred from a legacy hit packet.
+nlohmann::json Begin(PartOne& server, Networking::UserId userId,
+                     uint32_t targetId, const std::string& requestId);
+nlohmann::json Apply(PartOne& server, Networking::UserId userId,
+                     const std::string& operationId);
+nlohmann::json Cancel(PartOne& server, Networking::UserId userId,
+                      const std::string& operationId);
+nlohmann::json Inspect(const MpActor& actor);
+
+// Versioned CustomPacket transport for original melee. Legacy HitMessage
+// has no action identity and cannot initiate this path.
+void HandleMeleePacket(PartOne& server, Networking::UserId userId,
+                       const std::string& content);
+
+// Validate geometry for the scoped dynamic hit before the legacy damage path.
+// The caller owns native packet authentication and applies the result inline.
+// This does not produce an original-reference receipt or a per-swing nonce.
+void RequireDynamicMeleeContact(WorldState& world, const MpActor& attacker,
+                                const MpActor& target, uint32_t source);
+}

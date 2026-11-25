@@ -88,6 +88,8 @@ private:
   std::optional<uint32_t> singleUpdateTimerId;
 
 protected:
+  bool HasSrpVmReferences() const { return bool(gameObject); }
+
   virtual void BeforeDestroy() {}
 
   const std::vector<std::shared_ptr<ActivePexInstance>>&

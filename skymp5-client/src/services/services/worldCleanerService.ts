@@ -3,12 +3,16 @@ import { NiPoint3 } from "../../sync/movement";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { Actor } from "skyrimPlatform";
 import { logTrace } from "../../logging";
+import { GameLoadEvent } from "../events/gameLoadEvent";
 
 export class WorldCleanerService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
     this.controller.on("update", () => this.onUpdate());
-    this.controller.emitter.on("gameLoad", () => this.onGameLoad());
+    this.controller.emitter.on("gameLoad", event => this.onGameLoad(event));
+    for (const event of ["connectionAccepted", "connectionDisconnect", "connectionFailed"] as const) {
+      this.controller.emitter.on(event, () => (globalThis as any).__srpStaticActorsV16?.resetConnection(event === "connectionAccepted"));
+    }
   }
 
   modWcProtection(actorId: number, mod: number): void {
@@ -20,7 +24,8 @@ export class WorldCleanerService extends ClientListener {
     return this.protection.get(actorId) || 0;
   }
 
-  private onGameLoad() {
+  private onGameLoad(event: GameLoadEvent) {
+    (globalThis as any).__srpStaticActorsV16?.onLoad(event);
     let player = this.sp.Game.getPlayer();
     if (!player) {
       return;
