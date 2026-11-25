@@ -419,8 +419,10 @@ void MpObjectReference::VisitProperties(CreateActorMessage& message,
     message.props.inventory = GetInventory();
   }
 
-  if (IsEspmForm() && IsDisabled()) {
-    message.props.isDisabled = true;
+  if (IsEspmForm() && (AsActor() || IsDisabled())) {
+    // Original ACHRs need an explicit enabled state too; absence must never
+    // make the client guess that a previously disabled actor can be enabled.
+    message.props.isDisabled = IsDisabled();
   }
 
   if (ChangeForm().lastAnimation.has_value()) {
@@ -557,8 +559,13 @@ void MpObjectReference::Disable()
   EditChangeForm(
     [&](MpChangeFormREFR& changeForm) { changeForm.isDisabled = true; });
 
-  if (!IsEspmForm() || AsActor()) {
+  if (AsActor() && GetParent()) GetParent()->ReleaseSrpNpcHost(GetFormId());
+  if (!IsEspmForm()) {
     RemoveFromGridAndUnsubscribeAll();
+  } else if (AsActor()) {
+    // A disabled original still needs to tell nearby clients to disable their
+    // local ACHR. Observing that tombstone does not confer hosting authority.
+    SendMessageToActorListeners(CreatePropertyMessage_(this, "isDisabled", "true"), true);
   }
 }
 
@@ -571,8 +578,11 @@ void MpObjectReference::Enable()
   EditChangeForm(
     [&](MpChangeFormREFR& changeForm) { changeForm.isDisabled = false; });
 
-  if (!IsEspmForm() || AsActor()) {
+  if (!IsEspmForm()) {
     ForceSubscriptionsUpdate();
+  } else if (AsActor()) {
+    ForceSubscriptionsUpdate();
+    SendMessageToActorListeners(CreatePropertyMessage_(this, "isDisabled", "false"), true);
   }
 }
 
@@ -732,11 +742,11 @@ void MpObjectReference::SetActivationBlocked(bool blocked)
 void MpObjectReference::ForceSubscriptionsUpdate()
 {
   auto worldState = GetParent();
-  // Original non-actors stay in the grid when disabled (see Disable). Their
+  // Original references stay in the grid when disabled (see Disable). Their
   // saved disabled property must reach a new client after a cold load too.
-  // Actors, dynamic references and deleted disabled originals remain absent.
+  // Dynamic references and deleted disabled originals remain absent.
   if (!worldState || (IsDisabled() &&
-      (!IsEspmForm() || AsActor() || IsDeleted()))) {
+      (!IsEspmForm() || IsDeleted()))) {
     return;
   }
   auto worldOrCell = GetCellOrWorld().ToFormId(worldState->espmFiles);

@@ -281,6 +281,8 @@ export class RemoteServer extends ClientListener {
 
   private onCreateActorMessage(event: ConnectionMessage<CreateActorMessage>): void {
     const msg = event.message;
+    this.applyOriginalActorDisabled(msg, msg.props?.['isDisabled'] !== undefined
+      ? msg.props['isDisabled'] : msg.props?.['disabled']);
     if (this.skipFormViewCreation(msg)) {
       const refrId = msg.refrId!;
       this.onceLoad(refrId, (refr: ObjectReference) => {
@@ -734,6 +736,12 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
     const msgData = this.extractUpdatePropertyMessageData(msg);
 
+    if (msg.propName === 'isDisabled' || msg.propName === 'disabled') {
+      const model = this.worldModel.forms[this.getIdManager().getId(msg.idx)];
+      if (model && (model.refrId === msg.refrId || model.refrId === msg.refrId + 0x100000000))
+        this.applyOriginalActorDisabled(model, msgData);
+    }
+
     if (!this.skipFormViewCreation(msg) &&
         (msg.propName === 'isDisabled' || msg.propName === 'disabled')) {
       this.applyStaticReferenceDisabled(msg.refrId, msgData);
@@ -935,6 +943,13 @@ export class RemoteServer extends ClientListener {
     this.onceLoad(refrId, (refr: ObjectReference) => {
       if (refr && !Actor.from(refr)) ModelApplyUtils.applyModelIsDisabled(refr, disabled);
     });
+  }
+
+  private applyOriginalActorDisabled(model: unknown, disabled: unknown): void {
+    // The existing static admission runtime verifies reference/base/world and
+    // protected/quest identity. An unavailable adapter never enables an actor.
+    const registry = (globalThis as any).__srpStaticActorsV16;
+    if (typeof registry?.applyDisabled === 'function') registry.applyDisabled(model, disabled);
   }
 
   private extractUpdatePropertyMessageData(updatePropertyMessage: UpdatePropertyMessage) {

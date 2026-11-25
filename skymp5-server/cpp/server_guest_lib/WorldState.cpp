@@ -943,6 +943,9 @@ bool WorldState::SrpNpcHasInterest(const MpActor& actor) const
 bool WorldState::CanSrpNpcHost(const MpObjectReference& remote,
                                 const MpActor& host) const
 {
+  // Original disabled ACHRs retain observer interest only to project their
+  // inactive state. The legacy unleased path must not make them hostable.
+  if (remote.AsActor() && (remote.IsDisabled() || remote.IsDeleted())) return false;
   if (!pImpl->liveUnloadEnabled || !remote.AsActor() ||
       !pImpl->npcAdmission.HasLease(remote.GetFormId()))
     return true; // Non-NPC systems and the legacy protocol are unchanged.

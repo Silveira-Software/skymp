@@ -1129,7 +1129,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
 
   // A race switch may reset local AVs/equipment. It must not borrow either the
   // previous or the next form's combat while its durable handshake is pending.
-  if (SrpTransformationFenced(*aggressor)) return;
+  if (aggressor->IsDisabled() || aggressor->IsDeleted() || SrpTransformationFenced(*aggressor)) return;
   if (SrpOriginalImpact::IsDrainSpell(partOne.worldState,hitData.source) &&
       SrpOriginalImpact::OwnsDrainResources(*aggressor)) return;
   // Claws use the durable CustomPacket action, including on older clients.
@@ -1155,6 +1155,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     return;
   }
 
+  if (targetRef->IsDisabled() || targetRef->IsDeleted()) return;
   const bool managedAggressor = SrpOriginalLifecycle::Managed(*aggressor);
   const bool managedTarget =
     targetRef->AsActor() && SrpOriginalLifecycle::Managed(*targetRef->AsActor());
@@ -1304,12 +1305,15 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   if (spellCastData.target == 0x14) {
     spellCastData.target = myActor->GetFormId();
   }
+  if (caster->IsDisabled() || caster->IsDeleted()) return;
 
   if (SrpOriginalImpact::IsDrainSpell(partOne.worldState,spellCastData.spell) &&
       SrpOriginalImpact::OwnsDrainResources(*caster)) return;
 
   const auto observedTarget =
     partOne.worldState.LookupFormByIdNoLoad(spellCastData.target);
+  if (observedTarget && observedTarget->AsObjectReference() &&
+      (observedTarget->AsObjectReference()->IsDisabled() || observedTarget->AsObjectReference()->IsDeleted())) return;
   if (SrpTransformationFenced(*caster) ||
       partOne.worldState.IsSrpOriginalControlled(spellCastData.target) ||
       SrpOriginalLifecycle::Managed(*caster) ||

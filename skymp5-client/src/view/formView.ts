@@ -347,12 +347,19 @@ export class FormView {
     const now = Date.now();
     const properties = model as Record<string, unknown>;
     const disabled = properties.isDisabled !== undefined ? properties.isDisabled : properties.disabled;
+    const actor = Actor.from(refr);
+    const originalActor = !!actor && typeof this.remoteRefrId === 'number' &&
+      this.remoteRefrId >= 0x100000001 && this.remoteRefrId < 0x1ff000000;
+    const registry = (globalThis as any).__srpStaticActorsV16;
+    if (originalActor && typeof registry?.applyDisabled === 'function') registry.applyDisabled(model, disabled);
     const originalDisabledState = typeof this.remoteRefrId === 'number' &&
       Number.isSafeInteger(this.remoteRefrId) && this.remoteRefrId > 0 &&
       this.remoteRefrId < 0xff000000 && !Actor.from(refr) && typeof disabled === 'boolean';
     if (originalDisabledState) ModelApplyUtils.applyModelIsDisabled(refr, disabled as boolean);
     // Harvesting must not re-enable an original disabled by the server.
-    if (!(originalDisabledState && disabled === true) && now - this.lastHarvestedApply > 666) {
+    // Do not let harvested=false re-enable authoritative originals. Dynamic
+    // replicas retain their existing spawn/enable path.
+    if (!originalActor && !(originalDisabledState && disabled === true) && now - this.lastHarvestedApply > 666) {
       this.lastHarvestedApply = now;
       ModelApplyUtils.applyModelIsHarvested(refr, !!model.isHarvested);
     }
