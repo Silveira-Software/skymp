@@ -40,6 +40,34 @@ uint32_t LongToNormal(uint64_t longFormId)
 }
 }
 
+namespace {
+// Bit 33 of HostMessage::remoteId is reserved by SkyrimRP for a mounted-horse
+// host transfer. Bit 32 is already used by the upstream long actor form-id
+// representation. LongToNormal strips both.
+constexpr uint64_t kForceMountHostFlag = 0x200000000ULL;
+
+// Written only by the gamemode (mp.set when it summons an owned horse).
+// Clients cannot write dynamic fields: PacketParser drops client
+// MsgType::UpdateProperty packets.
+constexpr const char* kSrpMountOwnerProperty = "srpMountOwner";
+
+// Returns 0 unless the field holds a positive 32-bit form id.
+uint32_t ReadSrpMountOwner(const MpObjectReference& refr)
+{
+  const auto owner = nlohmann::json::parse(
+    refr.GetDynamicFields().GetValueDump(kSrpMountOwnerProperty), nullptr,
+    false);
+  if (!owner.is_number_unsigned()) {
+    return 0;
+  }
+  const auto value = owner.get<uint64_t>();
+  if (value > std::numeric_limits<uint32_t>::max()) {
+    return 0;
+  }
+  return static_cast<uint32_t>(value);
+}
+}
+
 MpActor* ActionListener::SendToNeighbours(uint32_t idx,
                                           Networking::UserId userId,
                                           Networking::PacketData data,
@@ -677,6 +705,7 @@ void ActionListener::OnCraftItem(const RawMessageData& rawMsgData,
 void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
                                    const HostMessage& msg)
 {
+  const bool forceMountHost = (msg.remoteId & kForceMountHostFlag) != 0;
   uint32_t remoteId = FormIdCasts::LongToNormal(msg.remoteId);
 
   if (!partOne.serverState.IsConnected(rawMsgData.userId)) {
@@ -725,6 +754,19 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
     return;
   }
 
+  if (forceMountHost) {
+    // A client may force a live host transfer only for its own mount. A
+    // missing, malformed or foreign owner is a hard rejection and never falls
+    // back to the regular host rule below.
+    const uint32_t mountOwner = ReadSrpMountOwner(remote);
+    if (mountOwner == 0 || mountOwner != me->GetFormId()) {
+      partOne.GetLogger().warn(
+        "Rejected forced mount host: requester={:x}, horse={:x}, owner={:x}",
+        me->GetFormId(), remoteId, mountOwner);
+      return;
+    }
+  }
+
   auto& hoster = partOne.worldState.hosters[remoteId];
   const uint32_t prevHoster = hoster;
 
@@ -736,7 +778,13 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
 
   const auto hostResetTimeout = std::chrono::seconds(2);
 
-  if (hoster == 0 || !lastRemoteUpdate ||
+  // The owner's forced request skips the 2 s reset only to take the horse from
+  // another hoster. While the owner already hosts it the regular rule applies,
+  // so the client's resend loop does not replay HostStart, EquipBestWeapon and
+  // the ChangeValues timer on every request.
+  const bool forceTakeover = forceMountHost && hoster != me->GetFormId();
+
+  if (forceTakeover || hoster == 0 || !lastRemoteUpdate ||
       std::chrono::system_clock::now() - *lastRemoteUpdate >
         hostResetTimeout) {
     // A newly hosted actor may not have sent a movement packet yet.
@@ -745,8 +793,9 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
         static_cast<size_t>(remoteIdx) + 1);
     }
 
-    partOne.GetLogger().info("Hoster changed from {0:x} to {1:x}", prevHoster,
-                             me->GetFormId());
+    partOne.GetLogger().info("Hoster changed from {0:x} to {1:x}{2}",
+                             prevHoster, me->GetFormId(),
+                             forceMountHost ? " (mounted horse)" : "");
     hoster = me->GetFormId();
     remote.UpdateHoster(hoster);
 
