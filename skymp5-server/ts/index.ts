@@ -28,6 +28,7 @@ import * as fs from "fs";
 import * as chokidar from "chokidar";
 import * as path from "path";
 import * as os from "os";
+import * as crypto from "crypto";
 
 import * as manifestGen from "./manifestGen";
 import { createScampServer } from "./scampNative";
@@ -173,10 +174,73 @@ const setupGamemode = (server: any, gamemodePath: string) => {
     );
   };
 
-  watcher.on("add", reloadGamemodeTimeout);
-  watcher.on("addDir", reloadGamemodeTimeout);
-  watcher.on("change", reloadGamemodeTimeout);
-  watcher.on("unlink", reloadGamemodeTimeout);
+  // Hot-reload of the gamemode is OFF unless SRP_GAMEMODE_HOT_RELOAD=1 (lab only).
+  // Why: re-running the gamemode in a live process calls clear() first (ScampServer::Clear
+  // wipes the property registry and event sources). If the new bundle throws before it
+  // re-declares its properties, every custom property read/write fails until a restart.
+  // A gamemode change is applied by a planned restart (pm2 stop -> swap -> pm2 start).
+  if (process.env.SRP_GAMEMODE_HOT_RELOAD === "1") {
+    console.log("[launcher] hot-reload do gamemode LIGADO (SRP_GAMEMODE_HOT_RELOAD=1)");
+    watcher.on("add", reloadGamemodeTimeout);
+    watcher.on("addDir", reloadGamemodeTimeout);
+    watcher.on("change", reloadGamemodeTimeout);
+    watcher.on("unlink", reloadGamemodeTimeout);
+  } else {
+    console.log("[launcher] hot-reload do gamemode DESLIGADO (SRP_GAMEMODE_HOT_RELOAD!=1)");
+
+    const sha256Hex = (data: Buffer) =>
+      crypto.createHash("sha256").update(data).digest("hex");
+    const warnedContents = new Set<string>();
+    let warnTimer: NodeJS.Timeout | null = null;
+
+    // Never calls clear() or requireUncached(): it only warns, once per distinct content,
+    // when the file on disk differs from the content loaded at boot (so the initial
+    // chokidar "add" and a revert to the loaded content stay silent).
+    const warnGamemodeChanged = () => {
+      let contents: Buffer | null = null;
+      try {
+        contents = fs.readFileSync(require.resolve(absoluteGamemodePath));
+      } catch {
+        // missing file (unlink): reported as "ausente"
+      }
+      const loaded = gamemodeCache.get(absoluteGamemodePath);
+      if (contents !== null && contents.toString("utf8") === loaded) {
+        return;
+      }
+      const key = contents === null ? "ausente" : sha256Hex(contents);
+      if (warnedContents.has(key)) {
+        return;
+      }
+      warnedContents.add(key);
+      const newSha = contents === null ? key : key.slice(0, 8);
+      const loadedSha =
+        typeof loaded === "string"
+          ? sha256Hex(Buffer.from(loaded, "utf8")).slice(0, 8)
+          : "nenhum";
+      console.error(
+        `[launcher] gamemode.js mudou no disco e NAO foi recarregado (hot-reload desligado). Para aplicar: restart planejado do skyrim-game (sha256 novo=${newSha}, carregado=${loadedSha})`,
+      );
+    };
+
+    const warnGamemodeChangedTimeout = () => {
+      if (warnTimer !== null) {
+        clearTimeout(warnTimer);
+      }
+      warnTimer = setTimeout(() => {
+        warnTimer = null;
+        try {
+          warnGamemodeChanged();
+        } catch (e) {
+          console.error(e);
+        }
+      }, 1000);
+    };
+
+    watcher.on("add", warnGamemodeChangedTimeout);
+    watcher.on("addDir", warnGamemodeChangedTimeout);
+    watcher.on("change", warnGamemodeChangedTimeout);
+    watcher.on("unlink", warnGamemodeChangedTimeout);
+  }
   watcher.on("error", function (error) {
     console.error("Error happened in chokidar watch", error);
   });
